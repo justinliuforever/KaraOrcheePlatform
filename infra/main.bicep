@@ -191,7 +191,8 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       scale: {
-        minReplicas: env == 'prod' ? 1 : 0
+        // dev stays warm too — no cold starts during testing (founder call 2026-07-05).
+        minReplicas: 1
         maxReplicas: env == 'prod' ? 3 : 1
       }
     }
