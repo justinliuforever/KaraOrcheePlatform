@@ -15,6 +15,12 @@ email domain, and the container registry. Everything else lives in this repo + i
 
 Declared in `infra/main.bicep`; env differences are parameters only (SKUs, min replicas).
 
+Dev API (live 2026-07-05): `https://ca-app-api-dev.graymoss-40d67a2f.centralus.azurecontainerapps.io`
+— image `acrkaraorchee.azurecr.io/karaorchee-app/api:<tag>` (built via `az acr build`), secrets
+`dburl`/`storagecs` on the container app, AUTH_* env pointed at the CIAM iOS App Registration.
+Database `karaorchee_app` on `pg-karaorchee-app-dev` (migrations applied); catalog has
+`bach_bwv_846` + `czerny_599_41` v1 bundles.
+
 ## Resources (per env)
 
 | Resource | Name (`<env>` suffix) | Role |
