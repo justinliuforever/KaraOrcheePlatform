@@ -2,10 +2,13 @@
 @allowed(['dev', 'prod'])
 param env string
 
-param location string = 'eastus'
+// Subscription is Postgres-offer-restricted in eastus/eastus2/westus2/southcentralus;
+// centralus is the nearest full-featured allowed region, so the whole platform lives there.
+param location string = 'centralus'
 
-// This subscription is offer-restricted for Postgres in eastus; eastus2 is the same metro.
-param pgLocation string = 'eastus2'
+param pgLocation string = location
+
+param pgServerName string = 'pg-karaorchee-app-${env}'
 
 @secure()
 param pgAdminPassword string
@@ -131,7 +134,7 @@ resource kv 'Microsoft.KeyVault/vaults@2023-07-01' = {
 }
 
 resource pg 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
-  name: 'pg-karaorchee-app-${env}'
+  name: pgServerName
   location: pgLocation
   tags: tags
   sku: {

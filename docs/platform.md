@@ -10,7 +10,7 @@ email domain, and the container registry. Everything else lives in this repo + i
 | | dev | prod |
 |---|---|---|
 | Resource group | `rg-karaorchee-app-dev` | `rg-karaorchee-app-prod` (not yet created) |
-| Region | eastus (Postgres: eastus2 — subscription is offer-restricted for PG in eastus) | same |
+| Region | centralus — subscription is Postgres-offer-restricted in eastus/eastus2/westus2/southcentralus (probed 2026-07-05 via capabilities API); centralus = nearest full-featured allowed region, whole platform co-located | same |
 | Subscription | `7f5d0970-fdd5-45ba-a9c2-635eb221f9c1` (KaraOrchee, Inc.) | same |
 
 Declared in `infra/main.bicep`; env differences are parameters only (SKUs, min replicas).
