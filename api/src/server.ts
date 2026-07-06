@@ -8,11 +8,14 @@ import type { Deps } from "./deps";
 import { healthRouter } from "./routes/health";
 import { catalogRouter } from "./routes/catalog";
 import { usersRouter } from "./routes/users";
+import { rateLimit } from "./ratelimit";
 
 export function createServer(deps: Deps = {}): Express {
   const app = express();
   app.disable("x-powered-by");
+  app.set("trust proxy", true); // Container Apps ingress terminates TLS; req.ip = client
   app.use(express.json());
+  app.use(rateLimit());
 
   app.use(healthRouter(deps));
   app.use(catalogRouter(deps));
