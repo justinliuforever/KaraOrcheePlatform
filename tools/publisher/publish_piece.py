@@ -33,27 +33,75 @@ BLOB_BASE = f"https://{ACCOUNT}.blob.core.windows.net/{CONTAINER}"
 # czerny_599_41 is a LessonContent-only piece (not in the Pieces catalogue): title/
 # composer come from LessonContent/*.lesson.json; subtitle/mode/tier are sensible
 # defaults for a solo beginner study.
+# tier kept for app-compat (maps to the shipped PieceTier); tracking/difficulty are the
+# forward model (tracking = follower reliability, difficulty = 1..5 pedagogy, provisional).
 METADATA = {
     "bach_bwv_846": {
         "title": "The Well-Tempered Clavier, Book I",
         "composer": "J. S. Bach",
         "subtitle": "Prelude No. 1 in C major, BWV 846",
-        "mode": "solo",
-        "tier": "core",
+        "mode": "solo", "tier": "core", "difficulty": 3,
     },
     "czerny_599_41": {
         "title": "Practical Method for Beginners, Op. 599",
         "composer": "Carl Czerny",
         "subtitle": "No. 41",
-        "mode": "solo",
-        "tier": "core",
+        "mode": "solo", "tier": "core", "difficulty": 1,
+        "book": {"id": "czerny_op599", "index": 41},
     },
     "scriabin_etude_op8_11": {
         "title": "12 Études, Op. 8",
         "composer": "Alexander Scriabin",
         "subtitle": "No. 11 in B-flat minor",
-        "mode": "solo",
-        "tier": "experimental",
+        "mode": "solo", "tier": "experimental", "difficulty": 5,
+    },
+    "mozart_k330_mvt1": {
+        "title": "Piano Sonata No. 10, K. 330",
+        "composer": "W. A. Mozart",
+        "subtitle": "I. Allegro moderato",
+        "mode": "solo", "tier": "core", "difficulty": 4,
+    },
+    "rach_op23_4": {
+        "title": "10 Preludes, Op. 23",
+        "composer": "Sergei Rachmaninoff",
+        "subtitle": "No. 4 in D major",
+        "mode": "solo", "tier": "core", "difficulty": 5,
+    },
+    "schubert_sonata_894_mvt2": {
+        "title": "Piano Sonata No. 18, D. 894",
+        "composer": "Franz Schubert",
+        "subtitle": "II. Andante",
+        "mode": "solo", "tier": "core", "difficulty": 4,
+    },
+    "haydn_sonata_48_2": {
+        "title": "Keyboard Sonata in C major, Hob. XVI:48",
+        "composer": "Joseph Haydn",
+        "subtitle": "II. Rondo — Presto",
+        "mode": "solo", "tier": "core", "difficulty": 4,
+    },
+    "chopin_etude_op25_12_ocean": {
+        "title": "12 Études, Op. 25",
+        "composer": "Frédéric Chopin",
+        "subtitle": "No. 12 in C minor, “Ocean”",
+        "mode": "solo", "tier": "experimental", "difficulty": 5,
+    },
+    "liszt_trans_5_feux_follets": {
+        "title": "Transcendental Études, S. 139",
+        "composer": "Franz Liszt",
+        "subtitle": "No. 5, “Feux follets”",
+        "mode": "solo", "tier": "experimental", "difficulty": 5,
+    },
+    "bach_fugue_bwv_846": {
+        "title": "The Well-Tempered Clavier, Book I",
+        "composer": "J. S. Bach",
+        "subtitle": "Fugue No. 1 in C major, BWV 846",
+        "mode": "solo", "tier": "experimental", "difficulty": 4,
+    },
+    "chopin_sonata3_mvt4": {
+        "title": "Piano Sonata No. 3, Op. 58",
+        "composer": "Frédéric Chopin",
+        "subtitle": "IV. Finale — Presto non tanto",
+        "mode": "solo", "tier": "experimental", "difficulty": 5,
     },
 }
 
@@ -150,8 +198,13 @@ def build_entry(piece: str, version: int, engine_sha: str, files: list) -> tuple
     entry = {
         "id": piece, "title": meta["title"], "composer": meta["composer"],
         "subtitle": meta["subtitle"], "mode": meta["mode"], "tier": meta["tier"],
+        "tracking": "validated" if meta["tier"] == "core" else "experimental",
+        "difficulty": meta.get("difficulty"),
         "bundle_version": version, "engine_sha": engine_sha, "files": entries,
     }
+    if "book" in meta:
+        entry["book_id"] = meta["book"]["id"]
+        entry["book_index"] = meta["book"]["index"]
     return entry, upload, dedup
 
 
