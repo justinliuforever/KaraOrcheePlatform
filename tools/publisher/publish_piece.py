@@ -42,11 +42,18 @@ METADATA = {
         "tier": "core",
     },
     "czerny_599_41": {
-        "title": "Practical Method, Op. 599 — No. 41",
+        "title": "Practical Method for Beginners, Op. 599",
         "composer": "Carl Czerny",
-        "subtitle": "",
+        "subtitle": "No. 41",
         "mode": "solo",
         "tier": "core",
+    },
+    "scriabin_etude_op8_11": {
+        "title": "12 Études, Op. 8",
+        "composer": "Alexander Scriabin",
+        "subtitle": "No. 11 in B-flat minor",
+        "mode": "solo",
+        "tier": "experimental",
     },
 }
 
