@@ -4,6 +4,7 @@ export interface Config {
   databaseUrl: string;
   port: number;
   storage: { connectionString: string } | null;
+  serviceBus: { connectionString: string } | null;
   auth: { tenantId: string; tenantName: string; audience: string } | null;
   adminOrigins: string[];
 }
@@ -16,6 +17,7 @@ const envSchema = z.object({
   AUTH_TENANT_NAME: z.string().min(1).optional(),
   AUTH_AUDIENCE: z.string().min(1).optional(),
   ADMIN_ORIGINS: z.string().optional(),
+  SERVICEBUS_CONNECTION_STRING: z.string().min(1).optional(),
 });
 
 export function parseConfig(env: NodeJS.ProcessEnv = process.env):
@@ -63,6 +65,9 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env):
       port: e.PORT,
       storage: e.STORAGE_CONNECTION_STRING
         ? { connectionString: e.STORAGE_CONNECTION_STRING }
+        : null,
+      serviceBus: e.SERVICEBUS_CONNECTION_STRING
+        ? { connectionString: e.SERVICEBUS_CONNECTION_STRING }
         : null,
       auth,
       adminOrigins: (e.ADMIN_ORIGINS ?? "")

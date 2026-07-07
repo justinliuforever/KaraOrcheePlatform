@@ -1,11 +1,14 @@
 import type { RequestHandler } from "express";
 import type { Db } from "./db/client";
-import type { CatalogStore } from "./storage";
+import type { CatalogStore, StudioStore } from "./storage";
 import type { AuthVerifier } from "./auth";
+import type { JobQueue } from "./queue";
 
 export interface Deps {
   db?: Db;
   catalog?: CatalogStore;
+  studio?: StudioStore;
+  piecesQueue?: JobQueue;
   auth?: AuthVerifier;
   corsOrigins?: string[];
 }

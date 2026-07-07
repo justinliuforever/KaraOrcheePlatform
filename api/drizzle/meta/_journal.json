@@ -29,6 +29,13 @@
       "when": 1783386336720,
       "tag": "0003_outgoing_thunderbird",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783387254295,
+      "tag": "0004_white_black_panther",
+      "breakpoints": true
     }
   ]
 }

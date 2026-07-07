@@ -83,6 +83,26 @@ export const pieceVersions = pgTable(
   (t) => [primaryKey({ columns: [t.pieceId, t.version] })],
 );
 
+// One row per Pieces Studio build. The worker owns status/stage/gates/artifacts;
+// the API owns creation, retry, and the publish transition. Artifacts stay in
+// staging until publish copies them into the immutable v<N> layout.
+export const studioJobs = pgTable("studio_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  pieceId: text("piece_id").notNull(),
+  status: text("status").notNull().default("queued"),
+  // queued | running | ready_for_review | published | failed | canceled
+  stage: text("stage"), // sanity | alignment | geometry | render
+  metadata: jsonb("metadata").notNull().default({}), // frozen wizard form input
+  sources: jsonb("sources").notNull().default([]), // [{kind, path, bytes, sha256, originalName}]
+  gates: jsonb("gates").notNull().default({}), // per-gate {status, metrics, error}
+  artifacts: jsonb("artifacts").notNull().default([]), // staged [{role, variant?, path, bytes, sha256}]
+  error: text("error"),
+  publishedVersion: integer("published_version"),
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Append-only trail of admin mutations. Reads are not audited.
 export const auditEvents = pgTable("audit_events", {
   id: uuid("id").primaryKey().defaultRandom(),

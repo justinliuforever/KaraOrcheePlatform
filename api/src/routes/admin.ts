@@ -1,10 +1,22 @@
 import { Router } from "express";
 import { desc, eq, ilike, or, sql } from "drizzle-orm";
+import { z } from "zod";
 import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
-import { requireAdmin } from "../admin";
+import { requireAdmin, audit } from "../admin";
 import { books, pieces, pieceVersions, users } from "../db/schema";
+
+const bookSchema = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9_]{2,63}$/, "lowercase slug"),
+  title: z.string().min(1).max(200),
+  author: z.string().max(120).optional(),
+  publisher: z.string().max(120).optional(),
+  edition: z.string().max(120).optional(),
+  rights: z.enum(["public_domain", "licensed", "unknown", "blocked"]).default("unknown"),
+  rightsNote: z.string().max(2000).optional(),
+  sortIndex: z.number().int().optional(),
+});
 
 export function adminRouter(deps: Deps): Router {
   const router = Router();
@@ -74,6 +86,44 @@ export function adminRouter(deps: Deps): Router {
           latestVersion: byPiece.get(piece.id)?.latest ?? null,
         })),
       });
+    }),
+  );
+
+  router.get(
+    "/admin/books",
+    wrap(async (_req, res) => {
+      const db = deps.db!.orm;
+      const rows = await db.select().from(books).orderBy(books.sortIndex, books.title);
+      const counts = await db
+        .select({ bookId: pieces.bookId, count: sql<number>`count(*)::int` })
+        .from(pieces)
+        .groupBy(pieces.bookId);
+      const byBook = new Map(counts.map((c) => [c.bookId, c.count]));
+      res.json({ items: rows.map((b) => ({ ...b, pieceCount: byBook.get(b.id) ?? 0 })) });
+    }),
+  );
+
+  router.post(
+    "/admin/books",
+    wrap(async (req, res) => {
+      const parsed = bookSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "invalid_book", detail: parsed.error.issues });
+        return;
+      }
+      const db = deps.db!.orm;
+      const [existing] = await db
+        .select()
+        .from(books)
+        .where(eq(books.id, parsed.data.id))
+        .limit(1);
+      if (existing) {
+        res.status(409).json({ error: "book_exists" });
+        return;
+      }
+      const [row] = await db.insert(books).values(parsed.data).returning();
+      await audit(deps, req.adminUser!, "book.create", { type: "book", id: parsed.data.id });
+      res.status(201).json(row);
     }),
   );
 
