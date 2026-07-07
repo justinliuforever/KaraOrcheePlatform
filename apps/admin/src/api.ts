@@ -112,22 +112,33 @@ export interface GateEntry {
   error?: string;
 }
 
+export type JobStatus =
+  | "draft"
+  | "queued"
+  | "running"
+  | "ready_for_review"
+  | "published"
+  | "failed"
+  | "canceled";
+
+export interface StudioMetadata {
+  title?: string;
+  composer?: string;
+  subtitle?: string;
+  difficulty?: number | null;
+  tracking?: "validated" | "experimental";
+  rights?: "public_domain" | "licensed" | "unknown";
+  rightsNote?: string;
+  book?: { id: string; title?: string; index: number | null } | null;
+}
+
 export interface StudioJob {
   id: string;
   pieceId: string;
-  status: "queued" | "running" | "ready_for_review" | "published" | "failed" | "canceled";
+  status: JobStatus;
+  checkStatus: "pending" | "running" | "pass" | "fail";
   stage: string | null;
-  metadata: {
-    pieceId: string;
-    title: string;
-    composer: string;
-    subtitle: string;
-    difficulty: number | null;
-    tracking: string;
-    rights: string;
-    rightsNote: string;
-    book: { id: string; title?: string; index: number | null } | null;
-  };
+  metadata: StudioMetadata;
   sources: { kind: string; path: string; bytes: number; originalName: string }[];
   gates: Record<string, GateEntry>;
   artifacts: { role: string; variant?: string; path: string; bytes: number }[];
@@ -138,23 +149,33 @@ export interface StudioJob {
   previews?: { role: string; variant?: string; url: string }[];
 }
 
+export interface CheckFinding {
+  level: "info" | "warn" | "error";
+  code: string;
+  message: string;
+}
+
 export interface AdminBook {
   id: string;
   title: string;
   author: string | null;
   rights: string;
   pieceCount: number;
+  coverUrl: string | null;
+  coverThumbUrl: string | null;
 }
 
-export async function createStudioJob(form: FormData): Promise<StudioJob> {
-  const res = await fetch(`${API_BASE}/admin/studio/jobs`, {
-    method: "POST",
+// Multipart calls bypass api(): it forces a JSON content-type on any body, which
+// would destroy the FormData boundary.
+export async function apiForm<T>(path: string, form: FormData, method = "POST"): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
     headers: { Authorization: `Bearer ${await getToken()}` },
     body: form,
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, body.error ?? `http_${res.status}`);
+    throw new ApiError(res.status, body.message ?? body.error ?? `http_${res.status}`);
   }
   return res.json();
 }

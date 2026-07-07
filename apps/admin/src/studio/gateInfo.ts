@@ -1,0 +1,128 @@
+import type { StudioJob } from "../api";
+
+// Operator-facing copy for the pipeline gates. Internal keys (sanity/alignment/
+// geometry/render) never surface to the editor — human labels + remediation hints do.
+export interface GateInfo {
+  key: string;
+  label: string;
+  blurb: string;
+  explain: string[];
+}
+
+export const PREFLIGHT_GATES: GateInfo[] = [
+  {
+    key: "sanity",
+    label: "Reading the files",
+    blurb: "Both files open and contain music",
+    explain: [
+      "The MusicXML is loaded by the engraving engine — a file that fails here is corrupted or not really MusicXML.",
+      "The score must contain at least one measure and one note (an empty template is rejected).",
+      "The MIDI is parsed and its note count and duration are measured.",
+    ],
+  },
+  {
+    key: "alignment",
+    label: "Extracting the timeline",
+    blurb: "Builds the note timeline the app follows",
+    explain: [
+      "Every note onset in the MIDI becomes a follow event — this is the timeline the score-following engine listens against.",
+      "Notes within 30ms are grouped into one chord event, matching how the shipped pieces were built.",
+    ],
+  },
+  {
+    key: "geometry",
+    label: "Engraving & matching",
+    blurb: "Draws the sheet music, checks MIDI matches the score",
+    explain: [
+      "The engraving engine renders the score for phone and iPad and computes where the play cursor sits for every note.",
+      "The MIDI timeline and the engraved score timeline are compared note-by-note: the median offset must stay under 12ms.",
+      "If this fails, the MIDI almost certainly wasn't exported from the same project as the MusicXML — or has performance timing baked in.",
+    ],
+  },
+];
+
+export const RENDER_GATE: GateInfo = {
+  key: "render",
+  label: "On-screen verification",
+  blurb: "Verifies the cursor lands on the staff in a real renderer",
+  explain: [
+    "The built score is loaded into the same browser engine an iPhone uses, and the play cursor is driven exactly like the app drives it.",
+    "At sampled positions the cursor must sit on the staff — not float above or below it.",
+    "This is the slow gate (~20s); it runs after you submit, and again before any re-publish.",
+  ],
+};
+
+export const ALL_GATES = [...PREFLIGHT_GATES, RENDER_GATE];
+
+export function gateLabel(key: string): string {
+  return ALL_GATES.find((g) => g.key === key)?.label ?? key;
+}
+
+// Actionable remediation, matched on the worker's failure text.
+export function failureHint(gateKey: string, error: string): string {
+  const e = error.toLowerCase();
+  if (gateKey === "sanity") {
+    if (e.includes("musicxml")) {
+      return "Re-export the score from your notation software: File → Export → MusicXML (.musicxml or .mxl). If it keeps failing, the file may be damaged — open it in the notation app first to confirm it loads.";
+    }
+    if (e.includes("midi")) {
+      return "Re-export the MIDI from the same project as a standard .mid file. If your software offers MIDI format options, pick type 0 or 1.";
+    }
+    if (e.includes("empty")) {
+      return "The score has no notes — you may have exported an empty template or the wrong file.";
+    }
+  }
+  if (gateKey === "alignment" || gateKey === "geometry") {
+    if (e.includes("residual") || e.includes("disagree") || e.includes("timeline")) {
+      return "Export the MIDI from the SAME project as the MusicXML, and turn OFF any “humanize”, “swing”, or performance-playback options — the MIDI must follow the notated tempo exactly. A recorded human performance will not pass.";
+    }
+    if (e.includes("pitch")) {
+      return "Some notes couldn't be read from the score. Re-export the MusicXML, or upload a reference MIDI exported from the same project.";
+    }
+  }
+  if (gateKey === "render") {
+    return "This is usually a pipeline problem, not your files. Re-run the checks; if it fails again, flag it to engineering.";
+  }
+  return "Check the details above, fix the export, and replace the files to re-run the checks.";
+}
+
+export function jobTone(status: StudioJob["status"]) {
+  switch (status) {
+    case "published":
+      return "ok" as const;
+    case "ready_for_review":
+      return "brand" as const;
+    case "failed":
+      return "bad" as const;
+    case "draft":
+      return "muted" as const;
+    case "queued":
+    case "running":
+      return "warn" as const;
+    default:
+      return "muted" as const;
+  }
+}
+
+export function statusLabel(job: Pick<StudioJob, "status" | "checkStatus">): string {
+  if (job.status === "draft") {
+    switch (job.checkStatus) {
+      case "pending":
+      case "running":
+        return "draft · checking";
+      case "fail":
+        return "draft · fix files";
+      default:
+        return "draft";
+    }
+  }
+  return job.status.replaceAll("_", " ");
+}
+
+export function timeAgo(iso: string): string {
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}

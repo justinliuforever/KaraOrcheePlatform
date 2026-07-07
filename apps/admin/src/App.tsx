@@ -8,7 +8,7 @@ import UsersPage from "./pages/UsersPage";
 import PiecesPage from "./pages/PiecesPage";
 import PieceDetailPage from "./pages/PieceDetailPage";
 import StudioPage from "./pages/StudioPage";
-import StudioNewPage from "./pages/StudioNewPage";
+import StudioWizardPage from "./pages/StudioWizardPage";
 import StudioJobPage from "./pages/StudioJobPage";
 
 export default function App() {
@@ -113,7 +113,8 @@ function Shell() {
         <Routes>
           <Route path="/" element={<Navigate to="/studio" replace />} />
           <Route path="/studio" element={<StudioPage />} />
-          <Route path="/studio/new" element={<StudioNewPage />} />
+          <Route path="/studio/new" element={<StudioWizardPage />} />
+          <Route path="/studio/:id/edit" element={<StudioWizardPage />} />
           <Route path="/studio/:id" element={<StudioJobPage />} />
           <Route path="/pieces" element={<PiecesPage />} />
           <Route path="/pieces/:id" element={<PieceDetailPage />} />
