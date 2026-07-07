@@ -15,6 +15,13 @@
       "when": 1783298504216,
       "tag": "0001_mean_preak",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783384229612,
+      "tag": "0002_wealthy_monster_badoon",
+      "breakpoints": true
     }
   ]
 }

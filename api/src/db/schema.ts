@@ -15,7 +15,8 @@ import {
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   entraOid: text("entra_oid").unique(),
-  email: text("email").unique(),
+  // Cached claim, NOT identity — never unique (deletion/re-registration reuses emails).
+  email: text("email"),
   displayName: text("display_name"),
   isTeacher: boolean("is_teacher").notNull().default(false),
   isStudent: boolean("is_student").notNull().default(false),
