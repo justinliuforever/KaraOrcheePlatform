@@ -83,6 +83,18 @@ export const pieceVersions = pgTable(
   (t) => [primaryKey({ columns: [t.pieceId, t.version] })],
 );
 
+// Append-only trail of admin mutations. Reads are not audited.
+export const auditEvents = pgTable("audit_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  actorUserId: uuid("actor_user_id").references(() => users.id),
+  action: text("action").notNull(), // e.g. piece.publish, user.set_admin
+  subjectType: text("subject_type"),
+  subjectId: text("subject_id"),
+  detail: jsonb("detail").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type User = typeof users.$inferSelect;
 export type Piece = typeof pieces.$inferSelect;
 export type Book = typeof books.$inferSelect;
+export type PieceVersion = typeof pieceVersions.$inferSelect;

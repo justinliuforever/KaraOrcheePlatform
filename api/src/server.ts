@@ -8,18 +8,22 @@ import type { Deps } from "./deps";
 import { healthRouter } from "./routes/health";
 import { catalogRouter } from "./routes/catalog";
 import { usersRouter } from "./routes/users";
+import { adminRouter } from "./routes/admin";
 import { rateLimit } from "./ratelimit";
+import { cors } from "./cors";
 
 export function createServer(deps: Deps = {}): Express {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", true); // Container Apps ingress terminates TLS; req.ip = client
   app.use(express.json());
+  app.use(cors(deps.corsOrigins ?? []));
   app.use(rateLimit());
 
   app.use(healthRouter(deps));
   app.use(catalogRouter(deps));
   app.use(usersRouter(deps));
+  app.use(adminRouter(deps));
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: "not_found" });

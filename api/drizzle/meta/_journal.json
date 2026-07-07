@@ -22,6 +22,13 @@
       "when": 1783384229612,
       "tag": "0002_wealthy_monster_badoon",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783386336720,
+      "tag": "0003_outgoing_thunderbird",
+      "breakpoints": true
     }
   ]
 }

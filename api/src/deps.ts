@@ -7,6 +7,7 @@ export interface Deps {
   db?: Db;
   catalog?: CatalogStore;
   auth?: AuthVerifier;
+  corsOrigins?: string[];
 }
 
 type AsyncHandler = (

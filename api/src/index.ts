@@ -15,7 +15,7 @@ function main(): void {
     : undefined;
   const auth = config.auth ? verifierFromConfig(config.auth) : undefined;
 
-  const app = createServer({ db, catalog, auth });
+  const app = createServer({ db, catalog, auth, corsOrigins: config.adminOrigins });
 
   app.listen(config.port, () => {
     console.log(`api listening on :${config.port}`);
