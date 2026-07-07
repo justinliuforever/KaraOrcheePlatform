@@ -353,7 +353,12 @@ function WizardBody({ jobId }: { jobId: string }) {
 
   const submit = useMutation<StudioJob, Error>({
     mutationFn: () => api(`/admin/studio/jobs/${jobId}/submit`, { method: "POST" }),
-    onSuccess: () => {
+    onSuccess: (res) => {
+      // Write the queued row into the cache BEFORE navigating — the detail page must
+      // never see the stale draft snapshot the wizard was just polling.
+      qc.setQueryData(["studio-job", jobId], (old: StudioJob | undefined) =>
+        old ? { ...old, ...res } : res,
+      );
       qc.invalidateQueries({ queryKey: ["studio-jobs"] });
       nav(`/studio/${jobId}`);
     },
@@ -389,7 +394,9 @@ function WizardBody({ jobId }: { jobId: string }) {
     !!meta.composer?.trim() &&
     !!meta.rights &&
     (meta.rights !== "public_domain" || !!meta.rightsNote?.trim());
-  const canSubmit = checksPassed && metaComplete && !hasErrors && !submit.isPending;
+  // save.isPending guard: a blur-save fired by the submit click itself must land
+  // before the server validates the row.
+  const canSubmit = checksPassed && metaComplete && !hasErrors && !submit.isPending && !save.isPending;
   const phonePreview = job.previews?.find((p) => p.role === "svg" && p.variant === "phone");
 
   return (

@@ -57,13 +57,18 @@ export default function StudioJobPage() {
     enabled: !!id,
     refetchInterval: (q) => {
       const s = q.state.data?.status;
-      return s === "queued" || s === "running" ? 2000 : false;
+      // draft polls too: after a wizard submit the cache can briefly hold the stale
+      // draft snapshot — polling self-corrects instead of stranding the reader.
+      return s === "queued" || s === "running" || s === "draft" ? 2000 : false;
     },
   });
 
   const act = useMutation<StudioJob, Error, "retry" | "publish" | "reopen" | "cancel">({
     mutationFn: (action) => api(`/admin/studio/jobs/${id}/${action}`, { method: "POST" }),
     onSuccess: (res, action) => {
+      qc.setQueryData(["studio-job", id], (old: StudioJob | undefined) =>
+        old ? { ...old, ...res } : res,
+      );
       qc.invalidateQueries({ queryKey: ["studio-job", id] });
       qc.invalidateQueries({ queryKey: ["studio-jobs"] });
       qc.invalidateQueries({ queryKey: ["pieces"] });
