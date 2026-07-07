@@ -29,8 +29,10 @@ export interface CatalogStore {
 // CatalogStore so read paths never gain write capability by accident.
 export interface StudioStore {
   uploadSource(path: string, data: Buffer, contentType?: string): Promise<void>;
+  copySource(fromPath: string, toPath: string): Promise<void>;
   copyWithinBundles(fromPath: string, toPath: string): Promise<void>;
   putBundleJson(path: string, body: unknown): Promise<void>;
+  putBundleBlob(path: string, data: Buffer, contentType: string): Promise<void>;
   bundleUrl(path: string): string;
 }
 
@@ -100,30 +102,47 @@ export function createBlobStudioStore(connectionString: string): StudioStore {
   const bundles = service.getContainerClient(CONTAINER);
   const sources = service.getContainerClient(SOURCES_CONTAINER);
 
+  function signedCopyUrl(containerName: string, blobName: string, srcUrl: string): string {
+    const sas = generateBlobSASQueryParameters(
+      {
+        containerName,
+        blobName,
+        permissions: BlobSASPermissions.parse("r"),
+        protocol: SASProtocol.Https,
+        expiresOn: new Date(Date.now() + 10 * 60 * 1000),
+      },
+      credential,
+    ).toString();
+    return `${srcUrl}?${sas}`;
+  }
+
   return {
     async uploadSource(path, data, contentType) {
       await sources.getBlockBlobClient(path).uploadData(data, {
         blobHTTPHeaders: contentType ? { blobContentType: contentType } : undefined,
       });
     },
+    async copySource(fromPath, toPath) {
+      const src = sources.getBlockBlobClient(fromPath);
+      await sources
+        .getBlockBlobClient(toPath)
+        .syncCopyFromURL(signedCopyUrl(SOURCES_CONTAINER, fromPath, src.url));
+    },
     async copyWithinBundles(fromPath, toPath) {
       const src = bundles.getBlockBlobClient(fromPath);
-      const sas = generateBlobSASQueryParameters(
-        {
-          containerName: CONTAINER,
-          blobName: fromPath,
-          permissions: BlobSASPermissions.parse("r"),
-          protocol: SASProtocol.Https,
-          expiresOn: new Date(Date.now() + 10 * 60 * 1000),
-        },
-        credential,
-      ).toString();
-      await bundles.getBlockBlobClient(toPath).syncCopyFromURL(`${src.url}?${sas}`);
+      await bundles
+        .getBlockBlobClient(toPath)
+        .syncCopyFromURL(signedCopyUrl(CONTAINER, fromPath, src.url));
     },
     async putBundleJson(path, body) {
       const data = Buffer.from(JSON.stringify(body, null, 2));
       await bundles.getBlockBlobClient(path).uploadData(data, {
         blobHTTPHeaders: { blobContentType: "application/json" },
+      });
+    },
+    async putBundleBlob(path, data, contentType) {
+      await bundles.getBlockBlobClient(path).uploadData(data, {
+        blobHTTPHeaders: { blobContentType: contentType },
       });
     },
     bundleUrl(path) {

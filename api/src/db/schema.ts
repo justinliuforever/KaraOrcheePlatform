@@ -90,8 +90,11 @@ export const studioJobs = pgTable("studio_jobs", {
   id: uuid("id").primaryKey().defaultRandom(),
   pieceId: text("piece_id").notNull(),
   status: text("status").notNull().default("queued"),
-  // queued | running | ready_for_review | published | failed | canceled
+  // draft | queued | running | ready_for_review | published | failed | canceled
   stage: text("stage"), // sanity | alignment | geometry | render
+  // Wizard preflight (fast 3 gates on the upload, before metadata is even filled):
+  // pending | running | pass | fail. Full runs re-verify everything regardless.
+  checkStatus: text("check_status").notNull().default("pending"),
   metadata: jsonb("metadata").notNull().default({}), // frozen wizard form input
   sources: jsonb("sources").notNull().default([]), // [{kind, path, bytes, sha256, originalName}]
   gates: jsonb("gates").notNull().default({}), // per-gate {status, metrics, error}

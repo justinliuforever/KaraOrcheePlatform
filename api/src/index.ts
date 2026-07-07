@@ -18,7 +18,7 @@ function main(): void {
     ? createBlobStudioStore(config.storage.connectionString)
     : undefined;
   const piecesQueue = config.serviceBus
-    ? createServiceBusQueue(config.serviceBus.connectionString, "pieces-jobs")
+    ? createServiceBusQueue(config.serviceBus.connectionString, "pieces-jobs", "pieces-preflight")
     : undefined;
   const auth = config.auth ? verifierFromConfig(config.auth) : undefined;
 

@@ -1,7 +1,9 @@
 import type { RequestHandler } from "express";
 
 // Fixed-window in-memory limiter — adequate for a single-replica beta API.
-export function rateLimit(maxPerMinute = 120): RequestHandler {
+// 300/min: the studio wizard live-polls a draft alongside board polling; two admin
+// tabs behind one NAT must not starve the app's catalog traffic.
+export function rateLimit(maxPerMinute = 300): RequestHandler {
   const windows = new Map<string, { start: number; count: number }>();
   return (req, res, next) => {
     const key = req.ip ?? "unknown";

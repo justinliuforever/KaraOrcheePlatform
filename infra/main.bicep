@@ -115,6 +115,26 @@ resource notesQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' 
   }
 }
 
+resource piecesQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
+  parent: sb
+  name: 'pieces-jobs'
+  properties: {
+    maxDeliveryCount: 3
+    defaultMessageTimeToLive: 'P1D'
+  }
+}
+
+// Wizard fast lane: sanity/alignment/geometry gates run while the admin is still
+// filling the form. Short TTL — a stale preflight is worthless.
+resource piecesPreflightQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
+  parent: sb
+  name: 'pieces-preflight'
+  properties: {
+    maxDeliveryCount: 3
+    defaultMessageTimeToLive: 'PT1H'
+  }
+}
+
 resource kv 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: 'kv-karaorchee-app-${env}'
   location: location

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import multer from "multer";
 import { desc, eq, ilike, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Deps } from "../deps";
@@ -7,6 +8,13 @@ import { requireAuth } from "../auth";
 import { requireAdmin, audit } from "../admin";
 import { auditEvents, books, pieces, pieceVersions, users } from "../db/schema";
 import { and } from "drizzle-orm";
+import { processCover, CoverError } from "../covers";
+import { bookSlug } from "../slug";
+
+const coverUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+});
 
 // Only explicit role flags are patchable here; identity/status changes get their
 // own endpoints when account-deletion (5.1.1(v)) lands in Phase B.
@@ -20,15 +28,16 @@ const rolesSchema = z
     message: "no role fields given",
   });
 
+// id is server-derived from the title; covers are mandatory at creation (the app's
+// bookshelf has no empty-cover state).
 const bookSchema = z.object({
-  id: z.string().regex(/^[a-z0-9][a-z0-9_]{2,63}$/, "lowercase slug"),
   title: z.string().min(1).max(200),
   author: z.string().max(120).optional(),
   publisher: z.string().max(120).optional(),
   edition: z.string().max(120).optional(),
   rights: z.enum(["public_domain", "licensed", "unknown", "blocked"]).default("unknown"),
   rightsNote: z.string().max(2000).optional(),
-  sortIndex: z.number().int().optional(),
+  sortIndex: z.coerce.number().int().optional(),
 });
 
 export function adminRouter(deps: Deps): Router {
@@ -156,6 +165,15 @@ export function adminRouter(deps: Deps): Router {
     }),
   );
 
+  function signCover(path: string | null): { coverUrl: string | null; coverThumbUrl: string | null } {
+    if (!path || !deps.studio || !deps.catalog) return { coverUrl: null, coverThumbUrl: null };
+    const thumbPath = path.replace(/cover\.webp$/, "cover_thumb.webp");
+    return {
+      coverUrl: deps.catalog.signReadUrl(deps.studio.bundleUrl(path)),
+      coverThumbUrl: deps.catalog.signReadUrl(deps.studio.bundleUrl(thumbPath)),
+    };
+  }
+
   router.get(
     "/admin/books",
     wrap(async (_req, res) => {
@@ -166,31 +184,111 @@ export function adminRouter(deps: Deps): Router {
         .from(pieces)
         .groupBy(pieces.bookId);
       const byBook = new Map(counts.map((c) => [c.bookId, c.count]));
-      res.json({ items: rows.map((b) => ({ ...b, pieceCount: byBook.get(b.id) ?? 0 })) });
+      res.json({
+        items: rows.map((b) => ({
+          ...b,
+          pieceCount: byBook.get(b.id) ?? 0,
+          ...signCover(b.coverPath),
+        })),
+      });
     }),
   );
 
+  async function storeCover(bookId: string, file: Express.Multer.File): Promise<string> {
+    const processed = await processCover(file.buffer);
+    const coverPath = `books/${bookId}/cover.webp`;
+    await deps.studio!.putBundleBlob(coverPath, processed.cover, "image/webp");
+    await deps.studio!.putBundleBlob(
+      `books/${bookId}/cover_thumb.webp`,
+      processed.thumb,
+      "image/webp",
+    );
+    return coverPath;
+  }
+
   router.post(
     "/admin/books",
+    coverUpload.single("cover"),
     wrap(async (req, res) => {
+      if (!deps.studio) {
+        res.status(503).json({ error: "studio_not_configured" });
+        return;
+      }
       const parsed = bookSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: "invalid_book", detail: parsed.error.issues });
         return;
       }
-      const db = deps.db!.orm;
-      const [existing] = await db
-        .select()
-        .from(books)
-        .where(eq(books.id, parsed.data.id))
-        .limit(1);
-      if (existing) {
-        res.status(409).json({ error: "book_exists" });
+      if (!req.file) {
+        res.status(400).json({ error: "cover_required" });
         return;
       }
-      const [row] = await db.insert(books).values(parsed.data).returning();
-      await audit(deps, req.adminUser!, "book.create", { type: "book", id: parsed.data.id });
-      res.status(201).json(row);
+      const id = bookSlug(parsed.data.title);
+      if (!id) {
+        res.status(400).json({ error: "invalid_book", detail: "title yields an empty id" });
+        return;
+      }
+      const db = deps.db!.orm;
+      const [existing] = await db.select().from(books).where(eq(books.id, id)).limit(1);
+      if (existing) {
+        res.status(409).json({ error: "book_exists", id });
+        return;
+      }
+      let coverPath: string;
+      try {
+        coverPath = await storeCover(id, req.file);
+      } catch (err) {
+        if (err instanceof CoverError) {
+          res.status(400).json({ error: "invalid_cover", message: err.message });
+          return;
+        }
+        throw err;
+      }
+      const [row] = await db
+        .insert(books)
+        .values({ ...parsed.data, id, coverPath })
+        .returning();
+      await audit(deps, req.adminUser!, "book.create", { type: "book", id });
+      res.status(201).json({ ...row, ...signCover(coverPath) });
+    }),
+  );
+
+  router.put(
+    "/admin/books/:id/cover",
+    coverUpload.single("cover"),
+    wrap(async (req, res) => {
+      if (!deps.studio) {
+        res.status(503).json({ error: "studio_not_configured" });
+        return;
+      }
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
+      if (!book) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (!req.file) {
+        res.status(400).json({ error: "cover_required" });
+        return;
+      }
+      let coverPath: string;
+      try {
+        coverPath = await storeCover(id, req.file);
+      } catch (err) {
+        if (err instanceof CoverError) {
+          res.status(400).json({ error: "invalid_cover", message: err.message });
+          return;
+        }
+        throw err;
+      }
+      const [row] = await db
+        .update(books)
+        .set({ coverPath, updatedAt: sql`now()` })
+        .where(eq(books.id, id))
+        .returning();
+      await audit(deps, req.adminUser!, "book.set_cover", { type: "book", id });
+      res.json({ ...row, ...signCover(coverPath) });
     }),
   );
 

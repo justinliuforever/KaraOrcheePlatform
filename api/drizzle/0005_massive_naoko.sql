@@ -1,0 +1,1 @@
+ALTER TABLE "studio_jobs" ADD COLUMN "check_status" text DEFAULT 'pending' NOT NULL;

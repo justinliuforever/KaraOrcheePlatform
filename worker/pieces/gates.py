@@ -98,15 +98,17 @@ ARTIFACT_LAYOUT = [
 
 
 def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out_dir: Path,
-            on_gate) -> list[Path]:
+            on_gate, include_render: bool = True) -> list[Path]:
     """Run gates in order, reporting each via on_gate(stage, status, metrics, error).
-    Returns the artifact files (local paths) on success."""
+    Returns the artifact files (local paths) on success. include_render=False is the
+    wizard preflight lane — everything except the slow headless-WebKit gate."""
     stages = [
         ("sanity", lambda: gate_sanity(xml_path, midi_path)),
         ("alignment", lambda: gate_alignment(xml_path, midi_path, out_dir)),
         ("geometry", lambda: gate_geometry(piece, xml_path, out_dir)),
-        ("render", lambda: gate_render(piece, out_dir)),
     ]
+    if include_render:
+        stages.append(("render", lambda: gate_render(piece, out_dir)))
     for stage, fn in stages:
         t0 = time.monotonic()
         on_gate(stage, "running", {}, None)
