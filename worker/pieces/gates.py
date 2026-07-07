@@ -5,9 +5,9 @@ import json
 import time
 from pathlib import Path
 import pretty_midi
-import verovio
 
 from pipeline import score_events as se
+from pipeline.vrv import make_toolkit
 from pipeline.staff import build_staff_assets
 from pipeline.cursor_gate import run_gate
 
@@ -19,7 +19,7 @@ class GateError(Exception):
 
 
 def gate_sanity(xml_path: Path, midi_path: Path | None) -> dict:
-    tk = verovio.toolkit()
+    tk = make_toolkit()
     tk.setOptions({"header": "none", "footer": "none"})
     if not tk.loadFile(str(xml_path)):
         raise GateError("MusicXML failed to load (not a valid MusicXML/MXL file?)")

@@ -14,7 +14,8 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 import pretty_midi
-import verovio
+
+from pipeline.vrv import make_toolkit
 
 CLUSTER_EPS_SEC = 0.030
 MEI_NS = "{http://www.music-encoding.org/ns/mei}"
@@ -88,7 +89,7 @@ def _mei_pitches(mei: str) -> dict[str, int]:
 
 
 def from_xml_timemap(xml_path: Path) -> dict:
-    tk = verovio.toolkit()
+    tk = make_toolkit()
     tk.setOptions({"xmlIdChecksum": True, "header": "none", "footer": "none"})
     if not tk.loadFile(str(xml_path)):
         raise ValueError("verovio could not load the MusicXML")

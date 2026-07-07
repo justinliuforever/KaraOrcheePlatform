@@ -13,7 +13,8 @@ from __future__ import annotations
 import json, re, hashlib, bisect
 import xml.etree.ElementTree as ET
 from pathlib import Path
-import verovio
+
+from pipeline.vrv import make_toolkit, version as verovio_version
 
 ET.register_namespace('', 'http://www.w3.org/2000/svg')
 ET.register_namespace('xlink', 'http://www.w3.org/1999/xlink')
@@ -42,7 +43,7 @@ def translate(attr: str | None):
 
 
 def freeze_mei(xml_path: Path) -> str:
-    tk = verovio.toolkit()
+    tk = make_toolkit()
     tk.setOptions({"xmlIdChecksum": True, "footer": "none", "header": "none"})
     if not tk.loadFile(str(xml_path)):
         raise ValueError("verovio could not load the MusicXML")
@@ -73,7 +74,7 @@ def staff_xy(staff_g):
 
 def build_variant(mei: str, vopts: dict):
     """Render all pages, STITCH them into one continuous SVG, and extract global geometry."""
-    tk = verovio.toolkit()
+    tk = make_toolkit()
     tk.setOptions({**COMMON, **vopts})
     tk.loadData(mei)
     npages = tk.getPageCount()
@@ -225,7 +226,7 @@ def timeline_residual_ms(score_events_path: Path, anchor_secs: list):
 def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_dir: Path,
                        variant_overrides: dict | None = None) -> dict:
     """Build all staff assets for one piece into out_dir; returns the bundle dict."""
-    ver = verovio.toolkit().getVersion()
+    ver = verovio_version()
     sha = hashlib.sha256(xml_path.read_bytes()).hexdigest()[:16]
     mei = freeze_mei(xml_path)
     num_map = mei_measure_numbers(mei)
