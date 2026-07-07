@@ -97,6 +97,23 @@ karaorchee.com sender), `acrkaraorchee` (images), CIAM tenant (below).
 - ⚠️ Deploys: a draining worker replica keeps its Service Bus links and steals queue
   messages minutes after `containerapp update` reports the new revision running — after a
   worker rollout, confirm the OLD replica is really gone before trusting queue behavior.
+
+### Jobs ↔ registry consistency laws
+
+- Two tables, two clocks: a studio_jobs row is an IMMUTABLE build record (what happened
+  then); the pieces row owns the live lifecycle + published_version pointer. UIs JOIN at
+  render time (job detail returns `piece {status, publishedVersion}`) — never denormalize
+  "current" onto a job. A job that published stays `published` even after the piece is
+  archived; the banner explains the divergence.
+- Publish ordering: immutable v<N> blobs FIRST, then ONE SQL transaction (piece upsert +
+  version insert + job flip), catalog rebuild AFTER commit — a half-failed publish leaves
+  nothing live and retrying is idempotent. (pieceId, version) PK makes concurrent
+  publishes collide loudly instead of corrupting.
+- Metadata edit boundary (future Pieces management page): catalog/display fields (title,
+  difficulty, rights note, book) = edit in place on the registry + catalog rebuild + audit;
+  anything baked into the bundle (score files) = new version through the studio.
+- Never GC a published v<N> bundle (rollback + stale app catalogs need it); only
+  staging/<jobId>/ blobs of terminal non-published jobs may be swept later.
 - The four gates (worker `worker/pieces/`): 1 sanity (files parse, score non-empty);
   2 alignment (score_events from MIDI — 30ms cluster, vendored parse_score — or the deadpan
   XML-timemap route when no MIDI; the czerny golden reproduces 182/182 events);
