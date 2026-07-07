@@ -147,6 +147,9 @@ export interface StudioJob {
   createdAt: string;
   updatedAt: string;
   previews?: { role: string; variant?: string; url: string }[];
+  // Live-registry cross-check (detail endpoint only): what this piece id currently
+  // looks like in the catalog — null when never published.
+  piece?: { status: string; publishedVersion: number | null } | null;
 }
 
 export interface CheckFinding {

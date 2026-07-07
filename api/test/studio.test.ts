@@ -346,6 +346,22 @@ describe("files replacement + reopen", () => {
     expect(queue.preflights).toHaveLength(2); // initial draft + replacement
   });
 
+  it("reopens from ready_for_review for pre-publish edits", async () => {
+    const queue = fakeQueue();
+    const app = makeApp({ queue });
+    const [job] = await db.orm
+      .insert(studioJobs)
+      .values({ pieceId: "edit_before_publish", status: "ready_for_review", checkStatus: "pass", metadata: FULL_META, sources: [] })
+      .returning();
+    const res = await request(app)
+      .post(`/admin/studio/jobs/${job.id}/reopen`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("draft");
+    expect(res.body.metadata.title).toBe(FULL_META.title); // prefill survives
+    expect(queue.preflights).toHaveLength(1);
+  });
+
   it("reopens a failed job back to draft on the same row", async () => {
     const queue = fakeQueue();
     const app = makeApp({ queue });

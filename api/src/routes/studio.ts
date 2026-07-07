@@ -175,9 +175,10 @@ export function studioRouter(deps: Deps): Router {
     }),
   );
 
-  // A failed (or canceled) run goes BACK to draft on the same row — one board row per
-  // piece, attempt history stays in audit_events. Sources are already staged; the
-  // wizard reopens prefilled and preflight re-runs.
+  // Back to draft on the same row — one board row per piece, attempt history stays in
+  // audit_events. Covers the failed/canceled fix loop AND "edit details before publish"
+  // from review (sources are already staged; the wizard reopens prefilled, preflight
+  // re-runs, submit re-verifies everything).
   router.post(
     "/admin/studio/jobs/:id/reopen",
     wrap(async (req, res) => {
@@ -192,7 +193,7 @@ export function studioRouter(deps: Deps): Router {
         res.status(404).json({ error: "not_found" });
         return;
       }
-      if (job.status !== "failed" && job.status !== "canceled") {
+      if (!["failed", "canceled", "ready_for_review"].includes(job.status)) {
         res.status(409).json({ error: "not_reopenable", status: job.status });
         return;
       }
@@ -480,7 +481,18 @@ export function studioRouter(deps: Deps): Router {
           url: deps.catalog!.signReadUrl(deps.studio!.bundleUrl(a.path)),
         }));
       }
-      res.json({ ...job, previews });
+      // Registry cross-check: what this piece id looks like in the LIVE catalog right
+      // now — lets the UI say "you published v1, current live is v3 / piece archived".
+      let piece: { status: string; publishedVersion: number | null } | null = null;
+      if (!job.pieceId.startsWith("draft_")) {
+        const [p] = await db
+          .select({ status: pieces.status, publishedVersion: pieces.publishedVersion })
+          .from(pieces)
+          .where(eq(pieces.id, job.pieceId))
+          .limit(1);
+        piece = p ?? null;
+      }
+      res.json({ ...job, previews, piece });
     }),
   );
 

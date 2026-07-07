@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, type StudioJob } from "../api";
 import { Badge, Card, ErrorNote, PageHeader, Spinner, rightsTone } from "../components/ui";
 import { ALL_GATES, failureHint, jobTone, statusLabel } from "../studio/gateInfo";
+import { PipelineStepper } from "../studio/Stepper";
 
 function fmtKB(n: number): string {
   return n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
@@ -62,12 +63,14 @@ export default function StudioJobPage() {
 
   const act = useMutation<StudioJob, Error, "retry" | "publish" | "reopen" | "cancel">({
     mutationFn: (action) => api(`/admin/studio/jobs/${id}/${action}`, { method: "POST" }),
-    onSuccess: (_res, action) => {
+    onSuccess: (res, action) => {
       qc.invalidateQueries({ queryKey: ["studio-job", id] });
       qc.invalidateQueries({ queryKey: ["studio-jobs"] });
       qc.invalidateQueries({ queryKey: ["pieces"] });
       setConfirmPublish(false);
       if (action === "reopen") nav(`/studio/${id}/edit`);
+      // Publish lands on the piece's registry page — the published state's real home.
+      if (action === "publish") nav(`/pieces/${res.pieceId}`);
     },
   });
 
@@ -107,6 +110,7 @@ export default function StudioJobPage() {
           </div>
         }
       />
+      <PipelineStepper job={job} />
 
       {/* ——— action bar by state ——— */}
       {job.status === "ready_for_review" && (
@@ -120,6 +124,22 @@ export default function StudioJobPage() {
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              className="text-xs text-ink-faint hover:text-bad px-2 py-2"
+              disabled={act.isPending}
+              onClick={() => act.mutate("cancel")}
+              title="Discards this build (can be reopened later)"
+            >
+              Discard
+            </button>
+            <button
+              className="rounded-lg border border-line text-sm font-medium px-3.5 py-2 hover:bg-paper disabled:opacity-40"
+              disabled={act.isPending}
+              onClick={() => act.mutate("reopen")}
+              title="Back to the form with everything prefilled; submit re-verifies"
+            >
+              Edit details
+            </button>
             <button
               className="rounded-lg border border-line text-sm font-medium px-3.5 py-2 hover:bg-paper disabled:opacity-40"
               disabled={act.isPending}
@@ -212,7 +232,17 @@ export default function StudioJobPage() {
       {job.status === "published" && (
         <Card className="p-4 mb-5 flex items-center justify-between">
           <p className="text-sm">
-            Published as <span className="font-semibold tabular-nums">v{job.publishedVersion}</span> — live in the app catalog.
+            This build published <span className="font-semibold tabular-nums">v{job.publishedVersion}</span>
+            {job.piece?.status === "archived" ? (
+              <span className="text-ink-soft"> — the piece has since been archived (not in the app catalog).</span>
+            ) : job.piece && job.piece.publishedVersion !== job.publishedVersion ? (
+              <span className="text-ink-soft">
+                {" "}— the live version is now{" "}
+                <span className="font-semibold tabular-nums">v{job.piece.publishedVersion}</span> (from a later build).
+              </span>
+            ) : (
+              <span> — live in the app catalog.</span>
+            )}
           </p>
           <Link className="text-sm text-brand font-medium hover:underline" to={`/pieces/${job.pieceId}`}>
             View in Pieces →

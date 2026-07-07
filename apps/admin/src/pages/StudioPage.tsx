@@ -24,39 +24,89 @@ export function GateDots({ job }: { job: StudioJob }) {
   );
 }
 
-type Tab = "attention" | "progress" | "published" | "all";
+type Stage = "all" | "draft" | "verifying" | "review" | "published" | "failed";
 
-const TABS: { key: Tab; label: string }[] = [
-  { key: "attention", label: "Needs attention" },
-  { key: "progress", label: "In progress" },
-  { key: "published", label: "Published" },
-  { key: "all", label: "All" },
-];
-
-function inTab(j: StudioJob, tab: Tab): boolean {
-  switch (tab) {
-    case "attention":
-      return (
-        j.status === "ready_for_review" ||
-        j.status === "failed" ||
-        (j.status === "draft" && j.checkStatus === "fail")
-      );
-    case "progress":
-      return (
-        j.status === "queued" ||
-        j.status === "running" ||
-        (j.status === "draft" && j.checkStatus !== "fail")
-      );
+// The board filter IS the pipeline: Draft → Verifying → Review → Published, with
+// Failed as the off-ramp chip. Failed collects both wizard-check failures (drafts)
+// and full-run failures.
+function inStage(j: StudioJob, stage: Stage): boolean {
+  switch (stage) {
+    case "draft":
+      return j.status === "draft";
+    case "verifying":
+      return j.status === "queued" || j.status === "running";
+    case "review":
+      return j.status === "ready_for_review";
     case "published":
       return j.status === "published";
+    case "failed":
+      return j.status === "failed" || (j.status === "draft" && j.checkStatus === "fail");
     case "all":
       return true;
   }
 }
 
+function PipelineFilter({
+  items,
+  stage,
+  onStage,
+}: {
+  items: StudioJob[];
+  stage: Stage;
+  onStage: (s: Stage) => void;
+}) {
+  const count = (s: Stage) => items.filter((j) => inStage(j, s)).length;
+  const stages: { key: Stage; label: string }[] = [
+    { key: "draft", label: "Draft" },
+    { key: "verifying", label: "Verifying" },
+    { key: "review", label: "Review" },
+    { key: "published", label: "Published" },
+  ];
+  const failedCount = count("failed");
+  const chip = (key: Stage, label: string, extra = "") => {
+    const active = stage === key;
+    return (
+      <button
+        key={key}
+        className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+          active ? "bg-brand-soft text-brand" : "text-ink-soft hover:bg-paper"
+        } ${extra}`}
+        onClick={() => onStage(active ? "all" : key)}
+        title={active ? "Click again to show all" : undefined}
+      >
+        {label}
+        <span className="ml-1.5 text-xs tabular-nums opacity-70">{count(key)}</span>
+      </button>
+    );
+  };
+  return (
+    <div className="flex items-center gap-0.5">
+      {stages.map((s, i) => (
+        <span key={s.key} className="flex items-center">
+          {chip(s.key, s.label)}
+          {i < stages.length - 1 && <span className="text-ink-faint text-xs mx-0.5">→</span>}
+        </span>
+      ))}
+      <span className="w-px h-5 bg-line mx-2.5" />
+      {failedCount > 0 ? (
+        <button
+          className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
+            stage === "failed" ? "bg-red-50 text-bad" : "text-bad hover:bg-red-50"
+          }`}
+          onClick={() => onStage(stage === "failed" ? "all" : "failed")}
+        >
+          ✗ Failed<span className="ml-1.5 text-xs tabular-nums opacity-70">{failedCount}</span>
+        </button>
+      ) : (
+        <span className="text-xs text-ink-faint px-2">no failures</span>
+      )}
+    </div>
+  );
+}
+
 export default function StudioPage() {
   const nav = useNavigate();
-  const [tab, setTab] = useState<Tab>("attention");
+  const [stage, setStage] = useState<Stage>("all");
   const [q, setQ] = useState("");
 
   const query = useQuery<{ items: StudioJob[] }, Error>({
@@ -77,7 +127,7 @@ export default function StudioPage() {
     const all = query.data?.items ?? [];
     const needle = q.trim().toLowerCase();
     return all
-      .filter((j) => inTab(j, tab))
+      .filter((j) => inStage(j, stage))
       .filter(
         (j) =>
           !needle ||
@@ -85,12 +135,7 @@ export default function StudioPage() {
           (j.metadata?.title ?? "").toLowerCase().includes(needle) ||
           (j.metadata?.composer ?? "").toLowerCase().includes(needle),
       );
-  }, [query.data, tab, q]);
-
-  const counts = useMemo(() => {
-    const all = query.data?.items ?? [];
-    return Object.fromEntries(TABS.map((t) => [t.key, all.filter((j) => inTab(j, t.key)).length]));
-  }, [query.data]);
+  }, [query.data, stage, q]);
 
   return (
     <>
@@ -104,21 +149,8 @@ export default function StudioPage() {
         }
       />
 
-      <div className="flex items-center justify-between mb-4 gap-3">
-        <div className="flex gap-1">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
-                tab === t.key ? "bg-brand-soft text-brand" : "text-ink-soft hover:bg-paper"
-              }`}
-              onClick={() => setTab(t.key)}
-            >
-              {t.label}
-              {counts[t.key] ? <span className="ml-1.5 text-xs tabular-nums opacity-70">{counts[t.key]}</span> : null}
-            </button>
-          ))}
-        </div>
+      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+        <PipelineFilter items={query.data?.items ?? []} stage={stage} onStage={setStage} />
         <input
           className="rounded-lg border border-line bg-card px-3 py-1.5 text-sm w-56 outline-none focus:border-brand"
           placeholder="Search title, composer, id…"
@@ -131,7 +163,7 @@ export default function StudioPage() {
       {query.isError && <ErrorNote message={query.error.message} />}
       {query.data && items.length === 0 && (
         <Card className="p-10 text-center text-sm text-ink-soft">
-          {tab === "attention" ? "Nothing needs your attention. 🎉" : "No builds here yet."}
+          {stage === "failed" ? "No failures. 🎉" : "No builds here yet."}
         </Card>
       )}
       {items.length > 0 && (
