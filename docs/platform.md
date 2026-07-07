@@ -46,11 +46,28 @@ karaorchee.com sender), `acrkaraorchee` (images), CIAM tenant (below).
   - custom API scope `api://4a12e0a8-c0b8-4770-a182-0f02626c7dc5/access_as_user` — the app
     requests ONLY this scope, so the access token's `aud` is our API (never validate idToken;
     never mix Graph scopes into the request — that was the legacy trap)
-  - attached to user flow `signupsignin` (`4b4e388d-d2b0-4315-b246-05651a7ce4c9`), same flow as web
+  - attached to user flow `app-signup` (`e8be0cec-b63d-483f-ac8e-96786e5f2d4e`): EmailOTP only,
+    collects email + displayName. Web keeps its own `signupsignin` flow (Google + EmailOTP);
+    one app ↔ one flow — DETACH before re-attaching.
+- Admin SPA App Registration **KaraOrchee Admin Web** (created 2026-07-06 via Graph):
+  - client/app ID `af5d701a-28a5-4eec-b282-bbf97c545fc1`, SPA redirect `http://localhost:5173`
+    (add the SWA URL when hosted)
+  - requests the SAME api scope above → tokens carry the same audience, `api/src/auth.ts` unchanged
+  - admin-consented for `access_as_user` + openid/offline_access; attached to `app-signup` flow
+  - admin power comes ONLY from `users.is_admin` in Postgres (`requireAdmin`), never from the token
 - API token validation: issuer `https://1a19dfd9-0ec3-407d-b39b-d2374a73719b.ciamlogin.com/1a19dfd9-0ec3-407d-b39b-d2374a73719b/v2.0`,
   JWKS `https://karaorcheeauth.ciamlogin.com/1a19dfd9-0ec3-407d-b39b-d2374a73719b/discovery/v2.0/keys`,
   audience = the client ID above. FAIL-CLOSED (see `api/src/auth.ts`).
-- Roles (teacher/student), trial, and subscription state live in OUR Postgres, not in Entra.
+- Roles (teacher/student/admin), trial, and subscription state live in OUR Postgres, not in Entra.
+
+## Admin console
+
+- `apps/admin` — Vite + React SPA, MSAL redirect flow, TanStack Query. Dev: `npm run dev`
+  (localhost:5173; API base defaults to the dev container URL).
+- API surface: `/admin/*` on the same platform API, layered `requireAuth` → `requireAdmin`
+  (403 unless `users.is_admin` and status active). Mutations write `audit_events`.
+- Browser origins are allowlisted via `ADMIN_ORIGINS` (comma-separated env on the container app);
+  native clients send no Origin and are unaffected.
 
 ## Laws
 
