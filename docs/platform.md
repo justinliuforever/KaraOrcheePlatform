@@ -76,10 +76,27 @@ karaorchee.com sender), `acrkaraorchee` (images), CIAM tenant (below).
 
 ## Pieces Studio
 
-- Flow: wizard upload (MusicXML required, reference MIDI recommended) → `POST /admin/studio/jobs`
-  (multipart; sources → `piece-sources/staging/<jobId>/`) → `pieces-jobs` Service Bus queue →
-  worker `ca-pieces-worker-dev` runs the four gates → artifacts →
-  `piece-bundles/staging/<jobId>/` → human review (engraving preview) → `POST .../publish`.
+- Flow (v2, files-first): wizard uploads MusicXML + MIDI (**both mandatory** — same
+  notation project) → `POST /admin/studio/drafts` → sources → `piece-sources/staging/<jobId>/`
+  → **preflight lane** (`pieces-preflight` queue, worker thread) runs sanity/alignment/geometry
+  in ~5s and streams per-gate results into the row while the admin fills the sectioned form
+  (`PATCH .../metadata` autosave; `POST /admin/studio/checks` = duplicate findings per section)
+  → `POST .../submit` re-runs ALL gates on `pieces-jobs` incl. the ~20s WebKit render
+  (deliberate redundancy) → ready_for_review → human review → `POST .../publish`.
+- Slugs are server-derived from composer/title/subtitle (`api/src/slug.ts`) and never
+  client-writable; submit blocks slug collisions whose musical identity differs.
+- Rights is a required no-default choice; public_domain requires a provenance note.
+- Failed runs reopen ON THE SAME ROW (`POST .../reopen` → back to draft, re-preflights) —
+  one board row per piece; attempt history lives in audit_events.
+- Books are created with a MANDATORY cover (multipart `POST /admin/books`; sharp validates
+  portrait ~3:4 ≥1200×1600 → `books/<id>/cover.webp` + `cover_thumb.webp`, signed URLs in
+  `GET /admin/books`; `PUT /admin/books/:id/cover` replaces).
+- ⚠️ verovio: the default `verovio.toolkit()` auto-init is MAIN-THREAD-ONLY (fonts fail to
+  load on a worker thread → every load returns False). Always construct via
+  `worker/pieces/pipeline/vrv.py::make_toolkit()` (explicit resource path).
+- ⚠️ Deploys: a draining worker replica keeps its Service Bus links and steals queue
+  messages minutes after `containerapp update` reports the new revision running — after a
+  worker rollout, confirm the OLD replica is really gone before trusting queue behavior.
 - The four gates (worker `worker/pieces/`): 1 sanity (files parse, score non-empty);
   2 alignment (score_events from MIDI — 30ms cluster, vendored parse_score — or the deadpan
   XML-timemap route when no MIDI; the czerny golden reproduces 182/182 events);
