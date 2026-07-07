@@ -47,14 +47,31 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export interface AdminUser {
   id: string;
+  entraOid: string | null;
   email: string | null;
   displayName: string | null;
   isTeacher: boolean;
   isStudent: boolean;
   isAdmin: boolean;
   status: string;
+  referredBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuditEntry {
+  id: string;
+  action: string;
+  detail: Record<string, unknown>;
   createdAt: string;
 }
+
+export interface AdminUserDetail {
+  user: AdminUser;
+  recentAudit: AuditEntry[];
+}
+
+export type RolePatch = Partial<Pick<AdminUser, "isAdmin" | "isTeacher" | "isStudent">>;
 
 export interface AdminPiece {
   id: string;

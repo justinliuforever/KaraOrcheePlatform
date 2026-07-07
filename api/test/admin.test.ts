@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
+import { eq } from "drizzle-orm";
 import request from "supertest";
 import {
   generateKeyPair,
@@ -157,6 +158,74 @@ describe("admin pieces registry", () => {
       .get("/admin/pieces/nope")
       .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe("user detail + roles", () => {
+  it("returns user detail with an audit trail", async () => {
+    const [plain] = await db.orm.select().from(users).where(eq(users.entraOid, "plain-oid"));
+    const res = await request(app())
+      .get(`/admin/users/${plain.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.user.email).toBe("player@example.com");
+    expect(Array.isArray(res.body.recentAudit)).toBe(true);
+  });
+
+  it("404s an unknown user id", async () => {
+    const res = await request(app())
+      .get("/admin/users/00000000-0000-0000-0000-000000000000")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("patches roles and audits the change", async () => {
+    const [plain] = await db.orm.select().from(users).where(eq(users.entraOid, "plain-oid"));
+    const res = await request(app())
+      .patch(`/admin/users/${plain.id}/roles`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ isTeacher: true });
+    expect(res.status).toBe(200);
+    expect(res.body.isTeacher).toBe(true);
+
+    const detail = await request(app())
+      .get(`/admin/users/${plain.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(detail.body.recentAudit.some((e: { action: string }) => e.action === "user.set_roles")).toBe(true);
+  });
+
+  it("rejects an empty roles patch", async () => {
+    const [plain] = await db.orm.select().from(users).where(eq(users.entraOid, "plain-oid"));
+    const res = await request(app())
+      .patch(`/admin/users/${plain.id}/roles`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  it("blocks an admin from demoting themselves", async () => {
+    const [admin] = await db.orm.select().from(users).where(eq(users.entraOid, "admin-oid"));
+    const res = await request(app())
+      .patch(`/admin/users/${admin.id}/roles`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ isAdmin: false });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("cannot_demote_self");
+  });
+
+  it("allows promoting another user to admin", async () => {
+    const [plain] = await db.orm.select().from(users).where(eq(users.entraOid, "plain-oid"));
+    const res = await request(app())
+      .patch(`/admin/users/${plain.id}/roles`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ isAdmin: true });
+    expect(res.status).toBe(200);
+    expect(res.body.isAdmin).toBe(true);
+    // restore
+    await request(app())
+      .patch(`/admin/users/${plain.id}/roles`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ isAdmin: false });
   });
 });
 

@@ -2,12 +2,14 @@ import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { api, type AdminUser } from "../api";
 import { Badge, Card, ErrorNote, PageHeader, Spinner, Td, Th, statusTone } from "../components/ui";
+import UserPanel from "../components/UserPanel";
 
 const PAGE = 50;
 
 export default function UsersPage() {
   const [q, setQ] = useState("");
   const [offset, setOffset] = useState(0);
+  const [selected, setSelected] = useState<string | null>(null);
   const query = useQuery<{ items: AdminUser[]; total: number }, Error>({
     queryKey: ["users", q, offset],
     queryFn: () =>
@@ -48,7 +50,7 @@ export default function UsersPage() {
             </thead>
             <tbody>
               {query.data.items.map((u) => (
-                <tr key={u.id}>
+                <tr key={u.id} className="hover:bg-paper/60 cursor-pointer" onClick={() => setSelected(u.id)}>
                   <Td className="font-medium">{u.email ?? <span className="text-ink-faint">—</span>}</Td>
                   <Td>{u.displayName ?? <span className="text-ink-faint">—</span>}</Td>
                   <Td>
@@ -101,6 +103,7 @@ export default function UsersPage() {
           </button>
         </div>
       )}
+      {selected && <UserPanel userId={selected} onClose={() => setSelected(null)} />}
     </>
   );
 }

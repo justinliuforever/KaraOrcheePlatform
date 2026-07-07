@@ -5,7 +5,20 @@ import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireAdmin, audit } from "../admin";
-import { books, pieces, pieceVersions, users } from "../db/schema";
+import { auditEvents, books, pieces, pieceVersions, users } from "../db/schema";
+import { and } from "drizzle-orm";
+
+// Only explicit role flags are patchable here; identity/status changes get their
+// own endpoints when account-deletion (5.1.1(v)) lands in Phase B.
+const rolesSchema = z
+  .object({
+    isAdmin: z.boolean().optional(),
+    isTeacher: z.boolean().optional(),
+    isStudent: z.boolean().optional(),
+  })
+  .refine((v) => Object.values(v).some((x) => x !== undefined), {
+    message: "no role fields given",
+  });
 
 const bookSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9_]{2,63}$/, "lowercase slug"),
@@ -86,6 +99,60 @@ export function adminRouter(deps: Deps): Router {
           latestVersion: byPiece.get(piece.id)?.latest ?? null,
         })),
       });
+    }),
+  );
+
+  router.get(
+    "/admin/users/:id",
+    wrap(async (req, res) => {
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+      if (!user) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      // Admin actions ABOUT this user (role changes, future comps/disables) — not actions BY them.
+      const recentAudit = await db
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.subjectType, "user"), eq(auditEvents.subjectId, id)))
+        .orderBy(desc(auditEvents.createdAt))
+        .limit(20);
+      res.json({ user, recentAudit });
+    }),
+  );
+
+  router.patch(
+    "/admin/users/:id/roles",
+    wrap(async (req, res) => {
+      const parsed = rolesSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "invalid_roles", detail: parsed.error.issues });
+        return;
+      }
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [target] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+      if (!target) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      // An admin cannot remove their own admin bit — prevents locking the console.
+      if (parsed.data.isAdmin === false && target.id === req.adminUser!.id) {
+        res.status(409).json({ error: "cannot_demote_self" });
+        return;
+      }
+      const [updated] = await db
+        .update(users)
+        .set({ ...parsed.data, updatedAt: sql`now()` })
+        .where(eq(users.id, id))
+        .returning();
+      await audit(deps, req.adminUser!, "user.set_roles", { type: "user", id }, {
+        changes: parsed.data,
+        email: target.email,
+      });
+      res.json(updated);
     }),
   );
 
