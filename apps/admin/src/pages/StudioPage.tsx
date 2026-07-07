@@ -24,15 +24,16 @@ export function GateDots({ job }: { job: StudioJob }) {
   );
 }
 
-type Stage = "all" | "draft" | "verifying" | "review" | "published" | "failed";
+type Stage = "all" | "draft" | "verifying" | "review" | "published" | "failed" | "canceled";
 
 // The board filter IS the pipeline: Draft → Verifying → Review → Published, with
-// Failed as the off-ramp chip. Failed collects both wizard-check failures (drafts)
-// and full-run failures.
+// Failed and Canceled as off-ramp chips. The buckets are a strict PARTITION (a
+// check-failed draft counts as Failed, not Draft) so counts never double-count;
+// All = the union including canceled.
 function inStage(j: StudioJob, stage: Stage): boolean {
   switch (stage) {
     case "draft":
-      return j.status === "draft";
+      return j.status === "draft" && j.checkStatus !== "fail";
     case "verifying":
       return j.status === "queued" || j.status === "running";
     case "review":
@@ -41,6 +42,8 @@ function inStage(j: StudioJob, stage: Stage): boolean {
       return j.status === "published";
     case "failed":
       return j.status === "failed" || (j.status === "draft" && j.checkStatus === "fail");
+    case "canceled":
+      return j.status === "canceled";
     case "all":
       return true;
   }
@@ -63,6 +66,7 @@ function PipelineFilter({
     { key: "published", label: "Published" },
   ];
   const failedCount = count("failed");
+  const canceledCount = count("canceled");
   const chip = (key: Stage, label: string, extra = "") => {
     const active = stage === key;
     return (
@@ -71,8 +75,7 @@ function PipelineFilter({
         className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
           active ? "bg-brand-soft text-brand" : "text-ink-soft hover:bg-paper"
         } ${extra}`}
-        onClick={() => onStage(active ? "all" : key)}
-        title={active ? "Click again to show all" : undefined}
+        onClick={() => onStage(key)}
       >
         {label}
         <span className="ml-1.5 text-xs tabular-nums opacity-70">{count(key)}</span>
@@ -81,6 +84,8 @@ function PipelineFilter({
   };
   return (
     <div className="flex items-center gap-0.5">
+      {chip("all", "All")}
+      <span className="w-px h-5 bg-line mx-2.5" />
       {stages.map((s, i) => (
         <span key={s.key} className="flex items-center">
           {chip(s.key, s.label)}
@@ -93,13 +98,15 @@ function PipelineFilter({
           className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
             stage === "failed" ? "bg-red-50 text-bad" : "text-bad hover:bg-red-50"
           }`}
-          onClick={() => onStage(stage === "failed" ? "all" : "failed")}
+          onClick={() => onStage("failed")}
         >
           ✗ Failed<span className="ml-1.5 text-xs tabular-nums opacity-70">{failedCount}</span>
         </button>
       ) : (
         <span className="text-xs text-ink-faint px-2">no failures</span>
       )}
+      {canceledCount > 0 &&
+        chip("canceled", "Canceled", "opacity-60")}
     </div>
   );
 }

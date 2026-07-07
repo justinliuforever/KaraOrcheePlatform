@@ -75,7 +75,7 @@ function Shell() {
   }
 
   const nav = [
-    { to: "/studio", label: "Studio" },
+    { to: "/studio", label: "Pieces Studio" },
     { to: "/pieces", label: "Pieces" },
     { to: "/users", label: "Users" },
   ];
