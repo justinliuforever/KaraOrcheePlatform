@@ -5,6 +5,10 @@ export const API_BASE =
   import.meta.env.VITE_API_BASE ??
   "https://ca-app-api-dev.graymoss-40d67a2f.centralus.azurecontainerapps.io";
 
+export async function getToken(): Promise<string> {
+  return token();
+}
+
 async function token(): Promise<string> {
   const account = msal.getAllAccounts()[0];
   if (!account) throw new Error("not_signed_in");
@@ -83,4 +87,57 @@ export interface PieceVersionRow {
 export interface AdminPieceDetail extends Omit<AdminPiece, "bookTitle" | "versionCount" | "latestVersion"> {
   book: { id: string; title: string; rights: string } | null;
   versions: PieceVersionRow[];
+}
+
+export interface GateEntry {
+  status: "running" | "pass" | "fail";
+  metrics: Record<string, unknown>;
+  error?: string;
+}
+
+export interface StudioJob {
+  id: string;
+  pieceId: string;
+  status: "queued" | "running" | "ready_for_review" | "published" | "failed" | "canceled";
+  stage: string | null;
+  metadata: {
+    pieceId: string;
+    title: string;
+    composer: string;
+    subtitle: string;
+    difficulty: number | null;
+    tracking: string;
+    rights: string;
+    rightsNote: string;
+    book: { id: string; title?: string; index: number | null } | null;
+  };
+  sources: { kind: string; path: string; bytes: number; originalName: string }[];
+  gates: Record<string, GateEntry>;
+  artifacts: { role: string; variant?: string; path: string; bytes: number }[];
+  error: string | null;
+  publishedVersion: number | null;
+  createdAt: string;
+  updatedAt: string;
+  previews?: { role: string; variant?: string; url: string }[];
+}
+
+export interface AdminBook {
+  id: string;
+  title: string;
+  author: string | null;
+  rights: string;
+  pieceCount: number;
+}
+
+export async function createStudioJob(form: FormData): Promise<StudioJob> {
+  const res = await fetch(`${API_BASE}/admin/studio/jobs`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${await getToken()}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body.error ?? `http_${res.status}`);
+  }
+  return res.json();
 }

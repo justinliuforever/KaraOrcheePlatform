@@ -7,6 +7,9 @@ import { Spinner } from "./components/ui";
 import UsersPage from "./pages/UsersPage";
 import PiecesPage from "./pages/PiecesPage";
 import PieceDetailPage from "./pages/PieceDetailPage";
+import StudioPage from "./pages/StudioPage";
+import StudioNewPage from "./pages/StudioNewPage";
+import StudioJobPage from "./pages/StudioJobPage";
 
 export default function App() {
   const authed = useIsAuthenticated();
@@ -39,7 +42,11 @@ function Shell() {
   const account = instance.getAllAccounts()[0];
   const me = useQuery<AdminUser, Error>({
     queryKey: ["me"],
-    queryFn: () => api<AdminUser>("/admin/me"),
+    // Sync first so a first-ever sign-in has a users row an admin can then flag.
+    queryFn: async () => {
+      await api("/v1/users/sync", { method: "POST" }).catch(() => {});
+      return api<AdminUser>("/admin/me");
+    },
     retry: false,
   });
 
@@ -68,6 +75,7 @@ function Shell() {
   }
 
   const nav = [
+    { to: "/studio", label: "Studio" },
     { to: "/pieces", label: "Pieces" },
     { to: "/users", label: "Users" },
   ];
@@ -103,7 +111,10 @@ function Shell() {
       </aside>
       <main className="flex-1 min-w-0 px-8 py-6">
         <Routes>
-          <Route path="/" element={<Navigate to="/pieces" replace />} />
+          <Route path="/" element={<Navigate to="/studio" replace />} />
+          <Route path="/studio" element={<StudioPage />} />
+          <Route path="/studio/new" element={<StudioNewPage />} />
+          <Route path="/studio/:id" element={<StudioJobPage />} />
           <Route path="/pieces" element={<PiecesPage />} />
           <Route path="/pieces/:id" element={<PieceDetailPage />} />
           <Route path="/users" element={<UsersPage />} />

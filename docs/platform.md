@@ -64,10 +64,36 @@ karaorchee.com sender), `acrkaraorchee` (images), CIAM tenant (below).
 
 - `apps/admin` — Vite + React SPA, MSAL redirect flow, TanStack Query. Dev: `npm run dev`
   (localhost:5173; API base defaults to the dev container URL).
+- Hosted (dev): Azure Static Web Apps `swa-karaorchee-admin-dev` →
+  `https://delightful-tree-00c7c7110.7.azurestaticapps.net` (deploy: build then
+  `npx @azure/static-web-apps-cli deploy ./dist --deployment-token <az staticwebapp secrets list>`).
 - API surface: `/admin/*` on the same platform API, layered `requireAuth` → `requireAdmin`
   (403 unless `users.is_admin` and status active). Mutations write `audit_events`.
 - Browser origins are allowlisted via `ADMIN_ORIGINS` (comma-separated env on the container app);
   native clients send no Origin and are unaffected.
+- Granting a new admin: they sign in once (the console calls `/v1/users/sync`, creating their
+  users row, and shows "Not an admin account"), then flip `users.is_admin` in Postgres.
+
+## Pieces Studio
+
+- Flow: wizard upload (MusicXML required, reference MIDI recommended) → `POST /admin/studio/jobs`
+  (multipart; sources → `piece-sources/staging/<jobId>/`) → `pieces-jobs` Service Bus queue →
+  worker `ca-pieces-worker-dev` runs the four gates → artifacts →
+  `piece-bundles/staging/<jobId>/` → human review (engraving preview) → `POST .../publish`.
+- The four gates (worker `worker/pieces/`): 1 sanity (files parse, score non-empty);
+  2 alignment (score_events from MIDI — 30ms cluster, vendored parse_score — or the deadpan
+  XML-timemap route when no MIDI; the czerny golden reproduces 182/182 events);
+  3 geometry (vendored produce_staff: MEI freeze, 3 SVG variants, cursor anchors,
+  `staff_eligible` = median timeline residual < 12ms — fails the job if the MIDI and XML
+  disagree); 4 render (vendored verify_cursor: headless WebKit cursor-on-staff, the JS shim
+  is byte-identical to the app's — keep in sync).
+- Publish (API, admin-gated): rights must be public_domain|licensed; copies staging →
+  immutable `<pieceId>/v<N>/`; upserts books/pieces + inserts piece_versions in one
+  transaction; regenerates `catalog.json` FROM SQL (`api/src/catalog_build.ts` — SQL is the
+  catalog truth now); audits `piece.publish`.
+- The studio_jobs row is job-state truth; queue messages are only triggers (idempotent redelivery).
+- Worker image: `worker/pieces/Dockerfile` (python:3.12-slim + verovio + playwright webkit),
+  built via `az acr build`, deployed as always-on Container App with dburl/storagecs/sbcs secrets.
 
 ## Laws
 
