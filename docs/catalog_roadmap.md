@@ -83,9 +83,17 @@ piano-only** (AMT is piano-trained; expected, gated in UI by instrumentation).
   ⚠️ SF2 ONLY — AVAudioUnitSampler silently fails on SF3 (MuseScore_General "36MB" is SF3;
   real SF2 is 208MB). ⚠️ iOS: one sampler per instrument on a shared engine; watch fd
   exhaustion (error -42) and the ~128-voice drop cap with piano+solo stacked.
-- **Per-family synth verdict**: winds = good; solo strings = acceptable ONLY with a real
-  solo patch (GM section-strings fail); **voice = synth impossible** (no lyric singing —
-  cut from instrument beta or ship display-only with piano-reduction playback). Verovio
+- **Beta instruments (founder-locked 2026-07-08): violin + guitar. Voice = CUT** (no lyric
+  synthesis exists; revisit post-beta via reference_audio only).
+- **Guitar first, violin second (repertoire-driven sequencing)**: classical guitar repertoire
+  is almost entirely single-part (self-accompanying, plucked = decaying envelope like piano —
+  GM guitar patches suffice, NO sustain problem) → fully covered by step 1. Violin repertoire
+  is overwhelmingly solo+piano-accompaniment → realistically needs step 2 (part selection).
+  Guitar notes: written an octave above sounding (playback safe — MIDI is sounding pitch;
+  validate cursor correspondence once); TAB rendering = future product decision (classical
+  pedagogy uses standard notation; Verovio can engrave TAB if ever needed).
+- **Per-family synth verdict**: winds = good; guitar/plucked = good; solo strings = acceptable
+  ONLY with a real solo patch (GM section-strings fail); **voice = synth impossible**. Verovio
   renders lyrics well (verified on our pinned 6.2.1; check WKWebView fonts for elision glyph).
 - **Per-piece `reference_audio` escape hatch**: files model gains an optional audio role —
   app plays real (professionally produced) audio when present, synthesizes otherwise.
