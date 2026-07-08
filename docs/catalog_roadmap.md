@@ -53,15 +53,28 @@ tolerates the change via the app's tolerant decoding).
 
 ## Locked conventions (violations are the only expensive mistakes)
 
-1. **Slug grammar**: work `{composer}_{catalogue}` (mozart_k330) · movement `{work}_mvt{n}` ·
-   book number `{book}_{n}` · arrangement variants get a suffix (`_l2`, `_duet`) — the
-   canonical piece keeps the clean slug forever.
+1. **Slug naming**: hand-curated ids follow the grammar work `{composer}_{catalogue}`
+   (mozart_k330) · movement `{work}_mvt{n}` · book number `{book}_{n}` · variants suffixed.
+   **Studio-derived slugs stay title-derived (composer+title+subtitle)** — adversarial
+   review 2026-07-08 killed work-derived slugs (collision-guard deadlock: subtitle no longer
+   feeds the slug so the 409 remedy fails; work_index is legitimately non-unique; post-publish
+   index fixes would make slugs lie). Mixed styles are permanently fine because of #5.
+   slug.ts must preserve digit-bearing tokens through the token caps (Hob. XVI:48 must not
+   truncate to XVI) and fold in the work's catalogue tokens when attached.
 2. **IDs never rename** — deprecate-and-add only. piece.id is simultaneously the progress
    key, blob prefix, versions FK, and fielded catalog id.
 3. **Progress keys on piece.id alone** — containers are pure navigation; a piece in two
    books has ONE progress record.
-4. **Composer display strings house-consistent from now** ("Frédéric Chopin", "J. S. Bach")
-   — makes the eventual composers-table backfill a clean group-by.
+4. **Composer display strings house-consistent from now** ("Frédéric Chopin", "J. S. Bach").
+   When work_id is set, the app's group header renders EXCLUSIVELY from the works[] entry;
+   piece.title/composer serve standalone display + search. checks warns on piece-vs-work
+   composer mismatch.
+5. **Slug structure is never parsed** — no code may derive meaning from an id. IDs are
+   opaque keys; all semantics live in columns.
+6. **work_index is a musical position, NOT a unique key** — arrangements legitimately share
+   (work_id, work_index). UIs group by (work_index, instrumentation, arrangement); aggregate
+   progress counts DISTINCT work_index per instrument. Collapse groups by LEAF work;
+   parent works are shelf/breadcrumb only.
 
 ## Wizard metadata (locked)
 
@@ -159,6 +172,78 @@ piano-only** (AMT is piano-trained; expected, gated in UI by instrumentation).
   cleanup for orchestral scores, and wiring the second event stream into app playback.
   ⚠️ Verovio defaults to 120 BPM when XML carries no tempo (none of our library files do) —
   MIDI and XML tempi must agree for the gate; today they do by construction.
+
+## Pre-lock adversarial review — BINDING amendments (2026-07-08, two Fable-5 attack lanes + synthesis)
+
+Verdict: **entity model LOCKED — zero structural redos found across nine future-feature
+families and fourteen maintenance attacks.** The recurring lesson: *the schema is ahead of
+the catalog — future features die in catalog_build.ts, not Postgres.* Treat the catalog
+emit shape as a versioned public API.
+
+**Design decisions locked by the review:**
+- `instrumentation` shape = **`{solo: "violin", parts: ["violin","piano"]}`** — one flat
+  string cannot serve both profile filtering and part display.
+- **`soundfonts[]` joins the catalog contract** {instrument, url, bytes, sha256, version} +
+  download-completeness rule: a piece download is complete only with its required soundfont
+  (else: violin piece downloaded → airplane mode → silence). SF2 blobs are immutable
+  versioned names (vsco2ce_violin_v1.sf2); mapping pinned in a manifest; never swapped
+  in place (would invalidate ear-gates under users' feet).
+- **Capability gating NOW**: /v1/catalog + /v1/pieces/:id/download filter server-side to
+  piano/null instrumentation; instrument-aware app builds opt in explicitly (?caps= or /v2).
+  Proven: the shipped decoder ignores catalog_version entirely — the ONLY lever over fielded
+  apps is not sending them rows they'd misrender (piano AMT running on guitar audio).
+  The NEW decoder must actually enforce a capability field to gate the next fleet.
+- **Reviewed = published invariant**: solo-part choice is metadata that changes artifacts →
+  changing it resets gates/artifacts and re-runs preflight (same path as file replacement);
+  a part-selection stamp in gate metrics is asserted at submit AND publish; publish copies
+  artifacts by ROLE ALLOWLIST (preview audio must never ride into the immutable bundle);
+  the chosen part persists on the pieces row so pinned-draft prefill keeps it.
+- **reference_audio is bundle-versioned, no in-place replacement EVER** (immutability law +
+  updateStalePieces only reacts to bundle_version + stale sha256 would brick fresh
+  downloads). Cheap flow: pinned draft reusing previous sources + new audio.
+- **Works hygiene**: catalogue normalized (K. 330→k330) for dup-check AND slug; FK RESTRICT
+  on work delete with pieces; **works[] emitted ONLY for works referenced by published
+  pieces (+parent chain)** — no work archive state exists; piece↔work reassignment guards
+  (exists, soft dup warn, rebuild, audit, never re-derive slug); works edits trigger catalog
+  rebuild + audit like pieces. Empty works surface as "0 pieces", never auto-GC'd.
+- **Dup-check spec at (work, index)**: same instrumentation + no arrangement marker → warn
+  probable duplicate; different instrumentation → info "arrangement?"; archived match →
+  hint restore. Include archived pieces in the check.
+- **One open draft per piece**: POST /drafts?piece=X 409s when a non-terminal job exists.
+- **Facts encodings locked**: key = {fifths, mode} (not display strings), tempo_source =
+  "xml"|"default" (120bpm-default durations are approximate — flag in filters), tempo_text
+  ("Allegro con brio"). Every catalogued piece gets a work row — 1:1 works are normal.
+- **works.sort_index scope** = admin-maintained ordering within composer; app uses a
+  numeric-aware catalogue comparator as fallback.
+- **Arrangement trigger** (pre-agreed like book_memberships): the first same-instrument
+  variant upload activates arrangement_of + arrangement_kind (controlled vocab: level:N,
+  duet, reduction, excerpt) + catalog emit.
+- **Emit-layer additions with studio v3**: tags (namespaced vocab: genre:etude, mood:calm,
+  use:competition, use:student — Library gets a tags editor), display jsonb (localization:
+  title_zh keys; display jsonb added to works+books), thumbnail_url, first_published_at
+  (recently-added), books[] {id,title,author,cover_url,sort_index} (bookshelf needs covers
+  IN the catalog), work_type = structural only (genre lives in tags).
+- **Catalog wire discipline**: minify (drop pretty-print), gzip at upload
+  (content-encoding), app sends If-None-Match. Escape path at ~5k pieces: split files[]
+  into per-piece manifests (bundle_version is the cache key) — non-breaking via tolerant
+  decode.
+- **Era/composer sorting**: era + sort_name + years live on the future composers table
+  (the wizard's no-birth/death rule is about DATA ENTRY — the composers table fills years
+  from a lookup, not from Crystal). Interim: era: namespaced tag allowed.
+- **Featured/popular**: featured = editorial flag/collection (additive); popularity is
+  time-varying and must NEVER live in catalog.json (rebuilt only on publish) — sidecar
+  popularity.json on a schedule, or defer.
+- **Takedown-vs-archive client semantics**: archive = keep downloaded copy playable;
+  takedown (rights) = hide + disable playback. App snapshots piece metadata at download.
+- **Backfill plan hardening**: czerny gets NO work (method book only); raw-SQL backfill must
+  end with an explicit rebuildCatalog invocation; note the works/pieces id namespace
+  coexistence (work bach_bwv846 vs piece bach_bwv_846 — namespaced tables, documented);
+  **retire tools/publisher/backfill_sql.py** (catalog→SQL direction now reverts Library
+  edits — loaded footgun).
+- **Preview audio ops**: encode Opus/MP3 (~64kbps; WAV would be ~170MB per 17-min movement),
+  add the encoder to the worker image, and BUILD the staging sweeper before preview ships.
+- Minor (documented): rebuildCatalog has no concurrency lease (single-admin risk accepted);
+  gates jsonb keys are a worker↔SPA API — keep stable, SPA tolerates absence.
 
 ## Never build (research-flagged over-engineering)
 
