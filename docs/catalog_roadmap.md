@@ -24,16 +24,27 @@ prelude and fugue = two pieces.)
 
 ```
 composers   id slug ("chopin") · name · sort_name · era            [ADDITIVE-LATER]
-works       id slug ("mozart_k330") · title · composer_id ·
-            catalogue ("K. 330") · work_type · parent_work_id      [ADDITIVE-LATER]
-pieces      + work_id, work_index      (movement membership)       [ADDITIVE-LATER]
+works       id slug ("mozart_k330") · title · composer string ·
+            catalogue ("K. 330") · work_type · parent_work_id      [BUILD-NOW — founder
+            2026-07-08: work membership is HUMAN knowledge captured at upload; deferring
+            = mass manual backfill after hundreds of uploads. Upload flow lands complete.]
+pieces      + work_id, work_index      (movement membership)       [BUILD-NOW, same reason]
             + arrangement_of, arrangement_kind                     [ADDITIVE-LATER]
-            + instrumentation                                      [BUILD at multi-instrument beta]
-            + facts jsonb (auto-extracted key/time/tempo/duration) [with XML extraction]
+            + instrumentation                                      [BUILD-NOW w/ studio v3]
+            + facts jsonb (auto-extracted key/time/tempo/duration) [BUILD-NOW w/ studio v3]
 books       unchanged — pedagogical container, already correct
 piece_versions  unchanged — immutable bundles; this IS the FRBR
             manifestation layer collapsed; never add layers below it
 ```
+
+**Studio v3 (upload lands complete — founder-locked scope)**: wizard = files-first w/ XML
+facts card (read-only ground truth) + part detection → solo-part question (multi-part only,
+system pre-selects, human confirms; drives display/timeline/audio split) → **preview audio
+rendered AT PREFLIGHT** (FluidSynth + the SAME cloud SF2 the app will use + same
+score_events — audible in the wizard while filling the form, so the admin can judge whether
+to add a produced reference_audio override; multi-part renders after the solo choice) →
+piece info (instrument dropdown, prefilled titles, works/books grouping, rights) → submit →
+full gates (+ audio gate when reference audio present) → review (listen + look) → publish.
 
 work-membership and book-membership are ORTHOGONAL parallel fields (a movement can be in
 K.330 AND in an exam book). Books stay single-FK until the first cross-work exam
