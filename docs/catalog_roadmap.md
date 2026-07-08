@@ -99,10 +99,20 @@ piano-only** (AMT is piano-trained; expected, gated in UI by instrumentation).
   beta is greenlit. Keyboard UI hidden for non-piano. Transposing instruments (clarinet/horn):
   playback safe by construction (MIDI = sounding pitch); validate cursor correspondence on
   the first such piece.
-- **Effort map (codebase audit)**: single-part pieces = ZERO pipeline changes + small app
-  edits (synth program param, catalog field, keyboard/follow gating) + soundfont asset (M).
-  Solo-vs-accompaniment part selection = the real work item (estimate being refined by an
-  empirical spike; see below).
+- **Effort map (codebase audit + empirical spike)**: single-part pieces = ZERO pipeline
+  changes + small app edits (synth program param, catalog field, keyboard/follow gating) +
+  soundfont asset (M). **Solo-vs-accompaniment part selection = M, not L** (spike-verified):
+  Verovio has NO native part filter, but MusicXML pre-surgery works — remove the
+  accompaniment score-part + part block (~20 lines stdlib xml.etree, zero new deps), feed
+  reduced XML to the unchanged pipeline; verified on synthetic violin+piano AND the real
+  2-part czerny file (measures preserved, valid engraving+timemap). **Timing-neutral:
+  residual 0.000ms** — the <12ms gate re-runs unchanged. MIDI instrument separation is a
+  one-line pretty_midi filter; the accompaniment event stream ("show solo, play both") is
+  a free by-product of the same file. What keeps it M: solo-part identification UX (real
+  files have unnamed parts — let the Studio uploader pick the solo part), part-group
+  cleanup for orchestral scores, and wiring the second event stream into app playback.
+  ⚠️ Verovio defaults to 120 BPM when XML carries no tempo (none of our library files do) —
+  MIDI and XML tempi must agree for the gate; today they do by construction.
 
 ## Never build (research-flagged over-engineering)
 
