@@ -95,9 +95,20 @@ piano-only** (AMT is piano-trained; expected, gated in UI by instrumentation).
 - **Per-family synth verdict**: winds = good; guitar/plucked = good; solo strings = acceptable
   ONLY with a real solo patch (GM section-strings fail); **voice = synth impossible**. Verovio
   renders lyrics well (verified on our pinned 6.2.1; check WKWebView fonts for elision glyph).
-- **Per-piece `reference_audio` escape hatch**: files model gains an optional audio role —
-  app plays real (professionally produced) audio when present, synthesizes otherwise.
-  Default = cheap & automatic; override = quality where it matters; the ONLY path for voice.
+- **Per-piece `reference_audio` escape hatch — two tiers** (sync = an audio↔score time map;
+  synthesis gets it by construction, real audio needs it explicitly):
+  - **Tier 1 (beta)**: audio PRODUCED AT the notated score tempo (studio renders from
+    MIDI/DAW are exactly this) → linear time map → tap-to-seek, cursor sync, and seek-from-
+    measure all work unchanged. A lightweight gate verifies tempo conformity at upload.
+  - **Tier 2 (post-beta)**: human performance recordings with rubato → offline audio↔score
+    alignment computed AND VERIFIED in the pipeline as a gate artifact (history lesson:
+    hand-made alignment.json shipped broken once — never trust, always verify). Toolchain
+    research pending. The only path for voice content.
+- **Concertos need NO new upload form**: learning-context concertos = piano-reduction
+  accompaniment editions (what exams/lessons actually use) = a standard two-part upload
+  (step 2 covers it). Real orchestral backing = the mov2 stems model — production-grade
+  manual path via stems + reference_audio, not a wizard flow. NEVER "upload full orchestral
+  score → synthesize the orchestra" (quality fails; no one does this).
 - **Display convention (Music-Minus-One, industry-standard)**: solo part alone on screen;
   audio toggles full-mix ↔ accompaniment-only; "show piano part" = secondary option.
 - **Catalog axis**: instrument = profile-level default filter (not a hard wall); same title
