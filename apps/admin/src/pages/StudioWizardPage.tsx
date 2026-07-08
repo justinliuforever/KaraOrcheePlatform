@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   api,
   apiForm,
@@ -198,6 +198,10 @@ export default function StudioWizardPage() {
 
 function FilesGate() {
   const nav = useNavigate();
+  const [params] = useSearchParams();
+  // ?piece=<id> = "upload new version": the draft is pinned server-side to that piece's
+  // permanent id and prefilled with its current metadata.
+  const forPiece = params.get("piece");
   const [musicxml, setMusicxml] = useState<File | null>(null);
   const [midi, setMidi] = useState<File | null>(null);
 
@@ -206,7 +210,10 @@ function FilesGate() {
       const form = new FormData();
       form.set("musicxml", musicxml!);
       form.set("midi", midi!);
-      return apiForm<StudioJob>("/admin/studio/drafts", form);
+      return apiForm<StudioJob>(
+        `/admin/studio/drafts${forPiece ? `?piece=${encodeURIComponent(forPiece)}` : ""}`,
+        form,
+      );
     },
     onSuccess: (job) => nav(`/studio/${job.id}/edit`, { replace: true }),
   });
@@ -219,7 +226,15 @@ function FilesGate() {
         </Link>
       </div>
       <div className="max-w-xl">
-        <h1 className="text-xl font-semibold tracking-tight mb-1">New piece</h1>
+        <h1 className="text-xl font-semibold tracking-tight mb-1">
+          {forPiece ? "New version" : "New piece"}
+        </h1>
+        {forPiece && (
+          <p className="text-xs rounded-lg border border-indigo-200 bg-brand-soft text-brand px-3 py-2 mb-3">
+            Uploading new score files for <span className="font-mono">{forPiece}</span> — metadata
+            carries over, and publishing creates its next version.
+          </p>
+        )}
         <p className="text-sm text-ink-soft mb-6">
           Export <strong>both files from the same project</strong> in your notation software
           (MuseScore / Sibelius / Finale / Dorico). The checks start the moment you upload — you fill

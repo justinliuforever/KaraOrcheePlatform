@@ -75,7 +75,7 @@ export default function StudioJobPage() {
       setConfirmPublish(false);
       if (action === "reopen") nav(`/studio/${id}/edit`);
       // Publish lands on the piece's registry page — the published state's real home.
-      if (action === "publish") nav(`/pieces/${res.pieceId}`);
+      if (action === "publish") nav(`/pieces?sel=${res.pieceId}`);
     },
   });
 
@@ -249,7 +249,7 @@ export default function StudioJobPage() {
               <span> — live in the app catalog.</span>
             )}
           </p>
-          <Link className="text-sm text-brand font-medium hover:underline" to={`/pieces/${job.pieceId}`}>
+          <Link className="text-sm text-brand font-medium hover:underline" to={`/pieces?sel=${job.pieceId}`}>
             View in Pieces →
           </Link>
         </Card>

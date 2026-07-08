@@ -110,7 +110,15 @@ export default function PieceDetailPage() {
                 <tr key={i}>
                   <Td className="font-medium">{f.role}</Td>
                   <Td className="text-ink-soft">{f.variant ?? "—"}</Td>
-                  <Td className="text-ink-soft font-mono text-xs">{f.path}</Td>
+                  <Td className="text-ink-soft font-mono text-xs">
+                    {f.url ? (
+                      <a className="text-brand hover:underline" href={f.url} target="_blank" rel="noreferrer">
+                        {f.path}
+                      </a>
+                    ) : (
+                      f.path
+                    )}
+                  </Td>
                   <Td className="text-right tabular-nums text-ink-soft">{formatBytes(f.bytes)}</Td>
                 </tr>
               ))}

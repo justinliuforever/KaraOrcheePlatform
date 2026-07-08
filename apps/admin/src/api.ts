@@ -97,14 +97,49 @@ export interface PieceVersionRow {
   pieceId: string;
   version: number;
   engineSha: string | null;
-  files: { role: string; variant?: string; path: string; bytes?: number; sha256?: string }[];
+  files: { role: string; variant?: string; path: string; bytes?: number; sha256?: string; url?: string | null }[];
   publishedAt: string;
 }
 
-export interface AdminPieceDetail extends Omit<AdminPiece, "bookTitle" | "versionCount" | "latestVersion"> {
-  book: { id: string; title: string; rights: string } | null;
-  versions: PieceVersionRow[];
+export interface PieceSource {
+  path: string;
+  bytes: number;
+  url: string | null;
+  kind?: string;
+  originalName?: string;
+  origin: "studio_upload" | "archive";
 }
+
+export interface PieceBuildRow {
+  id: string;
+  status: string;
+  checkStatus: string;
+  publishedVersion: number | null;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminPieceDetail extends Omit<AdminPiece, "bookTitle" | "versionCount" | "latestVersion"> {
+  book: (AdminBook & { coverUrl: string | null; coverThumbUrl: string | null }) | null;
+  versions: PieceVersionRow[];
+  sources: PieceSource[];
+  jobs: PieceBuildRow[];
+  recentAudit: AuditEntry[];
+}
+
+export type PieceEdit = Partial<{
+  title: string;
+  composer: string;
+  subtitle: string;
+  difficulty: number | null;
+  tracking: "validated" | "experimental";
+  bookId: string | null;
+  bookIndex: number | null;
+  rights: "public_domain" | "licensed" | "unknown" | "blocked";
+  rightsNote: string | null;
+  expectedUpdatedAt: string;
+}>;
 
 export interface GateEntry {
   status: "running" | "pass" | "fail";

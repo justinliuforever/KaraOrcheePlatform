@@ -402,9 +402,21 @@ export function adminRouter(deps: Deps): Router {
     }),
   );
 
+  // Plain archive, or a one-step TAKEDOWN when a rights concern is given: removed
+  // from the app catalog + rights flagged + reason recorded, atomically.
   router.post(
     "/admin/pieces/:id/archive",
     wrap(async (req, res) => {
+      const body = z
+        .object({
+          rights: z.enum(["unknown", "blocked"]).optional(),
+          rightsNote: z.string().max(2000).optional(),
+        })
+        .safeParse(req.body ?? {});
+      if (!body.success) {
+        res.status(400).json({ error: "invalid_archive", detail: body.error.issues });
+        return;
+      }
       const db = deps.db!.orm;
       const id = String(req.params.id);
       const [piece] = await db.select().from(pieces).where(eq(pieces.id, id)).limit(1);
@@ -418,11 +430,18 @@ export function adminRouter(deps: Deps): Router {
       }
       const [updated] = await db
         .update(pieces)
-        .set({ status: "archived", updatedAt: sql`now()` })
+        .set({
+          status: "archived",
+          ...(body.data.rights ? { rights: body.data.rights } : {}),
+          ...(body.data.rightsNote !== undefined ? { rightsNote: body.data.rightsNote } : {}),
+          updatedAt: sql`now()`,
+        })
         .where(eq(pieces.id, id))
         .returning();
       if (deps.studio) await rebuildCatalog(db, deps.studio);
-      await audit(deps, req.adminUser!, "piece.archive", { type: "piece", id });
+      await audit(deps, req.adminUser!, body.data.rights ? "piece.takedown" : "piece.archive", { type: "piece", id }, {
+        ...(body.data.rights ? { rights: body.data.rights, note: body.data.rightsNote } : {}),
+      });
       res.json(updated);
     }),
   );
