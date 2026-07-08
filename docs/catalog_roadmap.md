@@ -64,22 +64,45 @@ tolerates the change via the app's tolerant decoding).
 - **Catalogue No.** (Op./BWV/K./Hob./D.) — admin-entered optional field.
 - No birth/death years.
 
-## Multi-instrument (beta direction agreed; specifics pending research)
+## Multi-instrument (beta direction agreed; research-backed specifics)
 
 Scope: sheet display + reference playback + Notes for non-piano; **Live/following stays
 piano-only** (AMT is piano-trained; expected, gated in UI by instrumentation).
 
 - **Playback stays on-device synthesis from score_events** — preserves tiny bundles,
   construction-aligned audio/cursor, arbitrary tempo/measure start, fully automated pipeline.
+  Every serious classical competitor (Tomplay, Metronaut) ships RECORDED human audio — synth
+  is our deliberate architectural trade (cursor-lock + variable speed + automation); run the
+  founder ear-gate per instrument before committing catalog content.
 - **Instrument soundfonts are cloud-delivered per instrument** (soundfont/ container +
-  existing download infra; fetched on first download of a piece needing them). Piano SF2
-  stays bundled.
+  existing download infra). Piano SF2 stays bundled.
+- **Soundfont selection (license-verified)**: primary = **VSCO-2 Community Edition (CC0)** —
+  real sampled SOLO violin + solo winds; extract per-instrument SF2 via Polyphone (~10-30MB
+  each). Fallback/gap-filler = **GeneralUser GS v2.0.3** (permissive since 2024-10; <30MB
+  full GM — covers cello/viola, which VSCO-2 CE lacks as solo patches). FluidR3 (MIT) ok.
+  ⚠️ SF2 ONLY — AVAudioUnitSampler silently fails on SF3 (MuseScore_General "36MB" is SF3;
+  real SF2 is 208MB). ⚠️ iOS: one sampler per instrument on a shared engine; watch fd
+  exhaustion (error -42) and the ~128-voice drop cap with piano+solo stacked.
+- **Per-family synth verdict**: winds = good; solo strings = acceptable ONLY with a real
+  solo patch (GM section-strings fail); **voice = synth impossible** (no lyric singing —
+  cut from instrument beta or ship display-only with piano-reduction playback). Verovio
+  renders lyrics well (verified on our pinned 6.2.1; check WKWebView fonts for elision glyph).
 - **Per-piece `reference_audio` escape hatch**: files model gains an optional audio role —
   app plays real (professionally produced) audio when present, synthesizes otherwise.
-  Default = cheap & automatic; override = quality where it matters. Zero schema change.
+  Default = cheap & automatic; override = quality where it matters; the ONLY path for voice.
+- **Display convention (Music-Minus-One, industry-standard)**: solo part alone on screen;
+  audio toggles full-mix ↔ accompaniment-only; "show piano part" = secondary option.
+- **Catalog axis**: instrument = profile-level default filter (not a hard wall); same title
+  on multiple instruments = separate arrangement-variant pieces sharing a work id — exactly
+  our arrangement model, zero new concepts.
 - `instrumentation` column + wizard dropdown become BUILD-NOW the moment multi-instrument
-  beta is greenlit (feature consumes the field).
-- Keyboard UI hidden for non-piano pieces.
+  beta is greenlit. Keyboard UI hidden for non-piano. Transposing instruments (clarinet/horn):
+  playback safe by construction (MIDI = sounding pitch); validate cursor correspondence on
+  the first such piece.
+- **Effort map (codebase audit)**: single-part pieces = ZERO pipeline changes + small app
+  edits (synth program param, catalog field, keyboard/follow gating) + soundfont asset (M).
+  Solo-vs-accompaniment part selection = the real work item (estimate being refined by an
+  empirical spike; see below).
 
 ## Never build (research-flagged over-engineering)
 
