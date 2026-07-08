@@ -102,8 +102,24 @@ piano-only** (AMT is piano-trained; expected, gated in UI by instrumentation).
     measure all work unchanged. A lightweight gate verifies tempo conformity at upload.
   - **Tier 2 (post-beta)**: human performance recordings with rubato → offline audio↔score
     alignment computed AND VERIFIED in the pipeline as a gate artifact (history lesson:
-    hand-made alignment.json shipped broken once — never trust, always verify). Toolchain
-    research pending. The only path for voice content.
+    hand-made alignment.json shipped broken once — never trust, always verify). The only
+    path for voice content.
+  - **Alignment toolchain (research-locked)**: **Sync Toolbox** (MIT, Müller/AudioLabs;
+    chroma CENS + DLNCO onsets + MrMsDTW) — instrument-agnostic, batteries-included; score
+    side parsed via partitura. NOT Matchmaker (online+piano-only, less accurate), NOT
+    neural/AMT-feature aligners (piano-centric, heavy — v1 over-engineering), NOT raw
+    librosa DTW (rebuilds what synctoolbox ships).
+  - **Verification gate (both tiers share it)**: primary = **onset-agreement** — map score
+    onsets through the alignment into audio time, require ≥90% within 100ms of a detected
+    audio onset (75-90% = human review; <75% fail) + no 5s window below 60% (catches
+    locally-broken maps). Secondary: DTW path cost (threshold from calibration data, not
+    invented), stall/jump slope checks, head/tail coverage. Tier 1 gate = duration-ratio
+    (|audio/notated − 1| ≤ 2-3%) + the same onset-agreement under a linear map.
+  - **Time-map format**: piecewise-linear breakpoints (per score onset or ~30ms Douglas-
+    Peucker), linear interpolation at 60fps, strictly monotonic by construction; Tier 1 =
+    the same schema with two breakpoints. Mixed audio (solo+accompaniment) aligns against
+    the FULL-score timeline — display stays solo; onset gate counts all parts' onsets.
+  - **Effort**: Tier 1 = S (days), Tier 2 = M (1-2 weeks on existing worker+gates infra).
 - **Concertos need NO new upload form**: learning-context concertos = piano-reduction
   accompaniment editions (what exams/lessons actually use) = a standard two-part upload
   (step 2 covers it). Real orchestral backing = the mov2 stems model — production-grade
