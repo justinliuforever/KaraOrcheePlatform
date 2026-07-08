@@ -133,7 +133,9 @@ export function studioRouter(deps: Deps): Router {
   }
 
   // Step-1 entry point: files only. Metadata arrives later via PATCH while the
-  // preflight gates already run.
+  // preflight gates already run. ?piece=<id> PINS the draft to an existing piece
+  // ("upload new version"): identity is carried by the immutable id, never re-derived
+  // from title strings — renaming a piece can't break its version chain.
   router.post(
     "/admin/studio/drafts",
     upload.fields([
@@ -147,6 +149,30 @@ export function studioRouter(deps: Deps): Router {
       }
       const db = deps.db!.orm;
       const jobId = randomUUID();
+
+      let pieceId = `draft_${jobId.slice(0, 8)}`;
+      let metadata: Record<string, unknown> = {};
+      const pin = typeof req.query.piece === "string" ? req.query.piece : null;
+      if (pin) {
+        const [piece] = await db.select().from(pieces).where(eq(pieces.id, pin)).limit(1);
+        if (!piece) {
+          res.status(404).json({ error: "piece_not_found" });
+          return;
+        }
+        pieceId = piece.id;
+        metadata = {
+          pinnedPieceId: piece.id,
+          title: piece.title,
+          composer: piece.composer,
+          subtitle: piece.subtitle,
+          difficulty: piece.difficulty,
+          tracking: piece.tracking,
+          rights: piece.rights,
+          rightsNote: piece.rightsNote ?? "",
+          book: piece.bookId ? { id: piece.bookId, index: piece.bookIndex } : null,
+        };
+      }
+
       const uploaded = await uploadSources(
         jobId,
         req.files as Record<string, Express.Multer.File[]> | undefined,
@@ -160,17 +186,19 @@ export function studioRouter(deps: Deps): Router {
         .insert(studioJobs)
         .values({
           id: jobId,
-          pieceId: `draft_${jobId.slice(0, 8)}`,
+          pieceId,
           status: "draft",
           checkStatus: "pending",
-          metadata: {},
+          metadata,
           sources: uploaded,
           createdBy: req.adminUser!.id,
         })
         .returning();
 
       await deps.piecesQueue.sendPreflight({ jobId });
-      await audit(deps, req.adminUser!, "studio.draft.create", { type: "studio_job", id: jobId });
+      await audit(deps, req.adminUser!, "studio.draft.create", { type: "studio_job", id: jobId }, {
+        ...(pin ? { newVersionOf: pin } : {}),
+      });
       res.status(201).json(job);
     }),
   );
@@ -290,7 +318,13 @@ export function studioRouter(deps: Deps): Router {
       const title = typeof merged.title === "string" ? merged.title : "";
       const composer = typeof merged.composer === "string" ? merged.composer : "";
       const subtitle = typeof merged.subtitle === "string" ? merged.subtitle : "";
-      const pieceId = title && composer ? pieceSlug(composer, title, subtitle) : job.pieceId;
+      // A pinned draft keeps its piece id no matter how the display fields change.
+      const pinnedId = (merged as Record<string, unknown>).pinnedPieceId;
+      const pieceId = pinnedId
+        ? String(pinnedId)
+        : title && composer
+          ? pieceSlug(composer, title, subtitle)
+          : job.pieceId;
 
       const [updated] = await db
         .update(studioJobs)
@@ -404,22 +438,27 @@ export function studioRouter(deps: Deps): Router {
         res.status(400).json({ error: "metadata_incomplete", detail: meta.success ? [] : meta.error.issues });
         return;
       }
-      const pieceId = pieceSlug(meta.data.composer, meta.data.title, meta.data.subtitle);
-      // Slug collision guard: same id must mean the same musical identity. A version
-      // bump (re-upload of the same piece) passes; a different piece that happens to
-      // derive the same slug must NOT silently overwrite it at publish.
-      const [existing] = await db.select().from(pieces).where(eq(pieces.id, pieceId)).limit(1);
-      if (
-        existing &&
-        (existing.title.toLowerCase() !== meta.data.title.toLowerCase() ||
-          existing.composer.toLowerCase() !== meta.data.composer.toLowerCase() ||
-          existing.subtitle.toLowerCase() !== meta.data.subtitle.toLowerCase())
-      ) {
-        res.status(409).json({
-          error: "slug_collision",
-          message: `The derived id "${pieceId}" belongs to "${existing.title}${existing.subtitle ? ` · ${existing.subtitle}` : ""}" — adjust the subtitle so the two pieces are distinguishable.`,
-        });
-        return;
+      const pinned = (job.metadata as Record<string, unknown>).pinnedPieceId;
+      const pieceId = pinned
+        ? String(pinned)
+        : pieceSlug(meta.data.composer, meta.data.title, meta.data.subtitle);
+      // Slug collision guard (unpinned drafts only): same id must mean the same
+      // musical identity. A pinned draft IS an intentional version bump of its piece,
+      // whatever the display fields now say.
+      if (!pinned) {
+        const [existing] = await db.select().from(pieces).where(eq(pieces.id, pieceId)).limit(1);
+        if (
+          existing &&
+          (existing.title.toLowerCase() !== meta.data.title.toLowerCase() ||
+            existing.composer.toLowerCase() !== meta.data.composer.toLowerCase() ||
+            existing.subtitle.toLowerCase() !== meta.data.subtitle.toLowerCase())
+        ) {
+          res.status(409).json({
+            error: "slug_collision",
+            message: `The derived id "${pieceId}" belongs to "${existing.title}${existing.subtitle ? ` · ${existing.subtitle}` : ""}" — adjust the subtitle so the two pieces are distinguishable.`,
+          });
+          return;
+        }
       }
       const [updated] = await db
         .update(studioJobs)

@@ -34,6 +34,8 @@ export interface StudioStore {
   putBundleJson(path: string, body: unknown): Promise<void>;
   putBundleBlob(path: string, data: Buffer, contentType: string): Promise<void>;
   bundleUrl(path: string): string;
+  sourceUrl(path: string): string;
+  listSources(prefix: string): Promise<{ path: string; bytes: number }[]>;
 }
 
 function parseConnectionString(cs: string): { accountName: string; accountKey: string } {
@@ -147,6 +149,16 @@ export function createBlobStudioStore(connectionString: string): StudioStore {
     },
     bundleUrl(path) {
       return `https://${accountName}.blob.core.windows.net/${CONTAINER}/${path}`;
+    },
+    sourceUrl(path) {
+      return `https://${accountName}.blob.core.windows.net/${SOURCES_CONTAINER}/${path}`;
+    },
+    async listSources(prefix) {
+      const out: { path: string; bytes: number }[] = [];
+      for await (const blob of sources.listBlobsFlat({ prefix })) {
+        out.push({ path: blob.name, bytes: blob.properties.contentLength ?? 0 });
+      }
+      return out;
     },
   };
 }

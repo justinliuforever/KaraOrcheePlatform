@@ -57,6 +57,7 @@ beforeAll(async () => {
     bookId: "czerny_op599",
     bookIndex: 41,
     rights: "public_domain",
+    rightsNote: "Re-engraved from a PD print.",
     status: "published",
     publishedVersion: 2,
   });
@@ -158,6 +159,111 @@ describe("admin pieces registry", () => {
       .get("/admin/pieces/nope")
       .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe("piece edit + lifecycle", () => {
+  it("patches display fields and audits", async () => {
+    const res = await request(app())
+      .patch("/admin/pieces/czerny_599_41")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ difficulty: 2, subtitle: "No. 41 (revised)" });
+    expect(res.status).toBe(200);
+    expect(res.body.difficulty).toBe(2);
+    expect(res.body.subtitle).toBe("No. 41 (revised)");
+
+    const { auditEvents } = await import("../src/db/schema");
+    const trail = await db.orm.select().from(auditEvents);
+    expect(trail.some((e) => e.action === "piece.update" && e.subjectId === "czerny_599_41")).toBe(true);
+  });
+
+  it("rejects a stale concurrent edit", async () => {
+    const res = await request(app())
+      .patch("/admin/pieces/czerny_599_41")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ difficulty: 3, expectedUpdatedAt: "2020-01-01T00:00:00.000Z" });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("stale_edit");
+  });
+
+  it("blocks setting non-publishable rights while published", async () => {
+    const res = await request(app())
+      .patch("/admin/pieces/czerny_599_41")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ rights: "unknown" });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("archive_first");
+  });
+
+  it("requires a provenance note for public-domain", async () => {
+    const res = await request(app())
+      .patch("/admin/pieces/czerny_599_41")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ rightsNote: "" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("provenance_required");
+  });
+
+  it("blocks a book-index collision", async () => {
+    const { pieces } = await import("../src/db/schema");
+    await db.orm
+      .insert(pieces)
+      .values({
+        id: "czerny_599_42",
+        title: "Practical Method, Op. 599",
+        subtitle: "No. 42",
+        composer: "Carl Czerny",
+        bookId: "czerny_op599",
+        bookIndex: 42,
+        rights: "public_domain",
+        rightsNote: "seed",
+      })
+      .onConflictDoNothing();
+    const res = await request(app())
+      .patch("/admin/pieces/czerny_599_41")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ bookIndex: 42 });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("book_index_taken");
+  });
+
+  it("archives and restores with guards", async () => {
+    const archived = await request(app())
+      .post("/admin/pieces/czerny_599_41/archive")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(archived.status).toBe(200);
+    expect(archived.body.status).toBe("archived");
+
+    const again = await request(app())
+      .post("/admin/pieces/czerny_599_41/archive")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(again.status).toBe(409);
+
+    const restored = await request(app())
+      .post("/admin/pieces/czerny_599_41/restore")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(restored.status).toBe(200);
+    expect(restored.body.status).toBe("published");
+  });
+
+  it("blocks restore when rights are unresolved", async () => {
+    const { pieces } = await import("../src/db/schema");
+    await db.orm
+      .insert(pieces)
+      .values({
+        id: "rights_hold_piece",
+        title: "Rights Hold",
+        composer: "Nobody",
+        rights: "unknown",
+        status: "archived",
+        publishedVersion: 1,
+      })
+      .onConflictDoNothing();
+    const res = await request(app())
+      .post("/admin/pieces/rights_hold_piece/restore")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("rights_blocked");
   });
 });
 

@@ -57,6 +57,12 @@ function fakeStudio(): FakeStudio {
     bundleUrl(path) {
       return `https://test.blob.core.windows.net/piece-bundles/${path}`;
     },
+    sourceUrl(path) {
+      return `https://test.blob.core.windows.net/piece-sources/${path}`;
+    },
+    async listSources() {
+      return [];
+    },
   };
   return store;
 }
@@ -376,6 +382,62 @@ describe("files replacement + reopen", () => {
     expect(res.body.status).toBe("draft");
     expect(res.body.checkStatus).toBe("pending");
     expect(queue.preflights).toEqual([{ jobId: job.id }]);
+  });
+});
+
+describe("pinned drafts (upload new version)", () => {
+  it("pins the draft to an existing piece and survives renames", async () => {
+    await db.orm
+      .insert(pieces)
+      .values({
+        id: "pinned_target",
+        title: "Original Title",
+        composer: "Old Composer",
+        subtitle: "",
+        rights: "public_domain",
+        rightsNote: "seed",
+        status: "published",
+        publishedVersion: 1,
+      })
+      .onConflictDoNothing();
+
+    const queue = fakeQueue();
+    const app = makeApp({ queue });
+    const draft = await request(app)
+      .post("/admin/studio/drafts?piece=pinned_target")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("musicxml", Buffer.from("<score-partwise v2/>"), "v2.musicxml")
+      .attach("midi", Buffer.from("MThd"), "v2.mid");
+    expect(draft.status).toBe(201);
+    expect(draft.body.pieceId).toBe("pinned_target");
+    expect(draft.body.metadata.title).toBe("Original Title"); // prefilled server-side
+    expect(draft.body.metadata.pinnedPieceId).toBe("pinned_target");
+
+    // Rename in the wizard — the id must NOT re-derive.
+    const patched = await request(app)
+      .patch(`/admin/studio/jobs/${draft.body.id}/metadata`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ title: "Completely Renamed Piece" });
+    expect(patched.body.pieceId).toBe("pinned_target");
+
+    await db.orm
+      .update(studioJobs)
+      .set({ checkStatus: "pass" })
+      .where(eq(studioJobs.id, draft.body.id));
+    const submitted = await request(app)
+      .post(`/admin/studio/jobs/${draft.body.id}/submit`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(submitted.status).toBe(200);
+    expect(submitted.body.pieceId).toBe("pinned_target"); // no slug_collision, id kept
+  });
+
+  it("404s pinning a missing piece", async () => {
+    const res = await request(makeApp())
+      .post("/admin/studio/drafts?piece=nope_nope")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("musicxml", Buffer.from("<x/>"), "x.musicxml")
+      .attach("midi", Buffer.from("MThd"), "x.mid");
+    expect(res.status).toBe(404);
   });
 });
 

@@ -6,10 +6,30 @@ import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireAdmin, audit } from "../admin";
-import { auditEvents, books, pieces, pieceVersions, users } from "../db/schema";
+import { auditEvents, books, pieces, pieceVersions, studioJobs, users } from "../db/schema";
 import { and } from "drizzle-orm";
 import { processCover, CoverError } from "../covers";
 import { bookSlug } from "../slug";
+import { rebuildCatalog } from "../catalog_build";
+
+// Registry-owned edits: display/catalog fields only. Anything baked into the bundle
+// (score files) must go through the studio as a new version — never patched here.
+const pieceEditSchema = z
+  .object({
+    title: z.string().min(1).max(200).optional(),
+    composer: z.string().min(1).max(120).optional(),
+    subtitle: z.string().max(200).optional(),
+    difficulty: z.number().int().min(1).max(5).nullable().optional(),
+    tracking: z.enum(["validated", "experimental"]).optional(),
+    bookId: z.string().regex(/^[a-z0-9][a-z0-9_]{2,63}$/).nullable().optional(),
+    bookIndex: z.number().int().min(0).nullable().optional(),
+    rights: z.enum(["public_domain", "licensed", "unknown", "blocked"]).optional(),
+    rightsNote: z.string().max(2000).nullable().optional(),
+    // Optimistic-concurrency token: the updated_at the editor loaded. A stale token
+    // means another admin changed the row since — reject instead of clobbering.
+    expectedUpdatedAt: z.string().optional(),
+  })
+  .refine((v) => Object.values(v).some((x) => x !== undefined), { message: "no fields given" });
 
 const coverUpload = multer({
   storage: multer.memoryStorage(),
@@ -292,6 +312,154 @@ export function adminRouter(deps: Deps): Router {
     }),
   );
 
+  router.patch(
+    "/admin/pieces/:id",
+    wrap(async (req, res) => {
+      const parsed = pieceEditSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "invalid_edit", detail: parsed.error.issues });
+        return;
+      }
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [piece] = await db.select().from(pieces).where(eq(pieces.id, id)).limit(1);
+      if (!piece) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const p = parsed.data;
+      if (p.expectedUpdatedAt && new Date(p.expectedUpdatedAt).getTime() !== piece.updatedAt.getTime()) {
+        res.status(409).json({
+          error: "stale_edit",
+          message: "Someone else changed this piece since you opened it — reload and re-apply your edits.",
+        });
+        return;
+      }
+      const finalRights = p.rights ?? piece.rights;
+      const finalNote = p.rightsNote === undefined ? piece.rightsNote : p.rightsNote;
+      // Takedown goes through Archive (fast, explicit) — a published piece can't
+      // quietly hold non-publishable rights.
+      if (piece.status === "published" && (finalRights === "unknown" || finalRights === "blocked")) {
+        res.status(409).json({
+          error: "archive_first",
+          message: "This piece is live — archive it before marking its rights unresolved/blocked.",
+        });
+        return;
+      }
+      if (finalRights === "public_domain" && !(finalNote ?? "").trim()) {
+        res.status(400).json({
+          error: "provenance_required",
+          message: "Public-domain pieces need a provenance note (which edition the score came from).",
+        });
+        return;
+      }
+      const finalBookId = p.bookId === undefined ? piece.bookId : p.bookId;
+      const finalIndex = p.bookIndex === undefined ? piece.bookIndex : p.bookIndex;
+      if (finalBookId) {
+        const [book] = await db.select().from(books).where(eq(books.id, finalBookId)).limit(1);
+        if (!book) {
+          res.status(400).json({ error: "book_missing" });
+          return;
+        }
+        if (finalIndex != null) {
+          const clash = await db
+            .select({ id: pieces.id, title: pieces.title, subtitle: pieces.subtitle })
+            .from(pieces)
+            .where(and(eq(pieces.bookId, finalBookId), eq(pieces.bookIndex, finalIndex), sql`${pieces.id} <> ${id}`))
+            .limit(1);
+          if (clash.length > 0) {
+            res.status(409).json({
+              error: "book_index_taken",
+              message: `No. ${finalIndex} in that book is already "${clash[0]!.title}${clash[0]!.subtitle ? ` · ${clash[0]!.subtitle}` : ""}".`,
+            });
+            return;
+          }
+        }
+      }
+
+      const [updated] = await db
+        .update(pieces)
+        .set({
+          ...(p.title !== undefined ? { title: p.title } : {}),
+          ...(p.composer !== undefined ? { composer: p.composer } : {}),
+          ...(p.subtitle !== undefined ? { subtitle: p.subtitle } : {}),
+          ...(p.difficulty !== undefined ? { difficulty: p.difficulty } : {}),
+          ...(p.tracking !== undefined ? { tracking: p.tracking } : {}),
+          ...(p.bookId !== undefined ? { bookId: p.bookId } : {}),
+          ...(p.bookIndex !== undefined ? { bookIndex: p.bookIndex } : {}),
+          ...(p.rights !== undefined ? { rights: p.rights } : {}),
+          ...(p.rightsNote !== undefined ? { rightsNote: p.rightsNote } : {}),
+          updatedAt: sql`now()`,
+        })
+        .where(eq(pieces.id, id))
+        .returning();
+
+      if (piece.status === "published" && deps.studio) {
+        await rebuildCatalog(db, deps.studio);
+      }
+      await audit(deps, req.adminUser!, "piece.update", { type: "piece", id }, { changes: p });
+      res.json(updated);
+    }),
+  );
+
+  router.post(
+    "/admin/pieces/:id/archive",
+    wrap(async (req, res) => {
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [piece] = await db.select().from(pieces).where(eq(pieces.id, id)).limit(1);
+      if (!piece) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (piece.status !== "published") {
+        res.status(409).json({ error: "not_published", status: piece.status });
+        return;
+      }
+      const [updated] = await db
+        .update(pieces)
+        .set({ status: "archived", updatedAt: sql`now()` })
+        .where(eq(pieces.id, id))
+        .returning();
+      if (deps.studio) await rebuildCatalog(db, deps.studio);
+      await audit(deps, req.adminUser!, "piece.archive", { type: "piece", id });
+      res.json(updated);
+    }),
+  );
+
+  router.post(
+    "/admin/pieces/:id/restore",
+    wrap(async (req, res) => {
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [piece] = await db.select().from(pieces).where(eq(pieces.id, id)).limit(1);
+      if (!piece) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (piece.status !== "archived") {
+        res.status(409).json({ error: "not_archived", status: piece.status });
+        return;
+      }
+      if (piece.publishedVersion == null) {
+        res.status(409).json({ error: "no_published_version" });
+        return;
+      }
+      if (piece.rights !== "public_domain" && piece.rights !== "licensed") {
+        res.status(409).json({ error: "rights_blocked", rights: piece.rights });
+        return;
+      }
+      const [updated] = await db
+        .update(pieces)
+        .set({ status: "published", updatedAt: sql`now()` })
+        .where(eq(pieces.id, id))
+        .returning();
+      if (deps.studio) await rebuildCatalog(db, deps.studio);
+      await audit(deps, req.adminUser!, "piece.restore", { type: "piece", id });
+      res.json(updated);
+    }),
+  );
+
   router.get(
     "/admin/pieces/:id",
     wrap(async (req, res) => {
@@ -306,16 +474,90 @@ export function adminRouter(deps: Deps): Router {
         res.status(404).json({ error: "not_found" });
         return;
       }
-      const versions = await db
+      const sign = (url: string) => (deps.catalog ? deps.catalog.signReadUrl(url) : url);
+
+      const versionRows = await db
         .select()
         .from(pieceVersions)
         .where(eq(pieceVersions.pieceId, piece.id))
         .orderBy(desc(pieceVersions.version));
+      const versions = versionRows.map((v) => ({
+        ...v,
+        files: (v.files as { role: string; variant?: string; path: string; bytes?: number; sha256?: string }[]).map(
+          (f) => ({ ...f, url: deps.studio ? sign(deps.studio.bundleUrl(f.path)) : null }),
+        ),
+      }));
+
       const book = piece.bookId
         ? (await db.select().from(books).where(eq(books.id, piece.bookId)).limit(1))[0] ?? null
         : null;
+      const bookOut = book
+        ? { ...book, ...signCover(book.coverPath) }
+        : null;
 
-      res.json({ ...piece, book, versions });
+      // Build history for this piece id (any outcome) — newest first.
+      const jobs = await db
+        .select({
+          id: studioJobs.id,
+          status: studioJobs.status,
+          checkStatus: studioJobs.checkStatus,
+          publishedVersion: studioJobs.publishedVersion,
+          error: studioJobs.error,
+          createdAt: studioJobs.createdAt,
+          updatedAt: studioJobs.updatedAt,
+        })
+        .from(studioJobs)
+        .where(eq(studioJobs.pieceId, piece.id))
+        .orderBy(desc(studioJobs.createdAt))
+        .limit(20);
+
+      // Original sources, both generations: studio uploads live at
+      // staging/<jobId>/ (tracked on the job row, with original filenames); the
+      // pre-studio launch pieces were archived at <pieceId>/ in piece-sources.
+      const sources: { path: string; bytes: number; url: string | null; kind?: string; originalName?: string; origin: string }[] = [];
+      if (deps.studio) {
+        const latestWithSources = (
+          await db
+            .select({ sources: studioJobs.sources })
+            .from(studioJobs)
+            .where(eq(studioJobs.pieceId, piece.id))
+            .orderBy(desc(studioJobs.updatedAt))
+            .limit(5)
+        ).find((j) => Array.isArray(j.sources) && (j.sources as unknown[]).length > 0);
+        for (const s of (latestWithSources?.sources ?? []) as {
+          path: string;
+          bytes: number;
+          kind: string;
+          originalName: string;
+        }[]) {
+          sources.push({
+            path: s.path,
+            bytes: s.bytes,
+            kind: s.kind,
+            originalName: s.originalName,
+            url: sign(deps.studio.sourceUrl(s.path)),
+            origin: "studio_upload",
+          });
+        }
+        for (const b of await deps.studio.listSources(`${piece.id}/`)) {
+          sources.push({
+            path: b.path,
+            bytes: b.bytes,
+            originalName: b.path.split("/").pop(),
+            url: sign(deps.studio.sourceUrl(b.path)),
+            origin: "archive",
+          });
+        }
+      }
+
+      const recentAudit = await db
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.subjectType, "piece"), eq(auditEvents.subjectId, id)))
+        .orderBy(desc(auditEvents.createdAt))
+        .limit(20);
+
+      res.json({ ...piece, book: bookOut, versions, jobs, sources, recentAudit });
     }),
   );
 
