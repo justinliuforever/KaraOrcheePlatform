@@ -98,6 +98,26 @@ karaorchee.com sender), `acrkaraorchee` (images), CIAM tenant (below).
   messages minutes after `containerapp update` reports the new revision running — after a
   worker rollout, confirm the OLD replica is really gone before trusting queue behavior.
 
+## Pieces Library (admin registry manager)
+
+- List = search + filter chips + sortable columns + CSV export; row → LARGE slide-over
+  panel (`?sel=<id>` in the URL — deep-linkable, table state never lost). `/pieces/:id`
+  stays as the full-page escape hatch.
+- Two edit lanes: display/catalog fields (title/composer/subtitle/difficulty/shelf/book/
+  rights/note) edit IN the panel — per-guard validation (book-index clash, provenance
+  required for PD, optimistic-concurrency `expectedUpdatedAt` → 409 stale_edit) → one
+  Apply w/ live-catalog confirm → SQL + catalog rebuild + audit. Score-content changes =
+  "Upload new version" → studio wizard with `?piece=<id>` — the draft is PINNED to the
+  permanent piece id (identity never re-derived from title strings; renames can't break
+  the version chain) → full gates → review → publish v(N+1).
+- Lifecycle: Archive (reversible, instant catalog removal) / Take down (one step:
+  archive + rights=blocked + reason recorded) / Restore (guards: has published version +
+  publishable rights). Rights can't go unknown/blocked in-place while published.
+- Detail shows EVERYTHING: signed downloads for every bundle file per version, original
+  MusicXML/MIDI sources (studio uploads at staging/<jobId>/ AND the pre-studio archive at
+  <pieceId>/ in piece-sources), engraving previews, build history (links to studio jobs),
+  per-piece audit trail.
+
 ### Jobs ↔ registry consistency laws
 
 - Two tables, two clocks: a studio_jobs row is an IMMUTABLE build record (what happened
