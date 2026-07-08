@@ -1,21 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { api, type AdminPiece } from "../api";
+import { api, type AdminBook, type AdminPiece } from "../api";
 import { Badge, Card, ErrorNote, PageHeader, Spinner, Td, Th, rightsTone, statusTone } from "../components/ui";
 import PiecePanel from "../components/PiecePanel";
 import { timeAgo } from "../studio/gateInfo";
 
 type SortKey = "title" | "composer" | "difficulty" | "publishedVersion" | "updatedAt";
 
-const FILTERS: { key: string; label: string; test: (p: AdminPiece) => boolean }[] = [
-  { key: "published", label: "Published", test: (p) => p.status === "published" },
-  { key: "archived", label: "Archived", test: (p) => p.status === "archived" },
-  { key: "validated", label: "Pieces shelf", test: (p) => p.tracking === "validated" },
-  { key: "experimental", label: "Challenge shelf", test: (p) => p.tracking === "experimental" },
-  { key: "in_book", label: "In a book", test: (p) => !!p.bookId },
-  { key: "rights_attention", label: "Rights attention", test: (p) => p.rights === "unknown" || p.rights === "blocked" },
-];
+interface Filters {
+  status: string; // "" | published | archived | draft
+  shelf: string; // "" | validated | experimental
+  rights: string; // "" | public_domain | licensed | unknown | blocked
+  book: string; // "" | none | <bookId>
+}
+
+const NO_FILTERS: Filters = { status: "", shelf: "", rights: "", book: "" };
+
+function matches(p: AdminPiece, f: Filters): boolean {
+  if (f.status && p.status !== f.status) return false;
+  if (f.shelf && p.tracking !== f.shelf) return false;
+  if (f.rights && p.rights !== f.rights) return false;
+  if (f.book === "none" && p.bookId) return false;
+  if (f.book && f.book !== "none" && p.bookId !== f.book) return false;
+  return true;
+}
 
 function exportCsv(rows: AdminPiece[]) {
   const cols = ["id", "title", "composer", "subtitle", "difficulty", "tracking", "bookId", "bookIndex", "rights", "status", "publishedVersion", "updatedAt"] as const;
@@ -32,13 +41,17 @@ export default function PiecesPage() {
   const [params, setParams] = useSearchParams();
   const selected = params.get("sel");
   const [q, setQ] = useState("");
-  const [filters, setFilters] = useState<Set<string>>(new Set());
+  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "updatedAt", dir: -1 });
   const searchRef = useRef<HTMLInputElement>(null);
 
   const query = useQuery<{ items: AdminPiece[] }, Error>({
     queryKey: ["pieces"],
     queryFn: () => api("/admin/pieces"),
+  });
+  const booksQ = useQuery<{ items: AdminBook[] }, Error>({
+    queryKey: ["books"],
+    queryFn: () => api("/admin/books"),
   });
 
   useEffect(() => {
@@ -54,7 +67,6 @@ export default function PiecesPage() {
 
   const items = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    const active = FILTERS.filter((f) => filters.has(f.key));
     const rows = (query.data?.items ?? [])
       .filter(
         (p) =>
@@ -64,7 +76,7 @@ export default function PiecesPage() {
           p.composer.toLowerCase().includes(needle) ||
           (p.subtitle ?? "").toLowerCase().includes(needle),
       )
-      .filter((p) => active.every((f) => f.test(p)));
+      .filter((p) => matches(p, filters));
     const dir = sort.dir;
     return [...rows].sort((a, b) => {
       const av = a[sort.key];
@@ -107,36 +119,57 @@ export default function PiecesPage() {
         }
       />
 
-      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-        <div className="flex gap-1.5 flex-wrap">
-          {FILTERS.map((f) => {
-            const on = filters.has(f.key);
-            return (
+      {(() => {
+        const sel =
+          "rounded-lg border border-line bg-card pl-2.5 pr-7 py-2 text-sm outline-none focus:border-brand appearance-none bg-no-repeat bg-[right_0.5rem_center] bg-[length:14px] bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 20 20%22 fill=%22%239aa0af%22%3E%3Cpath d=%22M5.5 7.5l4.5 5 4.5-5z%22/%3E%3C/svg%3E')]";
+        const dirty = filters !== NO_FILTERS && JSON.stringify(filters) !== JSON.stringify(NO_FILTERS);
+        return (
+          <div className="flex items-center gap-2 mb-4 rounded-xl border border-line bg-card px-3 py-2.5 flex-wrap">
+            <input
+              ref={searchRef}
+              className="flex-1 min-w-52 rounded-lg bg-paper/60 border border-transparent focus:border-brand px-3 py-2 text-sm outline-none"
+              placeholder="Search title, composer, id…  ( / )"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+            <select className={sel} value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
+              <option value="">Status: all</option>
+              <option value="published">Published</option>
+              <option value="archived">Archived</option>
+            </select>
+            <select className={sel} value={filters.shelf} onChange={(e) => setFilters({ ...filters, shelf: e.target.value })}>
+              <option value="">Shelf: all</option>
+              <option value="validated">Pieces</option>
+              <option value="experimental">Challenge</option>
+            </select>
+            <select className={sel} value={filters.rights} onChange={(e) => setFilters({ ...filters, rights: e.target.value })}>
+              <option value="">Rights: all</option>
+              <option value="public_domain">Public domain</option>
+              <option value="licensed">Licensed</option>
+              <option value="unknown">Unknown</option>
+              <option value="blocked">Blocked</option>
+            </select>
+            <select className={sel} value={filters.book} onChange={(e) => setFilters({ ...filters, book: e.target.value })}>
+              <option value="">Book: all</option>
+              <option value="none">No book</option>
+              {booksQ.data?.items.map((b) => (
+                <option key={b.id} value={b.id}>{b.title}</option>
+              ))}
+            </select>
+            {(dirty || q) && (
               <button
-                key={f.key}
-                className={`rounded-full border px-3 py-1 text-xs font-medium ${
-                  on ? "border-brand bg-brand-soft text-brand" : "border-line text-ink-soft hover:border-brand/40"
-                }`}
+                className="text-xs text-ink-soft hover:text-ink px-1.5"
                 onClick={() => {
-                  const next = new Set(filters);
-                  if (on) next.delete(f.key);
-                  else next.add(f.key);
-                  setFilters(next);
+                  setFilters(NO_FILTERS);
+                  setQ("");
                 }}
               >
-                {f.label}
+                ✕ Reset
               </button>
-            );
-          })}
-        </div>
-        <input
-          ref={searchRef}
-          className="rounded-lg border border-line bg-card px-3 py-1.5 text-sm w-64 outline-none focus:border-brand"
-          placeholder="Search title, composer, id…  ( / )"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
-      </div>
+            )}
+          </div>
+        );
+      })()}
 
       {query.isPending && <Spinner />}
       {query.isError && <ErrorNote message={query.error.message} />}
