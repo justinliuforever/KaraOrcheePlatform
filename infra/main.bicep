@@ -120,6 +120,7 @@ resource piecesQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview'
   name: 'pieces-jobs'
   properties: {
     maxDeliveryCount: 3
+    lockDuration: 'PT5M'
     defaultMessageTimeToLive: 'P1D'
   }
 }
@@ -131,6 +132,7 @@ resource piecesPreflightQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01
   name: 'pieces-preflight'
   properties: {
     maxDeliveryCount: 3
+    lockDuration: 'PT5M'
     defaultMessageTimeToLive: 'PT1H'
   }
 }

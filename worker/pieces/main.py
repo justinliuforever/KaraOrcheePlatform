@@ -21,7 +21,7 @@ import traceback
 from pathlib import Path
 
 import psycopg
-from azure.servicebus import ServiceBusClient
+from azure.servicebus import AutoLockRenewer, ServiceBusClient
 from azure.storage.blob import BlobServiceClient, ContentSettings
 
 from gates import run_all, GateError, ARTIFACT_LAYOUT
@@ -183,12 +183,17 @@ def process(conn, blob: BlobServiceClient, job_id: str, mode: str) -> None:
 
 def run_receiver(db_url: str, storage_cs: str, sb_cs: str, queue: str, mode: str) -> None:
     blob = BlobServiceClient.from_connection_string(storage_cs)
+    # Long pieces render for minutes — the renewer keeps the message lock alive
+    # (battle scar: a 54-min movement's preview outlived the 60s default lock, the
+    # complete() threw MessageLockLostError, and a PASSED job got marked failed).
+    renewer = AutoLockRenewer(max_lock_renewal_duration=1800)
     print(f"{mode} lane up on {queue}")
     with ServiceBusClient.from_connection_string(sb_cs) as sb:
-        receiver = sb.get_queue_receiver(queue, max_wait_time=None)
+        receiver = sb.get_queue_receiver(queue, max_wait_time=None, auto_lock_renewer=renewer)
         with receiver:
             for msg in receiver:
                 job_id = None
+                processed = False
                 try:
                     body = json.loads(b"".join(msg.body).decode()
                                       if not isinstance(msg.body, (bytes, str)) else msg.body)
@@ -197,19 +202,26 @@ def run_receiver(db_url: str, storage_cs: str, sb_cs: str, queue: str, mode: str
                     # connections must not poison the next job.
                     with psycopg.connect(db_url) as conn:
                         process(conn, blob, job_id, mode)
+                    processed = True
                     receiver.complete_message(msg)
                 except Exception:
                     traceback.print_exc()
-                    try:
-                        if job_id:
+                    # A settlement failure AFTER successful processing must never
+                    # overwrite the job's (correct) terminal state.
+                    if job_id and not processed:
+                        try:
                             fail_cols = ({"check_status": "fail"} if mode == "preflight"
                                          else {"status": "failed"})
                             with psycopg.connect(db_url) as conn:
                                 update_job(conn, job_id, error="worker_crash: see worker logs",
                                            **fail_cols)
-                    except Exception:
-                        traceback.print_exc()
-                    receiver.complete_message(msg)  # row state is truth; don't redeliver crashes
+                        except Exception:
+                            traceback.print_exc()
+                    if not processed:
+                        try:
+                            receiver.complete_message(msg)  # row state is truth; don't redeliver
+                        except Exception:
+                            traceback.print_exc()
 
 
 def main() -> None:
