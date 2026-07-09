@@ -45,9 +45,29 @@ def env(name: str) -> str:
 def fetch_job(conn, job_id: str):
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id, piece_id, status, check_status, sources FROM studio_jobs WHERE id = %s",
+            "SELECT id, piece_id, status, check_status, sources, metadata FROM studio_jobs WHERE id = %s",
             (job_id,))
         return cur.fetchone()
+
+
+_SF2_CACHE = Path("/tmp/sf2cache")
+
+
+def get_soundfont(blob: BlobServiceClient, instrument: str | None) -> tuple[Path | None, int]:
+    """Download (once) the SF2 for this instrument from the soundfont container."""
+    from pipeline.preview import soundfont_for
+
+    blob_name, program, _ = soundfont_for(instrument)
+    _SF2_CACHE.mkdir(exist_ok=True)
+    local = _SF2_CACHE / blob_name
+    if not local.exists():
+        try:
+            data = blob.get_container_client("soundfont").download_blob(blob_name).readall()
+            local.write_bytes(data)
+        except Exception:
+            traceback.print_exc()
+            return None, program
+    return local, program
 
 
 def update_job(conn, job_id: str, **cols) -> None:
@@ -91,7 +111,8 @@ def process(conn, blob: BlobServiceClient, job_id: str, mode: str) -> None:
     if row is None:
         print(f"{job_id}: no such job, dropping")
         return
-    _, piece, status, check_status, sources = row
+    _, piece, status, check_status, sources, metadata = row
+    metadata = metadata or {}
     if mode == "preflight":
         if status != "draft":
             print(f"{job_id}: preflight skipped (status={status})")
@@ -105,7 +126,7 @@ def process(conn, blob: BlobServiceClient, job_id: str, mode: str) -> None:
 
     with tempfile.TemporaryDirectory(prefix=f"job-{job_id[:8]}-") as tmp:
         tmpdir = Path(tmp)
-        xml_path = midi_path = None
+        xml_path = midi_path = audio_path = None
         src_client = blob.get_container_client(SOURCES_CONTAINER)
         for srcf in sources:
             local = tmpdir / Path(srcf["path"]).name
@@ -114,6 +135,8 @@ def process(conn, blob: BlobServiceClient, job_id: str, mode: str) -> None:
                 xml_path = local
             elif srcf["kind"] == "midi":
                 midi_path = local
+            elif srcf["kind"] == "audio":
+                audio_path = local
         if xml_path is None:
             if mode == "preflight":
                 update_job(conn, job_id, check_status="fail", error="job has no musicxml source")
@@ -131,9 +154,13 @@ def process(conn, blob: BlobServiceClient, job_id: str, mode: str) -> None:
             merge_gate(conn, job_id, stage, entry)
             print(f"{job_id}[{mode}]: {stage} -> {gstatus} {json.dumps(metrics)[:200]}")
 
+        sf2_path, program = get_soundfont(blob, metadata.get("instrument"))
         try:
             run_all(job_id, piece, xml_path, midi_path, out_dir, on_gate,
-                    include_render=(mode == "full"))
+                    include_render=(mode == "full"),
+                    solo_part=metadata.get("soloPart"),
+                    audio_path=audio_path,
+                    sf2_path=sf2_path, program=program)
         except GateError as err:
             if mode == "preflight":
                 update_job(conn, job_id, check_status="fail", error=str(err))

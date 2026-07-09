@@ -32,18 +32,11 @@ def _payload(events: list[dict]) -> dict:
     }
 
 
-def from_midi(midi_path: Path) -> dict:
-    pm = pretty_midi.PrettyMIDI(str(midi_path))
-    notes: list[tuple[float, float, int, int]] = []
-    for inst in pm.instruments:
-        if inst.is_drum:
-            continue
-        for n in inst.notes:
-            notes.append((n.start, n.end - n.start, n.pitch, n.velocity))
+def events_from_notes(notes: list[tuple[float, float, int, int]]) -> dict:
+    """Cluster (start, dur, pitch, velocity) tuples into score events (30ms buckets)."""
     if not notes:
-        raise ValueError("MIDI contains no notes")
-    notes.sort(key=lambda x: x[0])
-
+        raise ValueError("no notes")
+    notes = sorted(notes, key=lambda x: x[0])
     events: list[dict] = []
     bucket: list[tuple[float, float, int, int]] = [notes[0]]
     bucket_start = notes[0][0]
@@ -64,6 +57,19 @@ def from_midi(midi_path: Path) -> dict:
             bucket_start = n[0]
     events.append(flush(len(events), bucket))
     return _payload(events)
+
+
+def from_midi(midi_path: Path) -> dict:
+    pm = pretty_midi.PrettyMIDI(str(midi_path))
+    notes: list[tuple[float, float, int, int]] = []
+    for inst in pm.instruments:
+        if inst.is_drum:
+            continue
+        for n in inst.notes:
+            notes.append((n.start, n.end - n.start, n.pitch, n.velocity))
+    if not notes:
+        raise ValueError("MIDI contains no notes")
+    return events_from_notes(notes)
 
 
 def _mei_pitches(mei: str) -> dict[str, int]:

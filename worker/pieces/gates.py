@@ -1,15 +1,26 @@
-"""The four studio gates. Each returns (metrics_dict) or raises GateError with a
-human-readable reason. Artifacts land in a job-local directory; the caller uploads."""
+"""The studio gates. Each returns (metrics_dict) or raises GateError with a
+human-readable reason. Artifacts land in a job-local directory; the caller uploads.
+
+v3: sanity extracts XML facts + detects parts; multi-part scores are reduced to the
+chosen solo part before alignment/geometry (accompaniment becomes a second event
+stream); preview audio renders with the app's SF2; optional reference audio is
+verified against the notated timeline (Tier-1 linear-map gate).
+"""
 from __future__ import annotations
 import json
+import shutil
 import time
 from pathlib import Path
 import pretty_midi
 
 from pipeline import score_events as se
+from pipeline import xml_meta
 from pipeline.vrv import make_toolkit
 from pipeline.staff import build_staff_assets
 from pipeline.cursor_gate import run_gate
+from pipeline.parts import reduce_xml_to_part, split_midi_notes
+from pipeline.preview import render_preview
+from pipeline.audio_gate import check_reference_audio, AudioGateError
 
 
 class GateError(Exception):
@@ -18,7 +29,7 @@ class GateError(Exception):
         self.metrics = metrics or {}
 
 
-def gate_sanity(xml_path: Path, midi_path: Path | None) -> dict:
+def gate_sanity(xml_path: Path, midi_path: Path | None, solo_part: str | None) -> dict:
     tk = make_toolkit()
     tk.setOptions({"header": "none", "footer": "none"})
     if not tk.loadFile(str(xml_path)):
@@ -28,7 +39,22 @@ def gate_sanity(xml_path: Path, midi_path: Path | None) -> dict:
     n_onsets = sum(1 for e in tm if e.get("on"))
     if n_measures < 1 or n_onsets < 1:
         raise GateError(f"score is empty (measures={n_measures}, onsets={n_onsets})")
-    metrics = {"measures": n_measures, "xml_onsets": n_onsets, "xml_bytes": xml_path.stat().st_size}
+
+    meta = xml_meta.extract(xml_path)
+    part_ids = [p["id"] for p in meta["parts"]]
+    if solo_part and solo_part not in part_ids:
+        raise GateError(f"selected solo part {solo_part!r} is not in this file (parts: {part_ids})", {"xml_meta": meta})
+    # Auto-select the first part; the wizard shows the choice for human confirmation.
+    solo_used = solo_part or (part_ids[0] if part_ids else None)
+
+    metrics = {
+        "measures": n_measures,
+        "xml_onsets": n_onsets,
+        "xml_bytes": xml_path.stat().st_size,
+        "xml_meta": meta,
+        "solo_part": solo_used,
+        "solo_part_auto": solo_part is None and meta["n_parts"] > 1,
+    }
     if midi_path is not None:
         try:
             pm = pretty_midi.PrettyMIDI(str(midi_path))
@@ -42,23 +68,48 @@ def gate_sanity(xml_path: Path, midi_path: Path | None) -> dict:
     return metrics
 
 
-def gate_alignment(xml_path: Path, midi_path: Path | None, out_dir: Path) -> dict:
-    """Produce score_events.json and, on the MIDI route, verify the performance
-    timeline matches the notated score (median nearest-onset residual < 12ms —
-    the same one-timeline law the staff gate enforces)."""
+def _effective_paths(xml_path: Path, out_dir: Path, meta: dict, solo_used: str | None) -> Path:
+    """Reduce a multi-part score to the solo part; single-part passes through."""
+    if meta["n_parts"] <= 1 or solo_used is None:
+        return xml_path
+    reduced = out_dir / "_solo.musicxml"
+    reduce_xml_to_part(xml_path, reduced, solo_used)
+    return reduced
+
+
+def gate_alignment(xml_path: Path, midi_path: Path | None, out_dir: Path,
+                   meta: dict, solo_used: str | None) -> dict:
+    multi = meta["n_parts"] > 1 and solo_used is not None
+    effective_xml = _effective_paths(xml_path, out_dir, meta, solo_used)
+
     if midi_path is not None:
-        payload = se.from_midi(midi_path)
+        if multi:
+            solo_idx = [p["id"] for p in meta["parts"]].index(solo_used)
+            solo_notes, accomp_notes = split_midi_notes(midi_path, solo_idx)
+            payload = se.events_from_notes(solo_notes)
+            if accomp_notes:
+                se.write_score_events(se.events_from_notes(accomp_notes),
+                                      out_dir / "accompaniment_events.json")
+        else:
+            payload = se.from_midi(midi_path)
         route = "midi"
     else:
-        payload = se.from_xml_timemap(xml_path)
+        payload = se.from_xml_timemap(effective_xml)
         route = "xml_timemap"
     se.write_score_events(payload, out_dir / "score_events.json")
+
+    duration = max((e["onset_sec"] + max(e["durations"]) for e in payload["events"]), default=0.0)
     return {"route": route, "n_events": payload["n_events"],
+            "solo_part": solo_used if multi else None,
+            "accompaniment": multi and (out_dir / "accompaniment_events.json").exists(),
+            "duration_sec": round(duration, 1),
             "initial_tempo_eps": round(payload["initial_tempo_eps"], 4)}
 
 
-def gate_geometry(piece: str, xml_path: Path, out_dir: Path) -> dict:
-    bundle = build_staff_assets(piece, xml_path, out_dir / "score_events.json", out_dir)
+def gate_geometry(piece: str, xml_path: Path, out_dir: Path,
+                  meta: dict, solo_used: str | None) -> dict:
+    effective_xml = _effective_paths(xml_path, out_dir, meta, solo_used)
+    bundle = build_staff_assets(piece, effective_xml, out_dir / "score_events.json", out_dir)
     ph = bundle["variants"]["phone"]
     metrics = {
         "engine_sha": f"verovio-{bundle['verovio_version']}",
@@ -80,6 +131,24 @@ def gate_geometry(piece: str, xml_path: Path, out_dir: Path) -> dict:
     return metrics
 
 
+def gate_preview(out_dir: Path, sf2_path: Path | None, program: int) -> dict:
+    if sf2_path is None or not sf2_path.exists():
+        return {"skipped": "soundfont unavailable"}
+    try:
+        return render_preview(out_dir / "score_events.json", sf2_path,
+                              out_dir / "preview.m4a", program)
+    except Exception as err:
+        # Preview is a review aid, never a build blocker.
+        return {"skipped": f"render failed: {str(err)[:120]}"}
+
+
+def gate_audio(audio_path: Path, out_dir: Path) -> dict:
+    try:
+        return check_reference_audio(audio_path, out_dir / "score_events.json")
+    except AudioGateError as err:
+        raise GateError(str(err), err.metrics) from err
+
+
 def gate_render(piece: str, out_dir: Path) -> dict:
     ok, failures, metrics = run_gate(out_dir, piece)
     if not ok:
@@ -87,28 +156,50 @@ def gate_render(piece: str, out_dir: Path) -> dict:
     return metrics
 
 
-# Staged blob name -> (role, variant) matching the publisher layout the app decodes.
+# Staged blob name -> (role, variant). PUBLISH_ROLES is the bundle allowlist —
+# preview audio is a review aid and must never enter the immutable bundle.
 ARTIFACT_LAYOUT = [
     ("score_events.json", "score_events.json", "score_events", None),
+    ("accompaniment_events.json", "accompaniment_events.json", "accompaniment_events", None),
     ("{p}.staff.json", "staff.json", "geometry", None),
     ("{p}.phone.svg", "score.phone.svg", "svg", "phone"),
     ("{p}.ipad.svg", "score.ipad.svg", "svg", "ipad"),
     ("{p}.ipad_portrait.svg", "score.ipad_portrait.svg", "svg", "ipad_portrait"),
+    ("reference.m4a", "reference.m4a", "reference_audio", None),
+    ("preview.m4a", "preview.m4a", "preview_audio", None),
 ]
+PUBLISH_ROLES = {"score_events", "accompaniment_events", "geometry", "svg", "reference_audio"}
 
 
 def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out_dir: Path,
-            on_gate, include_render: bool = True) -> list[Path]:
+            on_gate, include_render: bool = True, solo_part: str | None = None,
+            audio_path: Path | None = None, sf2_path: Path | None = None,
+            program: int = 0) -> list[Path]:
     """Run gates in order, reporting each via on_gate(stage, status, metrics, error).
-    Returns the artifact files (local paths) on success. include_render=False is the
-    wizard preflight lane — everything except the slow headless-WebKit gate."""
+    include_render=False is the wizard preflight lane (everything except the slow
+    headless-WebKit gate — preview and audio checks DO run there so the admin hears
+    and sees verdicts while filling the form)."""
+    state: dict = {}
+
+    def sanity():
+        m = gate_sanity(xml_path, midi_path, solo_part)
+        state["meta"] = m["xml_meta"]
+        state["solo"] = m["solo_part"]
+        return m
+
     stages = [
-        ("sanity", lambda: gate_sanity(xml_path, midi_path)),
-        ("alignment", lambda: gate_alignment(xml_path, midi_path, out_dir)),
-        ("geometry", lambda: gate_geometry(piece, xml_path, out_dir)),
+        ("sanity", sanity),
+        ("alignment", lambda: gate_alignment(xml_path, midi_path, out_dir, state["meta"], state["solo"])),
+        ("geometry", lambda: gate_geometry(piece, xml_path, out_dir, state["meta"], state["solo"])),
+        ("preview", lambda: gate_preview(out_dir, sf2_path, program)),
     ]
+    if audio_path is not None:
+        # Stage the uploaded audio under the canonical name before checking it.
+        shutil.copyfile(audio_path, out_dir / "reference.m4a")
+        stages.append(("audio", lambda: gate_audio(audio_path, out_dir)))
     if include_render:
         stages.append(("render", lambda: gate_render(piece, out_dir)))
+
     for stage, fn in stages:
         t0 = time.monotonic()
         on_gate(stage, "running", {}, None)
