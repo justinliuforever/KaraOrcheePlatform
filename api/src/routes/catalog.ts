@@ -53,7 +53,7 @@ export function catalogRouter(deps: Deps): Router {
 
   router.get(
     "/v1/catalog",
-    wrap(async (_req, res) => {
+    wrap(async (req, res) => {
       const store = deps.catalog;
       if (!store) {
         res.status(503).json({ error: "storage_not_configured" });
@@ -63,7 +63,24 @@ export function catalogRouter(deps: Deps): Router {
       if (doc === null) return;
       // Interim: URLs stay signed for app builds ≤ b5ec4cf that download straight from the
       // catalog. Strip once the fleet is on /v1/pieces/:id/download; then add ETag caching.
-      const copy = structuredClone(doc);
+      const copy = structuredClone(doc) as {
+        pieces?: { instrumentation?: { solo?: string }; work_id?: string }[];
+        works?: { id: string }[];
+      };
+      // CAPABILITY GATE: fielded decoders ignore unknown fields — an old app shown a
+      // violin row would run the piano follower against guitar/violin audio. The only
+      // lever over shipped builds is not sending rows they'd misrender. Instrument-aware
+      // builds opt in explicitly.
+      const caps = String(req.query.caps ?? "");
+      if (!caps.includes("instruments") && Array.isArray(copy.pieces)) {
+        copy.pieces = copy.pieces.filter(
+          (p) => !p.instrumentation || p.instrumentation.solo === "piano",
+        );
+        if (Array.isArray(copy.works)) {
+          const referenced = new Set(copy.pieces.map((p) => p.work_id).filter(Boolean));
+          copy.works = copy.works.filter((w) => referenced.has(w.id));
+        }
+      }
       signUrls(copy, store);
       res.status(200).json(copy);
     }),

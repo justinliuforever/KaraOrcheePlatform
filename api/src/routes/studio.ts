@@ -7,13 +7,16 @@ import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireAdmin, audit } from "../admin";
-import { books, pieces, pieceVersions, studioJobs } from "../db/schema";
+import { books, pieces, pieceVersions, studioJobs, works } from "../db/schema";
 import { rebuildCatalog, type BundleFile } from "../catalog_build";
-import { pieceSlug, bookSlug } from "../slug";
+import { pieceSlug, bookSlug, normalizeCatalogue } from "../slug";
+
+const PUBLISH_ROLES = new Set(["score_events", "accompaniment_events", "geometry", "svg", "reference_audio"]);
+const INSTRUMENTS = ["piano", "violin", "guitar"] as const;
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 30 * 1024 * 1024, files: 2 },
+  limits: { fileSize: 80 * 1024 * 1024, files: 3 }, // audio can be tens of MB
 });
 
 // Both files are mandatory in the wizard: professional notation software exports
@@ -29,6 +32,15 @@ const metadataSchema = z
     tracking: z.enum(["validated", "experimental"]).default("experimental"),
     rights: z.enum(["public_domain", "licensed", "unknown"]), // required — no default
     rightsNote: z.string().max(2000).default(""),
+    instrument: z.enum(INSTRUMENTS).default("piano"),
+    soloPart: z.string().max(80).nullable().default(null),
+    work: z
+      .object({
+        id: z.string().regex(/^[a-z0-9][a-z0-9_]{2,63}$/),
+        index: z.number().int().min(0).nullable().default(null),
+      })
+      .nullable()
+      .default(null),
     book: z
       .object({
         id: z.string().regex(/^[a-z0-9][a-z0-9_]{2,63}$/),
@@ -57,6 +69,17 @@ const patchSchema = z.object({
   tracking: z.enum(["validated", "experimental"]).optional(),
   rights: z.enum(["public_domain", "licensed", "unknown"]).optional(),
   rightsNote: z.string().max(2000).optional(),
+  instrument: z.enum(INSTRUMENTS).optional(),
+  // Solo part id from the XML part-list. Changing it invalidates every built artifact
+  // (display, timeline, preview) — the PATCH handler resets and re-preflights.
+  soloPart: z.string().max(80).nullable().optional(),
+  work: z
+    .object({
+      id: z.string().regex(/^[a-z0-9][a-z0-9_]{2,63}$/),
+      index: z.number().int().min(0).nullable().optional(),
+    })
+    .nullable()
+    .optional(),
   book: z
     .object({
       id: z.string().regex(/^[a-z0-9][a-z0-9_]{2,63}$/),
@@ -71,6 +94,15 @@ const checksSchema = z.object({
   title: z.string().optional(),
   composer: z.string().optional(),
   subtitle: z.string().optional(),
+  instrument: z.string().optional(),
+  work: z
+    .object({
+      id: z.string().optional(), // existing work selected
+      catalogue: z.string().optional(), // creating a new work
+      index: z.number().int().min(0).nullable().optional(),
+    })
+    .nullable()
+    .optional(),
   book: z
     .object({
       id: z.string().optional(), // existing book selected
@@ -83,6 +115,7 @@ const checksSchema = z.object({
 
 const XML_EXT = /\.(musicxml|xml|mxl)$/i;
 const MIDI_EXT = /\.(mid|midi)$/i;
+const AUDIO_EXT = /\.(m4a|mp3|wav|aac)$/i;
 const PUBLISHABLE_RIGHTS = new Set(["public_domain", "licensed"]);
 
 function safeName(original: string): string {
@@ -91,7 +124,7 @@ function safeName(original: string): string {
 }
 
 interface SourceEntry {
-  kind: "musicxml" | "midi";
+  kind: "musicxml" | "midi" | "audio";
   path: string;
   bytes: number;
   sha256: string;
@@ -114,11 +147,17 @@ export function studioRouter(deps: Deps): Router {
     if (!midi || !MIDI_EXT.test(midi.originalname)) {
       return { error: "midi_required" };
     }
+    const audio = files?.audio?.[0];
+    if (audio && !AUDIO_EXT.test(audio.originalname)) {
+      return { error: "audio_bad_extension" };
+    }
     const sources: SourceEntry[] = [];
     for (const [kind, file] of [
       ["musicxml", musicxml],
       ["midi", midi],
+      ["audio", audio],
     ] as const) {
+      if (!file) continue;
       const path = `staging/${jobId}/${safeName(file.originalname)}`;
       await deps.studio!.uploadSource(path, file.buffer, file.mimetype);
       sources.push({
@@ -141,6 +180,7 @@ export function studioRouter(deps: Deps): Router {
     upload.fields([
       { name: "musicxml", maxCount: 1 },
       { name: "midi", maxCount: 1 },
+      { name: "audio", maxCount: 1 },
     ]),
     wrap(async (req, res) => {
       if (!deps.studio || !deps.piecesQueue) {
@@ -159,7 +199,21 @@ export function studioRouter(deps: Deps): Router {
           res.status(404).json({ error: "piece_not_found" });
           return;
         }
+        // One open build per piece: two parallel pinned drafts would race publishes and
+        // the last writer's metadata (incl. work membership) silently wins the row.
+        const [open] = await db
+          .select({ id: studioJobs.id, status: studioJobs.status })
+          .from(studioJobs)
+          .where(and(eq(studioJobs.pieceId, pin),
+            sql`${studioJobs.status} IN ('draft','queued','running','ready_for_review')`))
+          .limit(1);
+        if (open) {
+          res.status(409).json({ error: "piece_has_open_draft", jobId: open.id, status: open.status });
+          return;
+        }
         pieceId = piece.id;
+        const inst = piece.instrumentation as { solo?: string } | null;
+        const facts = piece.facts as { solo_part?: string } | null;
         metadata = {
           pinnedPieceId: piece.id,
           title: piece.title,
@@ -169,6 +223,9 @@ export function studioRouter(deps: Deps): Router {
           tracking: piece.tracking,
           rights: piece.rights,
           rightsNote: piece.rightsNote ?? "",
+          instrument: inst?.solo ?? "piano",
+          soloPart: facts?.solo_part ?? null,
+          work: piece.workId ? { id: piece.workId, index: piece.workIndex } : null,
           book: piece.bookId ? { id: piece.bookId, index: piece.bookIndex } : null,
         };
       }
@@ -250,6 +307,7 @@ export function studioRouter(deps: Deps): Router {
     upload.fields([
       { name: "musicxml", maxCount: 1 },
       { name: "midi", maxCount: 1 },
+      { name: "audio", maxCount: 1 },
     ]),
     wrap(async (req, res) => {
       if (!deps.studio || !deps.piecesQueue) {
@@ -314,7 +372,8 @@ export function studioRouter(deps: Deps): Router {
         res.status(409).json({ error: "not_a_draft", status: job.status });
         return;
       }
-      const merged = { ...(job.metadata as Record<string, unknown>), ...parsed.data };
+      const prev = job.metadata as Record<string, unknown>;
+      const merged = { ...prev, ...parsed.data };
       const title = typeof merged.title === "string" ? merged.title : "";
       const composer = typeof merged.composer === "string" ? merged.composer : "";
       const subtitle = typeof merged.subtitle === "string" ? merged.subtitle : "";
@@ -326,11 +385,26 @@ export function studioRouter(deps: Deps): Router {
           ? pieceSlug(composer, title, subtitle)
           : job.pieceId;
 
+      // Solo part is metadata that CHANGES artifacts — flipping it invalidates the
+      // preflight (display, timeline, preview were built from the old choice).
+      const soloChanged =
+        parsed.data.soloPart !== undefined && parsed.data.soloPart !== (prev.soloPart ?? null);
+
       const [updated] = await db
         .update(studioJobs)
-        .set({ metadata: merged, pieceId, updatedAt: sql`now()` })
+        .set({
+          metadata: merged,
+          pieceId,
+          ...(soloChanged
+            ? { checkStatus: "pending", gates: {}, artifacts: [], stage: null, error: null }
+            : {}),
+          updatedAt: sql`now()`,
+        })
         .where(eq(studioJobs.id, id))
         .returning();
+      if (soloChanged && deps.piecesQueue) {
+        await deps.piecesQueue.sendPreflight({ jobId: id });
+      }
       res.json(updated);
     }),
   );
@@ -345,9 +419,49 @@ export function studioRouter(deps: Deps): Router {
         return;
       }
       const db = deps.db!.orm;
-      const { title, composer, subtitle, book } = parsed.data;
+      const { title, composer, subtitle, book, work, instrument } = parsed.data;
       const findings: { level: "info" | "warn" | "error"; code: string; message: string }[] = [];
       let slug: string | null = null;
+
+      if (work?.catalogue && composer) {
+        // Creating a new work: the (composer + normalized catalogue) check that keeps a
+        // bulk upload from fragmenting one sonata into N works.
+        const norm = normalizeCatalogue(work.catalogue);
+        const siblings = await db
+          .select()
+          .from(works)
+          .where(ilike(works.composer, `%${composer.split(" ").pop()}%`));
+        const dup = siblings.find((s) => s.catalogue && normalizeCatalogue(s.catalogue) === norm);
+        if (dup) {
+          findings.push({
+            level: "error",
+            code: "work_exists",
+            message: `"${dup.title}" (${dup.catalogue}) already exists — select it in the Work field instead of creating a duplicate.`,
+          });
+        }
+      }
+      if (work?.id && work.index != null) {
+        const at = await db
+          .select({ id: pieces.id, title: pieces.title, subtitle: pieces.subtitle, status: pieces.status, instrumentation: pieces.instrumentation })
+          .from(pieces)
+          .where(and(eq(pieces.workId, work.id), eq(pieces.workIndex, work.index)));
+        for (const p of at) {
+          const pInst = (p.instrumentation as { solo?: string } | null)?.solo ?? "piano";
+          if (pInst === (instrument ?? "piano")) {
+            findings.push({
+              level: "warn",
+              code: "movement_taken",
+              message: `Movement ${work.index} already exists for ${pInst}: "${p.title}${p.subtitle ? ` · ${p.subtitle}` : ""}" (${p.status}). Same movement + same instrument is probably a duplicate upload${p.status === "archived" ? " — consider restoring it instead" : ""}.`,
+            });
+          } else {
+            findings.push({
+              level: "info",
+              code: "movement_other_instrument",
+              message: `Movement ${work.index} exists on ${pInst} ("${p.title}") — uploading the ${instrument ?? "piano"} version of the same movement is expected for arrangements.`,
+            });
+          }
+        }
+      }
 
       if (title && composer) {
         slug = pieceSlug(composer, title, subtitle ?? "");
@@ -436,6 +550,17 @@ export function studioRouter(deps: Deps): Router {
       const meta = metadataSchema.safeParse(job.metadata);
       if (!meta.success) {
         res.status(400).json({ error: "metadata_incomplete", detail: meta.success ? [] : meta.error.issues });
+        return;
+      }
+      // Reviewed = published: the artifacts on this row must have been built from the
+      // CURRENT solo-part choice.
+      const stamp = (job.gates as Record<string, { metrics?: { solo_part?: string } }>)?.sanity
+        ?.metrics?.solo_part;
+      if (meta.data.soloPart && stamp && meta.data.soloPart !== stamp) {
+        res.status(409).json({
+          error: "stale_preflight",
+          message: "The checks ran against a different solo-part choice — they are re-running; submit again when they pass.",
+        });
         return;
       }
       const pinned = (job.metadata as Record<string, unknown>).pinnedPieceId;
@@ -612,9 +737,19 @@ export function studioRouter(deps: Deps): Router {
         res.status(409).json({ error: "rights_blocked", rights: meta.rights });
         return;
       }
-      const artifacts = job.artifacts as BundleFile[];
-      if (!Array.isArray(artifacts) || artifacts.length === 0) {
+      const allArtifacts = job.artifacts as BundleFile[];
+      if (!Array.isArray(allArtifacts) || allArtifacts.length === 0) {
         res.status(409).json({ error: "no_artifacts" });
+        return;
+      }
+      // Role allowlist: preview audio is a review aid — it must never enter the
+      // immutable bundle or the fielded catalog.
+      const artifacts = allArtifacts.filter((a) => PUBLISH_ROLES.has(a.role));
+      // Reviewed = published, publish-side re-assertion.
+      const publishStamp = (job.gates as Record<string, { metrics?: { solo_part?: string } }>)
+        ?.sanity?.metrics?.solo_part;
+      if (meta.soloPart && publishStamp && meta.soloPart !== publishStamp) {
+        res.status(409).json({ error: "stale_artifacts", message: "Artifacts were built from a different solo-part choice — re-run the checks." });
         return;
       }
       const pieceId = job.pieceId;
@@ -635,9 +770,38 @@ export function studioRouter(deps: Deps): Router {
         versionFiles.push({ ...a, path: toPath });
       }
 
-      const engineSha =
-        (job.gates as Record<string, { metrics?: { engine_sha?: string } }>)?.geometry?.metrics
-          ?.engine_sha ?? null;
+      const gates = job.gates as Record<string, { metrics?: Record<string, unknown> }>;
+      const engineSha = (gates?.geometry?.metrics?.engine_sha as string | undefined) ?? null;
+      // Assemble facts from gate metrics: XML ground truth + computed duration + the
+      // part choice this bundle was built from.
+      const xm = (gates?.sanity?.metrics?.xml_meta ?? {}) as Record<string, unknown>;
+      const facts = {
+        key: xm.key ?? null,
+        time: xm.time ?? null,
+        measures: xm.measures ?? null,
+        tempo_bpm: xm.tempo_bpm ?? null,
+        tempo_text: xm.tempo_text ?? null,
+        tempo_source: xm.tempo_source ?? "default",
+        duration_sec: gates?.alignment?.metrics?.duration_sec ?? null,
+        solo_part: gates?.sanity?.metrics?.solo_part ?? null,
+        parts: ((xm.parts as { name?: string | null }[] | undefined) ?? []).map((p) => p.name).filter(Boolean),
+      };
+      const instrumentation = {
+        solo: meta.instrument,
+        parts: (xm.n_parts as number | undefined) && (xm.n_parts as number) > 1
+          ? [meta.instrument, "piano"]
+          : [meta.instrument],
+      };
+
+      // Work membership referenced at publish must exist (created earlier via the
+      // wizard's Work lane / POST /admin/works).
+      if (meta.work) {
+        const [w] = await db.select().from(works).where(eq(works.id, meta.work.id)).limit(1);
+        if (!w) {
+          res.status(409).json({ error: "work_missing", workId: meta.work.id });
+          return;
+        }
+      }
 
       await db.transaction(async (tx) => {
         if (meta.book) {
@@ -646,39 +810,29 @@ export function studioRouter(deps: Deps): Router {
             .values({ id: meta.book.id, title: meta.book.title ?? meta.book.id })
             .onConflictDoNothing();
         }
+        const pieceCols = {
+          title: meta.title,
+          composer: meta.composer,
+          subtitle: meta.subtitle,
+          difficulty: meta.difficulty,
+          tracking: meta.tracking,
+          bookId: meta.book?.id ?? null,
+          bookIndex: meta.book?.index ?? null,
+          workId: meta.work?.id ?? null,
+          workIndex: meta.work?.index ?? null,
+          instrumentation,
+          facts,
+          rights: meta.rights,
+          rightsNote: meta.rightsNote || null,
+          status: "published",
+          publishedVersion: version,
+        };
         await tx
           .insert(pieces)
-          .values({
-            id: pieceId,
-            title: meta.title,
-            composer: meta.composer,
-            subtitle: meta.subtitle,
-            mode: meta.mode,
-            difficulty: meta.difficulty,
-            tracking: meta.tracking,
-            bookId: meta.book?.id ?? null,
-            bookIndex: meta.book?.index ?? null,
-            rights: meta.rights,
-            rightsNote: meta.rightsNote || null,
-            status: "published",
-            publishedVersion: version,
-          })
+          .values({ id: pieceId, mode: meta.mode, ...pieceCols })
           .onConflictDoUpdate({
             target: pieces.id,
-            set: {
-              title: meta.title,
-              composer: meta.composer,
-              subtitle: meta.subtitle,
-              difficulty: meta.difficulty,
-              tracking: meta.tracking,
-              bookId: meta.book?.id ?? null,
-              bookIndex: meta.book?.index ?? null,
-              rights: meta.rights,
-              rightsNote: meta.rightsNote || null,
-              status: "published",
-              publishedVersion: version,
-              updatedAt: sql`now()`,
-            },
+            set: { ...pieceCols, updatedAt: sql`now()` },
           });
         await tx.insert(pieceVersions).values({
           pieceId,

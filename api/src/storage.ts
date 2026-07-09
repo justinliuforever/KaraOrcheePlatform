@@ -137,7 +137,7 @@ export function createBlobStudioStore(connectionString: string): StudioStore {
         .syncCopyFromURL(signedCopyUrl(CONTAINER, fromPath, src.url));
     },
     async putBundleJson(path, body) {
-      const data = Buffer.from(JSON.stringify(body, null, 2));
+      const data = Buffer.from(JSON.stringify(body)); // minified: catalog is a wire payload
       await bundles.getBlockBlobClient(path).uploadData(data, {
         blobHTTPHeaders: { blobContentType: "application/json" },
       });

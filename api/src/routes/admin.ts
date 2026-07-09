@@ -6,10 +6,28 @@ import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireAdmin, audit } from "../admin";
-import { auditEvents, books, pieces, pieceVersions, studioJobs, users } from "../db/schema";
+import { auditEvents, books, pieces, pieceVersions, studioJobs, users, works } from "../db/schema";
 import { and } from "drizzle-orm";
 import { processCover, CoverError } from "../covers";
-import { bookSlug } from "../slug";
+import { bookSlug, normalizeCatalogue, slugify } from "../slug";
+
+const workSchema = z.object({
+  title: z.string().min(1).max(200),
+  composer: z.string().min(1).max(120),
+  catalogue: z.string().max(60).nullable().optional(),
+  workType: z
+    .enum(["sonata", "suite", "etude_set", "prelude_fugue", "variations", "cycle", "concerto", "collection", "other"])
+    .default("other"),
+  sortIndex: z.number().int().nullable().optional(),
+});
+
+// Work slug per the locked grammar: {composer-surname}_{catalogue} when catalogued,
+// else surname + title tokens.
+function workSlugFor(composer: string, title: string, catalogue: string | null | undefined): string {
+  const surname = slugify(composer).split("_").pop() ?? "work";
+  const tail = catalogue ? normalizeCatalogue(catalogue) : slugify(title).split("_").slice(0, 4).join("_");
+  return `${surname}_${tail}`.slice(0, 64).replace(/_+$/, "");
+}
 import { rebuildCatalog } from "../catalog_build";
 
 // Registry-owned edits: display/catalog fields only. Anything baked into the bundle
@@ -193,6 +211,116 @@ export function adminRouter(deps: Deps): Router {
       coverThumbUrl: deps.catalog.signReadUrl(deps.studio.bundleUrl(thumbPath)),
     };
   }
+
+  router.get(
+    "/admin/works",
+    wrap(async (req, res) => {
+      const db = deps.db!.orm;
+      const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+      const rows = await db
+        .select()
+        .from(works)
+        .where(q ? or(ilike(works.title, `%${q}%`), ilike(works.composer, `%${q}%`), ilike(works.catalogue, `%${q}%`)) : undefined)
+        .orderBy(works.composer, works.sortIndex, works.title)
+        .limit(100);
+      const counts = await db
+        .select({ workId: pieces.workId, count: sql<number>`count(*)::int` })
+        .from(pieces)
+        .groupBy(pieces.workId);
+      const byWork = new Map(counts.map((c) => [c.workId, c.count]));
+      res.json({ items: rows.map((w) => ({ ...w, pieceCount: byWork.get(w.id) ?? 0 })) });
+    }),
+  );
+
+  router.post(
+    "/admin/works",
+    wrap(async (req, res) => {
+      const parsed = workSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "invalid_work", detail: parsed.error.issues });
+        return;
+      }
+      const db = deps.db!.orm;
+      const w = parsed.data;
+      // Dup check: normalized catalogue within composer — the check that stops a bulk
+      // upload fragmenting one sonata into three works.
+      if (w.catalogue) {
+        const norm = normalizeCatalogue(w.catalogue);
+        const siblings = await db
+          .select()
+          .from(works)
+          .where(ilike(works.composer, `%${w.composer.split(" ").pop()}%`));
+        const dup = siblings.find((s) => s.catalogue && normalizeCatalogue(s.catalogue) === norm);
+        if (dup) {
+          res.status(409).json({
+            error: "work_exists",
+            work: dup,
+            message: `"${dup.title}" (${dup.catalogue}) already exists — select it instead of creating a duplicate.`,
+          });
+          return;
+        }
+      }
+      const id = workSlugFor(w.composer, w.title, w.catalogue);
+      const [existing] = await db.select().from(works).where(eq(works.id, id)).limit(1);
+      if (existing) {
+        res.status(409).json({ error: "work_exists", work: existing });
+        return;
+      }
+      const [row] = await db
+        .insert(works)
+        .values({ id, title: w.title, composer: w.composer, catalogue: w.catalogue ?? null, workType: w.workType, sortIndex: w.sortIndex ?? null })
+        .returning();
+      await audit(deps, req.adminUser!, "work.create", { type: "work", id });
+      res.status(201).json(row);
+    }),
+  );
+
+  router.patch(
+    "/admin/works/:id",
+    wrap(async (req, res) => {
+      const parsed = workSchema.partial().safeParse(req.body);
+      if (!parsed.success || Object.keys(parsed.data).length === 0) {
+        res.status(400).json({ error: "invalid_work" });
+        return;
+      }
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [existing] = await db.select().from(works).where(eq(works.id, id)).limit(1);
+      if (!existing) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const [row] = await db
+        .update(works)
+        .set({ ...parsed.data, updatedAt: sql`now()` })
+        .where(eq(works.id, id))
+        .returning();
+      // Works feed the app's collapse headers — edits rebuild the catalog like pieces do.
+      if (deps.studio) await rebuildCatalog(db, deps.studio);
+      await audit(deps, req.adminUser!, "work.update", { type: "work", id }, { changes: parsed.data });
+      res.json(row);
+    }),
+  );
+
+  router.delete(
+    "/admin/works/:id",
+    wrap(async (req, res) => {
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [attached] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(pieces)
+        .where(eq(pieces.workId, id));
+      // RESTRICT: a navigation container must never be able to take content down.
+      if ((attached?.count ?? 0) > 0) {
+        res.status(409).json({ error: "work_has_pieces", count: attached!.count });
+        return;
+      }
+      await db.delete(works).where(eq(works.id, id));
+      await audit(deps, req.adminUser!, "work.delete", { type: "work", id });
+      res.json({ ok: true });
+    }),
+  );
 
   router.get(
     "/admin/books",

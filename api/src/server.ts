@@ -12,11 +12,13 @@ import { adminRouter } from "./routes/admin";
 import { studioRouter } from "./routes/studio";
 import { rateLimit } from "./ratelimit";
 import { cors } from "./cors";
+import compression from "compression";
 
 export function createServer(deps: Deps = {}): Express {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", true); // Container Apps ingress terminates TLS; req.ip = client
+  app.use(compression()); // catalog payloads gzip ~10x
   app.use(express.json());
   app.use(cors(deps.corsOrigins ?? []));
   app.use(rateLimit());
