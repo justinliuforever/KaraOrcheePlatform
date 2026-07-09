@@ -354,6 +354,16 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
           <p className="text-[11px] text-ink-faint mt-3 leading-relaxed">
             The piece ID <span className="font-mono">{d.id}</span> is permanent — renaming changes what
             players see, not the ID. "Upload new version" always stays attached to this ID.
+            {d.workId && (
+              <>
+                {" "}Part of work <span className="font-mono">{d.workId}</span>
+                {d.workIndex != null && ` (No. ${d.workIndex})`} — edit membership via a new
+                version upload.
+              </>
+            )}
+            {d.instrumentation && d.instrumentation.solo !== "piano" && (
+              <> {" "}Instrument: <strong>{d.instrumentation.solo}</strong>.</>
+            )}
           </p>
         </Section>
       )}

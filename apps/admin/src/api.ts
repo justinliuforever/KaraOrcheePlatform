@@ -84,6 +84,10 @@ export interface AdminPiece {
   bookId: string | null;
   bookIndex: number | null;
   bookTitle: string | null;
+  workId: string | null;
+  workIndex: number | null;
+  instrumentation: { solo: string; parts: string[] } | null;
+  facts: Record<string, unknown> | null;
   rights: string;
   rightsNote: string | null;
   status: string;
@@ -164,7 +168,35 @@ export interface StudioMetadata {
   tracking?: "validated" | "experimental";
   rights?: "public_domain" | "licensed" | "unknown";
   rightsNote?: string;
+  instrument?: "piano" | "violin" | "guitar";
+  soloPart?: string | null;
+  work?: { id: string; index: number | null } | null;
   book?: { id: string; title?: string; index: number | null } | null;
+}
+
+export interface XmlMeta {
+  parts: { id: string; name: string | null }[];
+  n_parts: number;
+  key: { fifths: number; mode?: string } | null;
+  time: string | null;
+  staves: number | null;
+  measures: number;
+  tempo_bpm: number | null;
+  tempo_text: string | null;
+  tempo_source: "xml" | "default";
+  suggested_title: string | null;
+  suggested_movement: string | null;
+  suggested_composer: string | null;
+}
+
+export interface AdminWork {
+  id: string;
+  title: string;
+  composer: string;
+  catalogue: string | null;
+  workType: string;
+  sortIndex: number | null;
+  pieceCount?: number;
 }
 
 export interface StudioJob {

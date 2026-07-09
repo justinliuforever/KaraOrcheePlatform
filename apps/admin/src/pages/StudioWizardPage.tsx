@@ -5,9 +5,11 @@ import {
   api,
   apiForm,
   type AdminBook,
+  type AdminWork,
   type CheckFinding,
   type StudioJob,
   type StudioMetadata,
+  type XmlMeta,
 } from "../api";
 import { Badge, Card, ErrorNote, Spinner } from "../components/ui";
 import { PREFLIGHT_GATES, RENDER_GATE, failureHint } from "../studio/gateInfo";
@@ -89,6 +91,83 @@ function FindingRow({ f }: { f: CheckFinding }) {
         ? "border-amber-200 bg-amber-50 text-warn"
         : "border-indigo-200 bg-brand-soft text-brand";
   return <p className={`rounded-lg border px-3 py-2 text-xs leading-relaxed ${tone}`}>{f.message}</p>;
+}
+
+const KEY_NAMES_MAJOR = ["C", "G", "D", "A", "E", "B", "F♯", "C♯"];
+const KEY_NAMES_FLAT_MAJOR = ["C", "F", "B♭", "E♭", "A♭", "D♭", "G♭", "C♭"];
+
+function keyLabel(key: { fifths: number; mode?: string } | null): string {
+  if (!key) return "—";
+  const f = key.fifths;
+  const name = f >= 0 ? KEY_NAMES_MAJOR[f] ?? `${f}♯` : KEY_NAMES_FLAT_MAJOR[-f] ?? `${-f}♭`;
+  return `${name} ${key.mode === "minor" ? "minor" : "major"} (${f >= 0 ? `${f}♯` : `${-f}♭`})`;
+}
+
+/** Read-only facts card: the MusicXML is ground truth — to change these, fix the file. */
+function FactsCard({ meta }: { meta: XmlMeta }) {
+  return (
+    <div className="rounded-xl border border-line bg-card px-3.5 py-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-2">
+        From the file <span className="normal-case font-normal">(read-only — re-export to change)</span>
+      </p>
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+        <div className="flex justify-between"><dt className="text-ink-faint">Key</dt><dd>{keyLabel(meta.key)}</dd></div>
+        <div className="flex justify-between"><dt className="text-ink-faint">Time</dt><dd>{meta.time ?? "—"}</dd></div>
+        <div className="flex justify-between"><dt className="text-ink-faint">Measures</dt><dd className="tabular-nums">{meta.measures}</dd></div>
+        <div className="flex justify-between">
+          <dt className="text-ink-faint">Tempo</dt>
+          <dd>{meta.tempo_bpm ? `♩=${meta.tempo_bpm}` : <span className="text-warn">not marked (120 assumed)</span>}{meta.tempo_text ? ` ${meta.tempo_text}` : ""}</dd>
+        </div>
+        <div className="flex justify-between col-span-2">
+          <dt className="text-ink-faint">Parts</dt>
+          <dd>{meta.parts.map((p, i) => p.name ?? `Part ${i + 1}`).join(" + ") || "—"}</dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
+/** Solo-part question — only for multi-part scores. Changing re-runs the checks. */
+function PartPicker({
+  meta,
+  soloPart,
+  onPick,
+}: {
+  meta: XmlMeta;
+  soloPart: string | null;
+  onPick: (id: string) => void;
+}) {
+  if (meta.n_parts <= 1) return null;
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-3.5 py-3">
+      <p className="text-xs font-semibold mb-1.5">
+        🎻 {meta.n_parts} parts detected — which one is the SOLO part?
+      </p>
+      <p className="text-[11px] text-ink-soft mb-2 leading-relaxed">
+        Students see and follow the solo part; the other part becomes the play-along
+        accompaniment. Changing this re-runs the checks (~10s).
+      </p>
+      <div className="flex gap-2 flex-wrap">
+        {meta.parts.map((p, i) => (
+          <label
+            key={p.id}
+            className={`rounded-lg border px-3 py-1.5 text-xs font-medium cursor-pointer ${
+              soloPart === p.id ? "border-brand bg-brand-soft text-brand" : "border-line bg-card"
+            }`}
+          >
+            <input
+              type="radio"
+              name="solopart"
+              className="sr-only"
+              checked={soloPart === p.id}
+              onChange={() => onPick(p.id)}
+            />
+            {p.name ?? `Part ${i + 1}`}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /** Live check rail: GitHub-Actions-style step list fed by the polled job row. */
@@ -204,12 +283,14 @@ function FilesGate() {
   const forPiece = params.get("piece");
   const [musicxml, setMusicxml] = useState<File | null>(null);
   const [midi, setMidi] = useState<File | null>(null);
+  const [audio, setAudio] = useState<File | null>(null);
 
   const create = useMutation<StudioJob, Error>({
     mutationFn: () => {
       const form = new FormData();
       form.set("musicxml", musicxml!);
       form.set("midi", midi!);
+      if (audio) form.set("audio", audio);
       return apiForm<StudioJob>(
         `/admin/studio/drafts${forPiece ? `?piece=${encodeURIComponent(forPiece)}` : ""}`,
         form,
@@ -255,6 +336,28 @@ function FilesGate() {
             file={midi}
             onFile={setMidi}
           />
+          <details className="rounded-xl border border-line bg-card">
+            <summary className="px-4 py-3 text-sm font-medium cursor-pointer text-ink-soft">
+              🎧 Reference audio (optional) — produced/polished recording
+            </summary>
+            <div className="px-4 pb-4 space-y-2">
+              <p className="text-[11px] text-ink-soft leading-relaxed">
+                Replaces the app's synthesized playback for this piece. <strong>Must be
+                produced at the score's notated tempo</strong> (a studio render from the same
+                MIDI/DAW project is exactly that). Why the strict check: tap-a-measure-to-seek,
+                cursor sync, and start-anywhere all assume the audio matches the score timeline
+                note-for-note — the automated verification guarantees a mismatched file can
+                never silently break them.
+              </p>
+              <FilePick
+                label="Audio (.m4a / .mp3 / .wav)"
+                accept=".m4a,.mp3,.wav,.aac"
+                hint="Optional — the app synthesizes playback when absent"
+                file={audio}
+                onFile={setAudio}
+              />
+            </div>
+          </details>
         </div>
         {create.isError && (
           <div className="mt-3">
@@ -302,8 +405,25 @@ function WizardBody({ jobId }: { jobId: string }) {
     }
   }, [jobQ.data]);
 
+  // XML suggestions prefill EMPTY fields once facts arrive (file values are suggestions,
+  // never authoritative — always editable).
+  const suggested = useRef(false);
+  useEffect(() => {
+    const xm = (jobQ.data?.gates?.sanity?.metrics as { xml_meta?: XmlMeta } | undefined)?.xml_meta;
+    if (!xm || suggested.current || !seeded.current) return;
+    suggested.current = true;
+    setMeta((m) => {
+      const next = { ...m };
+      if (!next.title && xm.suggested_title) next.title = xm.suggested_title;
+      if (!next.composer && xm.suggested_composer) next.composer = xm.suggested_composer;
+      if (!next.subtitle && xm.suggested_movement) next.subtitle = xm.suggested_movement;
+      return next;
+    });
+  }, [jobQ.data]);
+
   const [pieceFindings, setPieceFindings] = useState<CheckFinding[]>([]);
   const [bookFindings, setBookFindings] = useState<CheckFinding[]>([]);
+  const [workFindings, setWorkFindings] = useState<CheckFinding[]>([]);
   const [derivedSlug, setDerivedSlug] = useState<string | null>(null);
 
   const save = useMutation<StudioJob, Error, Partial<StudioMetadata>>({
@@ -341,12 +461,32 @@ function WizardBody({ jobId }: { jobId: string }) {
     setBookFindings(res.findings);
   }
 
-  function saveField(patch: Partial<StudioMetadata>, opts: { pieceChecks?: boolean; bookChecks?: boolean } = {}) {
+  async function runWorkChecks(m: StudioMetadata) {
+    if (!m.work) {
+      setWorkFindings([]);
+      return;
+    }
+    const res = await api<{ findings: CheckFinding[] }>("/admin/studio/checks", {
+      method: "POST",
+      body: JSON.stringify({
+        composer: m.composer,
+        instrument: m.instrument ?? "piano",
+        work: { id: m.work.id, index: m.work.index },
+      }),
+    });
+    setWorkFindings(res.findings);
+  }
+
+  function saveField(
+    patch: Partial<StudioMetadata>,
+    opts: { pieceChecks?: boolean; bookChecks?: boolean; workChecks?: boolean } = {},
+  ) {
     const next = { ...meta, ...patch };
     setMeta(next);
     save.mutate(patch);
     if (opts.pieceChecks) void runPieceChecks(next);
     if (opts.bookChecks) void runBookChecks(next);
+    if (opts.workChecks) void runWorkChecks(next);
   }
 
   // Replace-files affordance (lives in section 1).
@@ -402,6 +542,9 @@ function WizardBody({ jobId }: { jobId: string }) {
   }
 
   const checksPassed = job.checkStatus === "pass";
+  const xmlMeta = (job.gates?.sanity?.metrics as { xml_meta?: XmlMeta } | undefined)?.xml_meta;
+  const stampedSolo = (job.gates?.sanity?.metrics as { solo_part?: string } | undefined)?.solo_part;
+  const previewAudio = job.previews?.find((p) => p.role === "preview_audio");
   const hasErrors =
     pieceFindings.some((f) => f.level === "error") || bookFindings.some((f) => f.level === "error");
   const metaComplete =
@@ -464,6 +607,28 @@ function WizardBody({ jobId }: { jobId: string }) {
                   {replace.isPending ? "Uploading…" : "Replace files & re-check"}
                 </button>
                 {replace.isError && <ErrorNote message={replace.error.message} />}
+              </div>
+            )}
+            {xmlMeta && (
+              <div className="mt-3 space-y-3">
+                <FactsCard meta={xmlMeta} />
+                <PartPicker
+                  meta={xmlMeta}
+                  soloPart={meta.soloPart ?? stampedSolo ?? null}
+                  onPick={(id) => saveField({ soloPart: id })}
+                />
+                {previewAudio && (
+                  <div className="rounded-xl border border-line bg-card px-3.5 py-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-1.5">
+                      🔊 Preview — how the app will sound
+                    </p>
+                    <audio controls preload="none" src={previewAudio.url} className="w-full h-9" />
+                    <p className="text-[11px] text-ink-faint mt-1.5 leading-relaxed">
+                      Synthesized with the app's own sound. Not good enough for this piece?
+                      Add a produced reference audio in section 5.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </Card>
@@ -534,6 +699,27 @@ function WizardBody({ jobId }: { jobId: string }) {
                 </select>
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className={labelCls}>Instrument (solo)</label>
+                <select
+                  className={inputCls}
+                  value={meta.instrument ?? "piano"}
+                  onChange={(e) =>
+                    saveField({ instrument: e.target.value as StudioMetadata["instrument"] })
+                  }
+                >
+                  <option value="piano">Piano</option>
+                  <option value="violin">Violin</option>
+                  <option value="guitar">Guitar</option>
+                </select>
+                {meta.instrument && meta.instrument !== "piano" && (
+                  <p className="text-[11px] text-ink-faint mt-1">
+                    Non-piano pieces stay hidden from the app until instrument-aware builds ship.
+                  </p>
+                )}
+              </div>
+            </div>
             {(derivedSlug ?? (job.pieceId.startsWith("draft_") ? null : job.pieceId)) && (
               <p className="text-[11px] text-ink-faint">
                 Piece ID (automatic):{" "}
@@ -546,6 +732,12 @@ function WizardBody({ jobId }: { jobId: string }) {
               <FindingRow key={i} f={f} />
             ))}
           </Card>
+
+          <WorkSection
+            meta={meta}
+            onChange={(work) => saveField({ work }, { workChecks: true })}
+            findings={workFindings}
+          />
 
           <BookSection
             meta={meta}
@@ -787,6 +979,213 @@ function BookSection({
             <button className={btnGhost} onClick={() => setCreating(false)}>
               Cancel
             </button>
+          </div>
+        </div>
+      )}
+
+      {findings.map((f, i) => (
+        <FindingRow key={i} f={f} />
+      ))}
+    </Card>
+  );
+}
+
+/** Roman/Arabic movement-number auto-suggest from the subtitle ("I. Allegro" → 1). */
+function suggestIndex(subtitle: string | undefined): number | null {
+  if (!subtitle) return null;
+  const roman = subtitle.match(/^\s*(X{0,3}(?:IX|IV|V?I{0,3}))[.\s]/i);
+  if (roman && roman[1]) {
+    const map: Record<string, number> = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10, xi: 11, xii: 12 };
+    const v = map[roman[1].toLowerCase()];
+    if (v) return v;
+  }
+  const arabic = subtitle.match(/(?:no\.?|nr\.?|#)\s*(\d{1,3})/i) ?? subtitle.match(/^\s*(\d{1,3})[.\s]/);
+  return arabic ? Number(arabic[1]) : null;
+}
+
+/** Work lane: search-or-create the musical composition this piece is a movement of.
+ * BOOK = a method/exam publication you practice THROUGH (has a cover).
+ * WORK = a composition an artist would PROGRAM (sonata, étude set, WTC) — even if its
+ * title contains the word "Book". Both can apply at once. */
+function WorkSection({
+  meta,
+  onChange,
+  findings,
+}: {
+  meta: StudioMetadata;
+  onChange: (work: StudioMetadata["work"]) => void;
+  findings: CheckFinding[];
+}) {
+  const [q, setQ] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [newCatalogue, setNewCatalogue] = useState("");
+  const [newType, setNewType] = useState("sonata");
+  const [createFindings, setCreateFindings] = useState<CheckFinding[]>([]);
+
+  const searchQ = useQuery<{ items: AdminWork[] }, Error>({
+    queryKey: ["works", q],
+    queryFn: () => api(`/admin/works?q=${encodeURIComponent(q)}`),
+    enabled: q.trim().length > 0 || !!meta.work,
+  });
+  const selected = meta.work ? searchQ.data?.items.find((w) => w.id === meta.work!.id) : undefined;
+  const selQ = useQuery<{ items: AdminWork[] }, Error>({
+    queryKey: ["works", "sel", meta.work?.id],
+    queryFn: () => api(`/admin/works?q=${encodeURIComponent(meta.work!.id.replaceAll("_", " ").split(" ").pop() ?? "")}`),
+    enabled: !!meta.work && !selected,
+  });
+  const selectedWork = selected ?? selQ.data?.items.find((w) => w.id === meta.work?.id);
+
+  const createWork = useMutation<AdminWork, Error>({
+    mutationFn: () =>
+      api("/admin/works", {
+        method: "POST",
+        body: JSON.stringify({
+          title: newTitle,
+          composer: meta.composer ?? "",
+          catalogue: newCatalogue || null,
+          workType: newType,
+        }),
+      }),
+    onSuccess: (w) => {
+      setCreating(false);
+      setCreateFindings([]);
+      onChange({ id: w.id, index: meta.work?.index ?? suggestIndex(meta.subtitle) });
+    },
+  });
+
+  async function checkNewWork() {
+    if (!newCatalogue || !meta.composer) return;
+    const res = await api<{ findings: CheckFinding[] }>("/admin/studio/checks", {
+      method: "POST",
+      body: JSON.stringify({ composer: meta.composer, work: { catalogue: newCatalogue } }),
+    });
+    setCreateFindings(res.findings);
+  }
+
+  return (
+    <Card className="p-5 space-y-4">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">3 · Work (optional)</p>
+        <p className="text-[11px] text-ink-faint mt-1 leading-relaxed">
+          The COMPOSITION this piece is a movement/number of — a sonata, étude set, or
+          prelude+fugue pair that a performer would program. (Method books you practice
+          <em> through</em> belong in the Book section below; both can apply at once.)
+        </p>
+      </div>
+
+      {!meta.work && !creating && (
+        <div>
+          <label className={labelCls}>Search works (title / composer / catalogue no.)</label>
+          <input
+            className={inputCls}
+            placeholder="e.g. K. 330 or Sonata"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          {q.trim() && (
+            <div className="mt-2 rounded-lg border border-line divide-y divide-line max-h-44 overflow-y-auto">
+              {(searchQ.data?.items ?? []).map((w) => (
+                <button
+                  key={w.id}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-paper"
+                  onClick={() => {
+                    onChange({ id: w.id, index: suggestIndex(meta.subtitle) });
+                    setQ("");
+                  }}
+                >
+                  <span className="font-medium">{w.title}</span>
+                  <span className="text-ink-faint text-xs"> · {w.composer}{w.catalogue ? ` · ${w.catalogue}` : ""} · {w.pieceCount ?? 0} piece{(w.pieceCount ?? 0) === 1 ? "" : "s"}</span>
+                </button>
+              ))}
+              <button
+                className="w-full text-left px-3 py-2 text-sm text-brand font-medium hover:bg-paper"
+                onClick={() => {
+                  setCreating(true);
+                  setNewTitle(q);
+                  setQ("");
+                }}
+              >
+                + Create a new work…
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {creating && (
+        <div className="rounded-lg border border-line bg-paper/40 p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls}>Work title</label>
+              <input className={inputCls} placeholder="Piano Sonata No. 13 in C major" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} />
+            </div>
+            <div>
+              <label className={labelCls}>Catalogue No. (Op. / K. / BWV / Hob. / D.)</label>
+              <input
+                className={inputCls}
+                placeholder="K. 330"
+                value={newCatalogue}
+                onChange={(e) => setNewCatalogue(e.target.value)}
+                onBlur={() => void checkNewWork()}
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls}>Type</label>
+              <select className={inputCls} value={newType} onChange={(e) => setNewType(e.target.value)}>
+                {["sonata", "suite", "etude_set", "prelude_fugue", "variations", "cycle", "concerto", "collection", "other"].map((t) => (
+                  <option key={t} value={t}>{t.replaceAll("_", " ")}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-end">
+              <p className="text-[11px] text-ink-faint pb-2">Composer: {meta.composer || "(fill in Piece info first)"}</p>
+            </div>
+          </div>
+          {createFindings.map((f, i) => (
+            <FindingRow key={i} f={f} />
+          ))}
+          {createWork.isError && <ErrorNote message={createWork.error.message} />}
+          <div className="flex gap-2">
+            <button
+              className={btnPrimary}
+              disabled={!newTitle.trim() || !meta.composer || createWork.isPending || createFindings.some((f) => f.level === "error")}
+              onClick={() => createWork.mutate()}
+            >
+              {createWork.isPending ? "Creating…" : "Create work"}
+            </button>
+            <button className={btnGhost} onClick={() => setCreating(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {meta.work && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between rounded-lg border border-line bg-paper/50 px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="text-sm font-medium truncate">
+                {selectedWork?.title ?? meta.work.id}
+                {selectedWork?.catalogue && <span className="text-ink-soft font-normal"> · {selectedWork.catalogue}</span>}
+              </p>
+              <p className="text-[11px] text-ink-faint font-mono">{meta.work.id}</p>
+            </div>
+            <button className="text-xs text-ink-soft hover:text-bad shrink-0 ml-3" onClick={() => onChange(null)}>
+              ✕ detach
+            </button>
+          </div>
+          <div className="w-44">
+            <label className={labelCls}>Movement / number in work</label>
+            <input
+              className={inputCls}
+              type="number"
+              placeholder={String(suggestIndex(meta.subtitle) ?? "")}
+              value={meta.work.index ?? ""}
+              onChange={(e) =>
+                onChange({ id: meta.work!.id, index: e.target.value ? Number(e.target.value) : null })
+              }
+            />
           </div>
         </div>
       )}

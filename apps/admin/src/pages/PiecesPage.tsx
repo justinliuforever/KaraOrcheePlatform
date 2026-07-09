@@ -13,9 +13,14 @@ interface Filters {
   shelf: string; // "" | validated | experimental
   rights: string; // "" | public_domain | licensed | unknown | blocked
   book: string; // "" | none | <bookId>
+  instrument: string; // "" | piano | violin | guitar
 }
 
-const NO_FILTERS: Filters = { status: "", shelf: "", rights: "", book: "" };
+const NO_FILTERS: Filters = { status: "", shelf: "", rights: "", book: "", instrument: "" };
+
+function soloOf(p: AdminPiece): string {
+  return p.instrumentation?.solo ?? "piano";
+}
 
 function matches(p: AdminPiece, f: Filters): boolean {
   if (f.status && p.status !== f.status) return false;
@@ -23,6 +28,7 @@ function matches(p: AdminPiece, f: Filters): boolean {
   if (f.rights && p.rights !== f.rights) return false;
   if (f.book === "none" && p.bookId) return false;
   if (f.book && f.book !== "none" && p.bookId !== f.book) return false;
+  if (f.instrument && soloOf(p) !== f.instrument) return false;
   return true;
 }
 
@@ -149,6 +155,12 @@ export default function PiecesPage() {
               <option value="unknown">Unknown</option>
               <option value="blocked">Blocked</option>
             </select>
+            <select className={sel} value={filters.instrument} onChange={(e) => setFilters({ ...filters, instrument: e.target.value })}>
+              <option value="">Instrument: all</option>
+              <option value="piano">Piano</option>
+              <option value="violin">Violin</option>
+              <option value="guitar">Guitar</option>
+            </select>
             <select className={sel} value={filters.book} onChange={(e) => setFilters({ ...filters, book: e.target.value })}>
               <option value="">Book: all</option>
               <option value="none">No book</option>
@@ -204,7 +216,12 @@ export default function PiecesPage() {
                     {p.subtitle && <span className="text-ink-soft font-normal"> · {p.subtitle}</span>}
                     <span className="block text-[11px] font-mono text-ink-faint">{p.id}</span>
                   </Td>
-                  <Td className="text-ink-soft">{p.composer}</Td>
+                  <Td className="text-ink-soft">
+                    {p.composer}
+                    {soloOf(p) !== "piano" && (
+                      <span className="block text-[11px] text-brand">{soloOf(p)}</span>
+                    )}
+                  </Td>
                   <Td className="text-ink-soft">
                     {p.bookTitle ? `${p.bookTitle}${p.bookIndex != null ? ` #${p.bookIndex}` : ""}` : "—"}
                   </Td>
