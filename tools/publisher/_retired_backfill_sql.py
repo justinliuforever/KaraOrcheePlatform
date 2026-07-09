@@ -1,3 +1,7 @@
+# RETIRED 2026-07-08: catalog->SQL direction now REVERTS Library edits (SQL is truth).
+# Kept for history only. Do not run.
+raise SystemExit('retired — see docs/catalog_roadmap.md')
+
 #!/usr/bin/env python3
 """Backfill/sync catalog.json into the SQL registry (books/pieces/piece_versions).
 
