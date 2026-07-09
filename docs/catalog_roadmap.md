@@ -183,11 +183,13 @@ emit shape as a versioned public API.
 **Design decisions locked by the review:**
 - `instrumentation` shape = **`{solo: "violin", parts: ["violin","piano"]}`** — one flat
   string cannot serve both profile filtering and part display.
-- **`soundfonts[]` joins the catalog contract** {instrument, url, bytes, sha256, version} +
-  download-completeness rule: a piece download is complete only with its required soundfont
-  (else: violin piece downloaded → airplane mode → silence). SF2 blobs are immutable
-  versioned names (vsco2ce_violin_v1.sf2); mapping pinned in a manifest; never swapped
-  in place (would invalidate ear-gates under users' feet).
+- **Soundfonts are BUNDLED in the app for the 2-instrument beta** (founder 2026-07-08:
+  violin ~15-25MB + guitar a few MB keeps the app well under store limits; kills the
+  download-manager + offline-hole + catalog-contract complexity by construction). The
+  `soundfonts[]` catalog contract {instrument, url, bytes, sha256, version} + download-
+  completeness rule stays documented here as the ESCAPE PATH when instrument #4-5 arrives.
+  SF2 assets remain immutable versioned blobs in soundfont/ (source of truth for app
+  builds); never swapped in place (would invalidate ear-gates).
 - **Capability gating NOW**: /v1/catalog + /v1/pieces/:id/download filter server-side to
   piano/null instrumentation; instrument-aware app builds opt in explicitly (?caps= or /v2).
   Proven: the shipped decoder ignores catalog_version entirely — the ONLY lever over fielded

@@ -9,12 +9,28 @@ export function slugify(s: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
+// Digit-bearing tokens are identity (opus/catalogue/movement numbers — "Hob. XVI:48"
+// must never truncate to "XVI"): the cap applies to prose tokens only.
 function tokens(s: string, max: number): string {
-  return slugify(s)
+  const all = slugify(s)
     .split("_")
-    .filter((w) => w && !STOP.has(w))
-    .slice(0, max)
-    .join("_");
+    .filter((w) => w && !STOP.has(w));
+  const out: string[] = [];
+  let prose = 0;
+  for (const w of all) {
+    if (/\d/.test(w)) {
+      out.push(w);
+    } else if (prose < max) {
+      out.push(w);
+      prose += 1;
+    }
+  }
+  return out.join("_");
+}
+
+// Catalogue numbers compare loosely: "K. 330" == "K330" == "k.330".
+export function normalizeCatalogue(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 // Deterministic piece identity: composer surname + title + subtitle keys. The slug is

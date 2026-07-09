@@ -40,6 +40,23 @@ export const books = pgTable("books", {
   rightsNote: text("rights_note"),
   sortIndex: integer("sort_index"),
   status: text("status").notNull().default("active"), // active | archived
+  display: jsonb("display").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// A musical composition (sonata, étude set, prelude+fugue pair) grouping its movements.
+// Emitted to the catalog only while ≥1 published piece references it — works have no
+// independent publish/archive state. parent_work_id = one nesting hop max by convention.
+export const works = pgTable("works", {
+  id: text("id").primaryKey(), // slug, e.g. mozart_k330
+  title: text("title").notNull(),
+  composer: text("composer").notNull(),
+  catalogue: text("catalogue"), // "K. 330" | "BWV 846" — free text, normalized only for dup checks
+  workType: text("work_type").notNull().default("other"), // structural hint only, no business logic
+  parentWorkId: text("parent_work_id").references((): AnyPgColumn => works.id),
+  sortIndex: integer("sort_index"), // admin-maintained ordering within composer
+  display: jsonb("display").notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -57,6 +74,15 @@ export const pieces = pgTable("pieces", {
   display: jsonb("display").notNull().default({}),
   bookId: text("book_id").references(() => books.id),
   bookIndex: integer("book_index"),
+  // Work membership is ORTHOGONAL to book membership. (work_id, work_index) is NOT
+  // unique — arrangements on different instruments legitimately share both.
+  workId: text("work_id").references(() => works.id),
+  workIndex: integer("work_index"),
+  // { solo: "violin", parts: ["violin","piano"] }; null = piano (pre-v3 rows).
+  instrumentation: jsonb("instrumentation"),
+  // Auto-extracted musical facts: { key: {fifths, mode}, time: "3/4", measures,
+  // tempo_bpm, tempo_text, tempo_source: "xml"|"default", duration_sec, solo_part }.
+  facts: jsonb("facts").notNull().default({}),
   rights: text("rights").notNull().default("unknown"), // public_domain | licensed | unknown | blocked
   rightsNote: text("rights_note"),
   status: text("status").notNull().default("draft"), // draft | published | archived
@@ -120,4 +146,5 @@ export const auditEvents = pgTable("audit_events", {
 export type User = typeof users.$inferSelect;
 export type Piece = typeof pieces.$inferSelect;
 export type Book = typeof books.$inferSelect;
+export type Work = typeof works.$inferSelect;
 export type PieceVersion = typeof pieceVersions.$inferSelect;
