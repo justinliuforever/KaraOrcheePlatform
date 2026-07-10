@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { api, type AdminBook, type AdminPiece } from "../api";
+import { api, type AdminBook, type AdminPiece, type AdminWork } from "../api";
 import { Badge, Card, ErrorNote, PageHeader, Spinner, Td, Th, rightsTone, statusTone } from "../components/ui";
 import PiecePanel from "../components/PiecePanel";
 import { timeAgo } from "../studio/gateInfo";
@@ -13,10 +13,11 @@ interface Filters {
   shelf: string; // "" | validated | experimental
   rights: string; // "" | public_domain | licensed | unknown | blocked
   book: string; // "" | none | <bookId>
+  work: string; // "" | none | <workId>
   instrument: string; // "" | piano | violin | guitar
 }
 
-const NO_FILTERS: Filters = { status: "", shelf: "", rights: "", book: "", instrument: "" };
+const NO_FILTERS: Filters = { status: "", shelf: "", rights: "", book: "", work: "", instrument: "" };
 
 function soloOf(p: AdminPiece): string {
   return p.instrumentation?.solo ?? "piano";
@@ -28,14 +29,17 @@ function matches(p: AdminPiece, f: Filters): boolean {
   if (f.rights && p.rights !== f.rights) return false;
   if (f.book === "none" && p.bookId) return false;
   if (f.book && f.book !== "none" && p.bookId !== f.book) return false;
+  if (f.work === "none" && p.workId) return false;
+  if (f.work && f.work !== "none" && p.workId !== f.work) return false;
   if (f.instrument && soloOf(p) !== f.instrument) return false;
   return true;
 }
 
 function exportCsv(rows: AdminPiece[]) {
-  const cols = ["id", "title", "composer", "subtitle", "difficulty", "tracking", "bookId", "bookIndex", "rights", "status", "publishedVersion", "updatedAt"] as const;
+  const cols = ["id", "title", "composer", "subtitle", "instrument", "workId", "workIndex", "workTitle", "workCatalogue", "difficulty", "tracking", "bookId", "bookIndex", "rights", "status", "publishedVersion", "updatedAt"] as const;
   const esc = (v: unknown) => `"${String(v ?? "").replaceAll('"', '""')}"`;
-  const csv = [cols.join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\n");
+  const enriched = rows.map((r) => ({ ...r, instrument: soloOf(r) }));
+  const csv = [cols.join(","), ...enriched.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
   a.download = `pieces-library-${new Date().toISOString().slice(0, 10)}.csv`;
@@ -59,6 +63,10 @@ export default function PiecesPage() {
     queryKey: ["books"],
     queryFn: () => api("/admin/books"),
   });
+  const worksQ = useQuery<{ items: AdminWork[] }, Error>({
+    queryKey: ["works"],
+    queryFn: () => api("/admin/works"),
+  });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -80,7 +88,10 @@ export default function PiecesPage() {
           p.id.toLowerCase().includes(needle) ||
           p.title.toLowerCase().includes(needle) ||
           p.composer.toLowerCase().includes(needle) ||
-          (p.subtitle ?? "").toLowerCase().includes(needle),
+          (p.subtitle ?? "").toLowerCase().includes(needle) ||
+          (p.workTitle ?? "").toLowerCase().includes(needle) ||
+          (p.workCatalogue ?? "").toLowerCase().includes(needle) ||
+          (p.workId ?? "").toLowerCase().includes(needle),
       )
       .filter((p) => matches(p, filters));
     const dir = sort.dir;
@@ -161,6 +172,15 @@ export default function PiecesPage() {
               <option value="violin">Violin</option>
               <option value="guitar">Guitar</option>
             </select>
+            <select className={sel} value={filters.work} onChange={(e) => setFilters({ ...filters, work: e.target.value })}>
+              <option value="">Work: all</option>
+              <option value="none">Standalone (no work)</option>
+              {worksQ.data?.items.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.composer.split(" ").pop()} · {w.catalogue ?? w.title}
+                </option>
+              ))}
+            </select>
             <select className={sel} value={filters.book} onChange={(e) => setFilters({ ...filters, book: e.target.value })}>
               <option value="">Book: all</option>
               <option value="none">No book</option>
@@ -195,6 +215,7 @@ export default function PiecesPage() {
               <tr>
                 {sortHeader("title", "Piece")}
                 {sortHeader("composer", "Composer")}
+                <Th>Work</Th>
                 <Th>Book</Th>
                 {sortHeader("difficulty", "Diff")}
                 <Th>Shelf</Th>
@@ -220,6 +241,21 @@ export default function PiecesPage() {
                     {p.composer}
                     {soloOf(p) !== "piano" && (
                       <span className="block text-[11px] text-brand">{soloOf(p)}</span>
+                    )}
+                  </Td>
+                  <Td className="text-ink-soft">
+                    {p.workId ? (
+                      <>
+                        {p.workCatalogue ?? p.workTitle ?? p.workId}
+                        {p.workIndex != null && <span className="text-ink-faint"> · No.{p.workIndex}</span>}
+                        {p.workCatalogue && p.workTitle && (
+                          <span className="block text-[11px] text-ink-faint truncate max-w-40" title={p.workTitle}>
+                            {p.workTitle}
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      "—"
                     )}
                   </Td>
                   <Td className="text-ink-soft">

@@ -3,13 +3,24 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import {
   api,
+  ApiError,
   type AdminBook,
   type AdminPieceDetail,
+  type AdminWork,
   type PieceEdit,
 } from "../api";
 import { Badge, ErrorNote, Spinner, rightsTone, statusTone } from "./ui";
 import SlideOver from "./SlideOver";
-import { timeAgo } from "../studio/gateInfo";
+import { keyLabel, timeAgo } from "../studio/gateInfo";
+
+// What each published bundle file is FOR — reviewers shouldn't need to know role slugs.
+const ROLE_LABELS: Record<string, string> = {
+  score_events: "Score events — the note timeline the app plays and follows",
+  accompaniment_events: "Accompaniment events — play-along track (multi-part pieces)",
+  geometry: "Cursor geometry — where the cursor sits on each note",
+  svg: "Engraving",
+  reference_audio: "Reference audio — replaces synthesized playback in the app",
+};
 
 const inputCls =
   "w-full rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none focus:border-brand";
@@ -52,6 +63,8 @@ type EditForm = {
   tracking: "validated" | "experimental";
   bookId: string;
   bookIndex: string;
+  workId: string;
+  workIndex: string;
   rights: string;
   rightsNote: string;
 };
@@ -65,6 +78,8 @@ function toForm(d: AdminPieceDetail): EditForm {
     tracking: (d.tracking as "validated" | "experimental") ?? "experimental",
     bookId: d.bookId ?? "",
     bookIndex: d.bookIndex != null ? String(d.bookIndex) : "",
+    workId: d.workId ?? "",
+    workIndex: d.workIndex != null ? String(d.workIndex) : "",
     rights: d.rights,
     rightsNote: d.rightsNote ?? "",
   };
@@ -81,11 +96,16 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
     queryKey: ["books"],
     queryFn: () => api("/admin/books"),
   });
+  const worksQ = useQuery<{ items: AdminWork[] }, Error>({
+    queryKey: ["works"],
+    queryFn: () => api("/admin/works"),
+  });
 
   const [form, setForm] = useState<EditForm | null>(null);
   const [confirmApply, setConfirmApply] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"archive" | "takedown" | "restore" | null>(null);
   const [takedownNote, setTakedownNote] = useState("");
+  const [movementClash, setMovementClash] = useState<string | null>(null);
 
   useEffect(() => {
     if (detail.data) setForm(toForm(detail.data));
@@ -101,8 +121,16 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
       api(`/admin/pieces/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
     onSuccess: () => {
       setConfirmApply(false);
+      setMovementClash(null);
       qc.invalidateQueries({ queryKey: ["piece", id] });
       qc.invalidateQueries({ queryKey: ["pieces"] });
+      qc.invalidateQueries({ queryKey: ["works"] });
+    },
+    onError: (e) => {
+      if (e instanceof ApiError && e.code === "movement_taken") {
+        setConfirmApply(false);
+        setMovementClash(e.message);
+      }
     },
   });
 
@@ -134,6 +162,27 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
   const published = d.status === "published";
   const currentVersion = d.versions.find((v) => v.version === d.publishedVersion);
   const engravings = (currentVersion?.files ?? []).filter((f) => f.role === "svg" && f.url);
+  const referenceAudio = (currentVersion?.files ?? []).find((f) => f.role === "reference_audio" && f.url);
+  const facts = d.facts;
+  const soloPartName = facts?.solo_part
+    ? facts.parts?.find((p) => p.id === facts.solo_part)?.name ?? facts.solo_part
+    : null;
+  // The whole composition, this piece included, ordered by movement number.
+  const family = d.work
+    ? [
+        ...d.workSiblings.map((s) => ({ ...s, self: false })),
+        {
+          id: d.id,
+          title: d.title,
+          subtitle: d.subtitle,
+          workIndex: d.workIndex,
+          status: d.status,
+          publishedVersion: d.publishedVersion,
+          instrumentation: d.instrumentation,
+          self: true,
+        },
+      ].sort((a, b) => (a.workIndex ?? 999) - (b.workIndex ?? 999) || a.id.localeCompare(b.id))
+    : [];
 
   function buildPatch(): PieceEdit {
     const f = form!;
@@ -148,6 +197,10 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
     if (bId !== d.bookId) patch.bookId = bId;
     const bIdx = f.bookIndex ? Number(f.bookIndex) : null;
     if (bIdx !== d.bookIndex) patch.bookIndex = bIdx;
+    const wId = f.workId || null;
+    if (wId !== d.workId) patch.workId = wId;
+    const wIdx = wId && f.workIndex ? Number(f.workIndex) : null;
+    if (wIdx !== d.workIndex) patch.workIndex = wIdx;
     if (f.rights !== d.rights) patch.rights = f.rights as PieceEdit["rights"];
     if (f.rightsNote !== (d.rightsNote ?? "")) patch.rightsNote = f.rightsNote || null;
     return patch;
@@ -172,15 +225,11 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <Badge tone={(d.instrumentation?.solo ?? "piano") === "piano" ? "muted" : "ok"}>
+              {d.instrumentation?.solo ?? "piano"}
+            </Badge>
             <Badge tone={rightsTone(d.rights)}>{d.rights.replace("_", " ")}</Badge>
             <Badge tone={statusTone(d.status)}>{d.status}</Badge>
-            <Link
-              className="text-xs text-ink-soft hover:text-ink px-1.5"
-              to={`/pieces/${d.id}`}
-              title="Open as a full page"
-            >
-              ⤢
-            </Link>
             <button className="text-ink-faint hover:text-ink text-xl leading-none px-1" onClick={onClose} aria-label="Close">
               ×
             </button>
@@ -292,7 +341,24 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
           </div>
         </div>
       )}
-      {applyEdit.isError && <div className="mb-3"><ErrorNote message={applyEdit.error.message} /></div>}
+      {movementClash && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 mb-4">
+          <p className="text-sm mb-2">{movementClash}</p>
+          <div className="flex gap-2 justify-end">
+            <button className="text-sm text-ink-soft" onClick={() => setMovementClash(null)}>
+              Cancel
+            </button>
+            <button
+              className="rounded-lg bg-warn text-white text-sm font-medium px-3.5 py-1.5"
+              disabled={applyEdit.isPending}
+              onClick={() => applyEdit.mutate({ ...buildPatch(), confirmMovementClash: true })}
+            >
+              {applyEdit.isPending ? "Applying…" : "Apply anyway"}
+            </button>
+          </div>
+        </div>
+      )}
+      {applyEdit.isError && !movementClash && <div className="mb-3"><ErrorNote message={applyEdit.error.message} /></div>}
       {lifecycle.isError && <div className="mb-3"><ErrorNote message={lifecycle.error.message} /></div>}
 
       {/* ——— editable metadata ——— */}
@@ -354,17 +420,111 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
           <p className="text-[11px] text-ink-faint mt-3 leading-relaxed">
             The piece ID <span className="font-mono">{d.id}</span> is permanent — renaming changes what
             players see, not the ID. "Upload new version" always stays attached to this ID.
-            {d.workId && (
-              <>
-                {" "}Part of work <span className="font-mono">{d.workId}</span>
-                {d.workIndex != null && ` (No. ${d.workIndex})`} — edit membership via a new
-                version upload.
-              </>
-            )}
-            {d.instrumentation && d.instrumentation.solo !== "piano" && (
-              <> {" "}Instrument: <strong>{d.instrumentation.solo}</strong>.</>
-            )}
           </p>
+        </Section>
+      )}
+
+      {form && (
+        <Section
+          title="Work membership"
+          defaultOpen
+          badge={
+            d.work
+              ? `${d.work.catalogue ?? d.work.title}${d.workIndex != null ? ` · No.${d.workIndex}` : ""}`
+              : "standalone"
+          }
+        >
+          {d.work && (
+            <div className="rounded-lg border border-line bg-paper/50 px-3 py-2 mb-3">
+              <p className="text-sm font-medium">
+                {d.work.title}
+                {d.work.catalogue && <span className="text-ink-soft font-normal"> · {d.work.catalogue}</span>}
+              </p>
+              <p className="text-[11px] text-ink-faint">
+                {d.work.composer} · {d.work.workType.replaceAll("_", " ")} ·{" "}
+                <span className="font-mono">{d.work.id}</span>
+              </p>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>Work (composition)</label>
+              <select
+                className={inputCls}
+                value={form.workId}
+                onChange={(e) =>
+                  setForm({ ...form, workId: e.target.value, ...(e.target.value ? {} : { workIndex: "" }) })
+                }
+              >
+                <option value="">standalone — not part of a work</option>
+                {worksQ.data?.items.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.composer} · {w.title}
+                    {w.catalogue ? ` (${w.catalogue})` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={labelCls}>Movement / No. in work</label>
+              <input
+                className={inputCls}
+                type="number"
+                value={form.workIndex}
+                disabled={!form.workId}
+                onChange={(e) => setForm({ ...form, workIndex: e.target.value })}
+              />
+            </div>
+          </div>
+          <p className="text-[11px] text-ink-faint mt-2 leading-relaxed">
+            Membership is <strong>catalog metadata</strong>, edited here in place — the score
+            content is untouched, so no re-upload is needed (content changes are what go
+            through "Upload new version"). Applying updates the live app catalog immediately
+            when the piece is published. Same movement number + same instrument as another
+            piece is treated as a likely duplicate and asks for confirmation; different
+            instruments sharing a number is normal (arrangements of the same movement).
+            New works themselves are created during upload in the Studio wizard.
+          </p>
+          {family.length > 0 && (
+            <div className="mt-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-1.5">
+                In this work ({family.length} piece{family.length === 1 ? "" : "s"})
+              </p>
+              {family.map((s) => (
+                <div
+                  key={s.id}
+                  className={`flex items-center gap-2 py-1.5 border-b border-line/50 last:border-0 ${s.self ? "bg-brand-soft/40 -mx-2 px-2 rounded" : ""}`}
+                >
+                  <span className="text-xs tabular-nums text-ink-faint w-10 shrink-0">
+                    {s.workIndex != null ? `No.${s.workIndex}` : "—"}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    {s.self ? (
+                      <p className="text-xs font-medium truncate">
+                        {s.title}
+                        {s.subtitle && <span className="text-ink-soft font-normal"> · {s.subtitle}</span>}
+                        <span className="text-brand"> (this piece)</span>
+                      </p>
+                    ) : (
+                      <Link className="text-xs font-medium text-brand hover:underline truncate block" to={`/pieces?sel=${s.id}`}>
+                        {s.title}
+                        {s.subtitle && <span className="text-ink-soft font-normal"> · {s.subtitle}</span>}
+                      </Link>
+                    )}
+                  </div>
+                  {(s.instrumentation?.solo ?? "piano") !== "piano" && (
+                    <span className="text-[11px] text-ok shrink-0">{s.instrumentation!.solo}</span>
+                  )}
+                  <span className="shrink-0">
+                    <Badge tone={statusTone(s.status)}>{s.status}</Badge>
+                  </span>
+                  {s.publishedVersion != null && (
+                    <span className="text-[11px] text-ink-faint tabular-nums shrink-0">v{s.publishedVersion}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </Section>
       )}
 
@@ -396,6 +556,114 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
         </Section>
       )}
 
+      <Section
+        title="Score facts (from the file)"
+        defaultOpen
+        badge={facts ? `${facts.measures ?? "?"} measures` : "not extracted"}
+      >
+        {facts ? (
+          <>
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
+              <div className="flex justify-between"><dt className="text-ink-faint">Key</dt><dd>{keyLabel(facts.key)}</dd></div>
+              <div className="flex justify-between"><dt className="text-ink-faint">Time signature</dt><dd>{facts.time ?? "—"}</dd></div>
+              <div className="flex justify-between"><dt className="text-ink-faint">Measures</dt><dd className="tabular-nums">{facts.measures ?? "—"}</dd></div>
+              <div className="flex justify-between"><dt className="text-ink-faint">Staves</dt><dd className="tabular-nums">{facts.staves ?? "—"}</dd></div>
+              <div className="flex justify-between col-span-2">
+                <dt className="text-ink-faint">Tempo</dt>
+                <dd>
+                  {facts.tempo_bpm ? `♩=${facts.tempo_bpm}` : <span className="text-warn">not marked in the score — engraver default 120 used</span>}
+                  {facts.tempo_text ? ` · "${facts.tempo_text}"` : ""}
+                </dd>
+              </div>
+              <div className="flex justify-between col-span-2">
+                <dt className="text-ink-faint">Parts in the file</dt>
+                <dd className="text-right">
+                  {(facts.parts ?? []).map((p, i) => (
+                    <span key={p.id}>
+                      {i > 0 && " + "}
+                      {p.name ?? `Part ${i + 1}`}
+                      {facts.solo_part === p.id && <strong className="text-brand"> (solo)</strong>}
+                    </span>
+                  ))}
+                  {(facts.parts ?? []).length === 0 && "—"}
+                </dd>
+              </div>
+              {(facts.n_parts ?? 1) > 1 && soloPartName && (
+                <div className="flex justify-between col-span-2">
+                  <dt className="text-ink-faint">Students see &amp; follow</dt>
+                  <dd>
+                    <strong>{soloPartName}</strong> — the other part plays as accompaniment
+                  </dd>
+                </div>
+              )}
+              <div className="flex justify-between col-span-2">
+                <dt className="text-ink-faint">Playback instrumentation</dt>
+                <dd>
+                  solo = <strong>{d.instrumentation?.solo ?? "piano"}</strong>
+                  {(d.instrumentation?.parts?.length ?? 0) > 1 && ` · parts: ${d.instrumentation!.parts.join(" + ")}`}
+                </dd>
+              </div>
+            </dl>
+            <p className="text-[11px] text-ink-faint mt-3 leading-relaxed">
+              Extracted from the MusicXML at upload — the score file is the ground truth, so
+              these are read-only here. If a fact is wrong, the file is wrong: fix it in the
+              notation software and "Upload new version".
+            </p>
+          </>
+        ) : (
+          <p className="text-xs text-ink-faint leading-relaxed">
+            No extracted facts — this piece was published before Studio v3 introduced fact
+            extraction. They'll be filled in automatically the next time a version is
+            uploaded through the Studio.
+          </p>
+        )}
+      </Section>
+
+      <Section title="Audio" badge={referenceAudio ? "reference recording" : "synthesized"}>
+        <p className="text-xs font-medium mb-1">Preview render{d.previewAudio ? " (latest build)" : ""}</p>
+        {d.previewAudio ? (
+          <>
+            <audio controls preload="none" src={d.previewAudio.url} className="w-full" />
+            <p className="text-[11px] text-ink-faint mt-1 leading-relaxed">
+              Rendered {timeAgo(d.previewAudio.renderedAt)} by build{" "}
+              <Link className="text-brand font-mono" to={`/studio/${d.previewAudio.jobId}`}>
+                {d.previewAudio.jobId.slice(0, 8)}
+              </Link>{" "}
+              with the same instrument sound the app uses. Review aid only — it is never
+              shipped in the published bundle, because the app synthesizes playback on the
+              device from the score events (that is what keeps cursor sync and variable
+              tempo exact).
+            </p>
+          </>
+        ) : (
+          <p className="text-[11px] text-ink-faint leading-relaxed">
+            No staged preview available — build staging is temporary. Running a new build
+            through the Studio regenerates it.
+          </p>
+        )}
+        <div className="mt-3 pt-3 border-t border-line/60">
+          <p className="text-xs font-medium mb-1">
+            Reference audio{d.publishedVersion != null ? ` (published v${d.publishedVersion})` : ""}
+          </p>
+          {referenceAudio?.url ? (
+            <>
+              <audio controls preload="none" src={referenceAudio.url} className="w-full" />
+              <p className="text-[11px] text-ink-faint mt-1 leading-relaxed">
+                This produced recording replaces synthesized playback in the app. It passed
+                the automated tempo/onset verification at upload, so tap-to-seek and cursor
+                sync stay exact.
+              </p>
+            </>
+          ) : (
+            <p className="text-[11px] text-ink-faint leading-relaxed">
+              None — the app synthesizes playback from the score events (the standard path).
+              If a produced recording should replace the synth for this piece, attach it via
+              "Upload new version".
+            </p>
+          )}
+        </div>
+      </Section>
+
       <Section title="Engraving previews" badge={`${engravings.length} variants`}>
         {engravings.length === 0 && <p className="text-xs text-ink-faint">No published engraving.</p>}
         {engravings.map((f) => (
@@ -414,6 +682,11 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
       </Section>
 
       <Section title="Version history" badge={`${d.versions.length} version${d.versions.length === 1 ? "" : "s"}`}>
+        <p className="text-[11px] text-ink-faint mb-2 leading-relaxed">
+          Every published version is an immutable bundle — these exact files are what the
+          app downloads. Preview audio is deliberately absent (review aid, see Audio above).
+          Older versions are never deleted, so installed apps keep working.
+        </p>
         {d.versions.map((v) => (
           <div key={v.version} className="rounded-lg border border-line mb-2">
             <div className="px-3 py-2 flex items-center justify-between bg-paper/50 border-b border-line">
@@ -432,7 +705,11 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
               <tbody>
                 {v.files.map((f, i) => (
                   <tr key={i} className="border-b border-line/50 last:border-0">
-                    <td className="px-3 py-1.5 text-xs font-medium">{f.role}{f.variant ? ` · ${f.variant}` : ""}</td>
+                    <td className="px-3 py-1.5 text-xs">
+                      <span className="font-medium">{ROLE_LABELS[f.role] ?? f.role}</span>
+                      {f.variant && <span className="text-ink-soft"> · {f.variant}</span>}
+                      <span className="block text-[10px] font-mono text-ink-faint">{f.role}</span>
+                    </td>
                     <td className="px-3 py-1.5 text-[11px] text-ink-faint font-mono">{f.sha256?.slice(0, 12)}</td>
                     <td className="px-3 py-1.5 text-xs text-ink-soft text-right tabular-nums">{fmtBytes(f.bytes)}</td>
                     <td className="px-3 py-1.5 text-right">

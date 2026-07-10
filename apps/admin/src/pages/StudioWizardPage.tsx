@@ -12,7 +12,7 @@ import {
   type XmlMeta,
 } from "../api";
 import { Badge, Card, ErrorNote, Spinner } from "../components/ui";
-import { PREFLIGHT_GATES, RENDER_GATE, failureHint } from "../studio/gateInfo";
+import { PREFLIGHT_GATES, RENDER_GATE, failureHint, keyLabel } from "../studio/gateInfo";
 
 const inputCls =
   "w-full rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none focus:border-brand";
@@ -91,16 +91,6 @@ function FindingRow({ f }: { f: CheckFinding }) {
         ? "border-amber-200 bg-amber-50 text-warn"
         : "border-indigo-200 bg-brand-soft text-brand";
   return <p className={`rounded-lg border px-3 py-2 text-xs leading-relaxed ${tone}`}>{f.message}</p>;
-}
-
-const KEY_NAMES_MAJOR = ["C", "G", "D", "A", "E", "B", "F♯", "C♯"];
-const KEY_NAMES_FLAT_MAJOR = ["C", "F", "B♭", "E♭", "A♭", "D♭", "G♭", "C♭"];
-
-function keyLabel(key: { fifths: number; mode?: string } | null): string {
-  if (!key) return "—";
-  const f = key.fifths;
-  const name = f >= 0 ? KEY_NAMES_MAJOR[f] ?? `${f}♯` : KEY_NAMES_FLAT_MAJOR[-f] ?? `${-f}♭`;
-  return `${name} ${key.mode === "minor" ? "minor" : "major"} (${f >= 0 ? `${f}♯` : `${-f}♭`})`;
 }
 
 /** Read-only facts card: the MusicXML is ground truth — to change these, fix the file. */

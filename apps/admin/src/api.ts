@@ -24,8 +24,9 @@ async function token(): Promise<string> {
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
+  // message = the server's human explanation when it sent one, else the code.
+  constructor(public status: number, public code: string, detail?: string) {
+    super(detail ?? code);
   }
 }
 
@@ -40,7 +41,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, body.error ?? `http_${res.status}`);
+    throw new ApiError(res.status, body.error ?? `http_${res.status}`, body.message);
   }
   return res.json();
 }
@@ -86,8 +87,10 @@ export interface AdminPiece {
   bookTitle: string | null;
   workId: string | null;
   workIndex: number | null;
+  workTitle: string | null;
+  workCatalogue: string | null;
   instrumentation: { solo: string; parts: string[] } | null;
-  facts: Record<string, unknown> | null;
+  facts: PieceFacts | null;
   rights: string;
   rightsNote: string | null;
   status: string;
@@ -124,8 +127,34 @@ export interface PieceBuildRow {
   updatedAt: string;
 }
 
-export interface AdminPieceDetail extends Omit<AdminPiece, "bookTitle" | "versionCount" | "latestVersion"> {
+export interface PieceFacts {
+  key?: { fifths: number; mode?: string } | null;
+  time?: string | null;
+  staves?: number | null;
+  measures?: number;
+  tempo_bpm?: number | null;
+  tempo_text?: string | null;
+  tempo_source?: "xml" | "default";
+  n_parts?: number;
+  parts?: { id: string; name: string | null }[];
+  solo_part?: string | null;
+}
+
+export interface WorkSibling {
+  id: string;
+  title: string;
+  subtitle: string | null;
+  workIndex: number | null;
+  status: string;
+  publishedVersion: number | null;
+  instrumentation: { solo: string; parts: string[] } | null;
+}
+
+export interface AdminPieceDetail extends Omit<AdminPiece, "bookTitle" | "workTitle" | "workCatalogue" | "versionCount" | "latestVersion"> {
   book: (AdminBook & { coverUrl: string | null; coverThumbUrl: string | null }) | null;
+  work: AdminWork | null;
+  workSiblings: WorkSibling[];
+  previewAudio: { url: string; jobId: string; renderedAt: string } | null;
   versions: PieceVersionRow[];
   sources: PieceSource[];
   jobs: PieceBuildRow[];
@@ -140,6 +169,9 @@ export type PieceEdit = Partial<{
   tracking: "validated" | "experimental";
   bookId: string | null;
   bookIndex: number | null;
+  workId: string | null;
+  workIndex: number | null;
+  confirmMovementClash: boolean;
   rights: "public_domain" | "licensed" | "unknown" | "blocked";
   rightsNote: string | null;
   expectedUpdatedAt: string;
@@ -245,7 +277,7 @@ export async function apiForm<T>(path: string, form: FormData, method = "POST"):
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, body.message ?? body.error ?? `http_${res.status}`);
+    throw new ApiError(res.status, body.error ?? `http_${res.status}`, body.message);
   }
   return res.json();
 }

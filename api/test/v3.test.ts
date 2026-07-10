@@ -392,3 +392,81 @@ describe("capability filter", () => {
     expect(caps.body.works).toHaveLength(1);
   });
 });
+
+describe("library work membership editing", () => {
+  it("PATCH edits membership with clash-confirm; list/detail expose work context", async () => {
+    const app = makeApp();
+    await db.orm.insert(pieces).values({
+      id: "mozart_k330_alt",
+      title: "Sonata facile alt",
+      composer: "W. A. Mozart",
+      rights: "public_domain",
+      rightsNote: "seed",
+      status: "published",
+      publishedVersion: 1,
+    });
+
+    // same work + same movement + same (default piano) instrument → must confirm
+    const clash = await request(app)
+      .patch("/admin/pieces/mozart_k330_alt")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ workId: "mozart_k330", workIndex: 1 });
+    expect(clash.status).toBe(409);
+    expect(clash.body.error).toBe("movement_taken");
+
+    const ok = await request(app)
+      .patch("/admin/pieces/mozart_k330_alt")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ workId: "mozart_k330", workIndex: 1, confirmMovementClash: true });
+    expect(ok.status).toBe(200);
+    expect(ok.body.workId).toBe("mozart_k330");
+    expect(ok.body.workIndex).toBe(1);
+
+    // moving to a free number needs no confirm
+    const move = await request(app)
+      .patch("/admin/pieces/mozart_k330_alt")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ workIndex: 3 });
+    expect(move.status).toBe(200);
+    expect(move.body.workIndex).toBe(3);
+
+    // a movement number without a work is meaningless
+    await db.orm.insert(pieces).values({
+      id: "loner", title: "Loner", composer: "X", rights: "licensed",
+      status: "published", publishedVersion: 1,
+    });
+    const bad = await request(app)
+      .patch("/admin/pieces/loner")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ workIndex: 2 });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe("work_index_without_work");
+
+    const missing = await request(app)
+      .patch("/admin/pieces/loner")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ workId: "nonexistent_work" });
+    expect(missing.status).toBe(400);
+    expect(missing.body.error).toBe("work_missing");
+
+    // list joins work title + catalogue for search/columns
+    const list = await request(app).get("/admin/pieces").set("Authorization", `Bearer ${adminToken}`);
+    const row = list.body.items.find((p: { id: string }) => p.id === "mozart_k330_alt");
+    expect(row.workTitle).toContain("Sonata");
+    expect(row.workCatalogue).toBe("K. 330");
+
+    // detail carries the work row + every sibling in the composition
+    const det = await request(app).get("/admin/pieces/mozart_k330_alt").set("Authorization", `Bearer ${adminToken}`);
+    expect(det.body.work.id).toBe("mozart_k330");
+    expect(det.body.workSiblings.some((s: { id: string }) => s.id === "mozart_k330_mvt1")).toBe(true);
+
+    // detaching from the work clears the movement number with it
+    const clear = await request(app)
+      .patch("/admin/pieces/mozart_k330_alt")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ workId: null });
+    expect(clear.status).toBe(200);
+    expect(clear.body.workId).toBeNull();
+    expect(clear.body.workIndex).toBeNull();
+  });
+});

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import multer from "multer";
-import { desc, eq, ilike, or, sql } from "drizzle-orm";
+import { asc, desc, eq, ilike, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Deps } from "../deps";
 import { wrap } from "../deps";
@@ -43,6 +43,13 @@ const pieceEditSchema = z
     bookIndex: z.number().int().min(0).nullable().optional(),
     rights: z.enum(["public_domain", "licensed", "unknown", "blocked"]).optional(),
     rightsNote: z.string().max(2000).nullable().optional(),
+    // Work membership is catalog metadata (like book membership) — editable here,
+    // no re-upload needed. Content changes are what require a new version.
+    workId: z.string().regex(/^[a-z0-9][a-z0-9_]{2,63}$/).nullable().optional(),
+    workIndex: z.number().int().min(0).nullable().optional(),
+    // Same work + same movement + same instrument is usually a duplicate; the editor
+    // must explicitly confirm to override (arrangements legitimately share numbers).
+    confirmMovementClash: z.boolean().optional(),
     // Optimistic-concurrency token: the updated_at the editor loaded. A stale token
     // means another admin changed the row since — reject instead of clobbering.
     expectedUpdatedAt: z.string().optional(),
@@ -124,9 +131,12 @@ export function adminRouter(deps: Deps): Router {
         .select({
           piece: pieces,
           bookTitle: books.title,
+          workTitle: works.title,
+          workCatalogue: works.catalogue,
         })
         .from(pieces)
         .leftJoin(books, eq(pieces.bookId, books.id))
+        .leftJoin(works, eq(pieces.workId, works.id))
         .orderBy(pieces.title);
       const versions = await db
         .select({
@@ -139,9 +149,11 @@ export function adminRouter(deps: Deps): Router {
       const byPiece = new Map(versions.map((v) => [v.pieceId, v]));
 
       res.json({
-        items: rows.map(({ piece, bookTitle }) => ({
+        items: rows.map(({ piece, bookTitle, workTitle, workCatalogue }) => ({
           ...piece,
           bookTitle,
+          workTitle,
+          workCatalogue,
           versionCount: byPiece.get(piece.id)?.count ?? 0,
           latestVersion: byPiece.get(piece.id)?.latest ?? null,
         })),
@@ -481,6 +493,45 @@ export function adminRouter(deps: Deps): Router {
         });
         return;
       }
+      // Work membership: clearing the work clears the movement number with it; a
+      // movement number without a work is meaningless.
+      const finalWorkId = p.workId === undefined ? piece.workId : p.workId;
+      const finalWorkIndex =
+        finalWorkId == null ? null : p.workIndex === undefined ? piece.workIndex : p.workIndex;
+      if (p.workIndex != null && finalWorkId == null) {
+        res.status(400).json({
+          error: "work_index_without_work",
+          message: "A movement number needs a work — pick the work first.",
+        });
+        return;
+      }
+      if (finalWorkId && finalWorkId !== piece.workId) {
+        const [work] = await db.select().from(works).where(eq(works.id, finalWorkId)).limit(1);
+        if (!work) {
+          res.status(400).json({ error: "work_missing", message: "That work no longer exists — refresh and pick again." });
+          return;
+        }
+      }
+      const membershipChanged = finalWorkId !== piece.workId || finalWorkIndex !== piece.workIndex;
+      if (finalWorkId && finalWorkIndex != null && membershipChanged && !p.confirmMovementClash) {
+        const myInstrument = ((piece.instrumentation as { solo?: string } | null)?.solo ?? "piano");
+        const siblings = await db
+          .select({ id: pieces.id, title: pieces.title, subtitle: pieces.subtitle, status: pieces.status, instrumentation: pieces.instrumentation })
+          .from(pieces)
+          .where(and(eq(pieces.workId, finalWorkId), eq(pieces.workIndex, finalWorkIndex), ne(pieces.id, id)));
+        const clash = siblings.find(
+          (s) => ((s.instrumentation as { solo?: string } | null)?.solo ?? "piano") === myInstrument,
+        );
+        if (clash) {
+          res.status(409).json({
+            error: "movement_taken",
+            message: `No. ${finalWorkIndex} in this work is already "${clash.title}${clash.subtitle ? ` · ${clash.subtitle}` : ""}" (${clash.status}) on the same instrument — same movement + same instrument is usually a duplicate. Confirm to apply anyway (arrangements can legitimately share numbers).`,
+            clashPieceId: clash.id,
+          });
+          return;
+        }
+      }
+
       const finalBookId = p.bookId === undefined ? piece.bookId : p.bookId;
       const finalIndex = p.bookIndex === undefined ? piece.bookIndex : p.bookIndex;
       if (finalBookId) {
@@ -515,6 +566,9 @@ export function adminRouter(deps: Deps): Router {
           ...(p.tracking !== undefined ? { tracking: p.tracking } : {}),
           ...(p.bookId !== undefined ? { bookId: p.bookId } : {}),
           ...(p.bookIndex !== undefined ? { bookIndex: p.bookIndex } : {}),
+          ...(p.workId !== undefined || p.workIndex !== undefined
+            ? { workId: finalWorkId, workIndex: finalWorkIndex }
+            : {}),
           ...(p.rights !== undefined ? { rights: p.rights } : {}),
           ...(p.rightsNote !== undefined ? { rightsNote: p.rightsNote } : {}),
           updatedAt: sql`now()`,
@@ -642,6 +696,28 @@ export function adminRouter(deps: Deps): Router {
         ? { ...book, ...signCover(book.coverPath) }
         : null;
 
+      // Work membership context: the work row plus every sibling in the same work,
+      // so the reviewer sees the whole composition at a glance (missing movements,
+      // other-instrument arrangements) without leaving the panel.
+      const work = piece.workId
+        ? (await db.select().from(works).where(eq(works.id, piece.workId)).limit(1))[0] ?? null
+        : null;
+      const workSiblings = work
+        ? await db
+            .select({
+              id: pieces.id,
+              title: pieces.title,
+              subtitle: pieces.subtitle,
+              workIndex: pieces.workIndex,
+              status: pieces.status,
+              publishedVersion: pieces.publishedVersion,
+              instrumentation: pieces.instrumentation,
+            })
+            .from(pieces)
+            .where(and(eq(pieces.workId, work.id), ne(pieces.id, piece.id)))
+            .orderBy(asc(pieces.workIndex), asc(pieces.id))
+        : [];
+
       // Build history for this piece id (any outcome) — newest first.
       const jobs = await db
         .select({
@@ -704,7 +780,33 @@ export function adminRouter(deps: Deps): Router {
         .orderBy(desc(auditEvents.createdAt))
         .limit(20);
 
-      res.json({ ...piece, book: bookOut, versions, jobs, sources, recentAudit });
+      // Preview audio never ships in published bundles (the app synthesizes locally
+      // from the same score data) — but the latest build's staged render is the exact
+      // sound reviewers approved, so surface it for spot-checks while it exists.
+      let previewAudio: { url: string; jobId: string; renderedAt: string } | null = null;
+      if (deps.studio) {
+        const recentJobs = await db
+          .select({ id: studioJobs.id, artifacts: studioJobs.artifacts, updatedAt: studioJobs.updatedAt })
+          .from(studioJobs)
+          .where(eq(studioJobs.pieceId, piece.id))
+          .orderBy(desc(studioJobs.updatedAt))
+          .limit(10);
+        for (const j of recentJobs) {
+          const hit = (j.artifacts as { role: string; path: string }[] | null)?.find(
+            (a) => a.role === "preview_audio",
+          );
+          if (hit) {
+            previewAudio = {
+              url: sign(deps.studio.bundleUrl(hit.path)),
+              jobId: j.id,
+              renderedAt: j.updatedAt.toISOString(),
+            };
+            break;
+          }
+        }
+      }
+
+      res.json({ ...piece, book: bookOut, work, workSiblings, previewAudio, versions, jobs, sources, recentAudit });
     }),
   );
 

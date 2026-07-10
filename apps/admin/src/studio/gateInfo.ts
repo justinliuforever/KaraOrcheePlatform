@@ -126,3 +126,13 @@ export function timeAgo(iso: string): string {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
 }
+
+const KEY_NAMES_MAJOR = ["C", "G", "D", "A", "E", "B", "F♯", "C♯"];
+const KEY_NAMES_FLAT_MAJOR = ["C", "F", "B♭", "E♭", "A♭", "D♭", "G♭", "C♭"];
+
+export function keyLabel(key: { fifths: number; mode?: string } | null | undefined): string {
+  if (!key) return "—";
+  const f = key.fifths;
+  const name = f >= 0 ? KEY_NAMES_MAJOR[f] ?? `${f}♯` : KEY_NAMES_FLAT_MAJOR[-f] ?? `${-f}♭`;
+  return `${name} ${key.mode === "minor" ? "minor" : "major"} (${f >= 0 ? `${f}♯` : `${-f}♭`})`;
+}
