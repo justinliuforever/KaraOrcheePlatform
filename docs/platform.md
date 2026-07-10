@@ -131,6 +131,18 @@ karaorchee.com sender), `acrkaraorchee` (images), CIAM tenant (below).
 
 ### Jobs ↔ registry consistency laws
 
+- **Publish trusts the LIVE registry, not the draft snapshot** (2026-07-09 adversarial
+  review): publish re-reads the pieces row — non-publishable live rights → 409
+  rights_blocked_live (a stale draft can never reverse a takedown); pinned drafts carry
+  `pinnedPieceUpdatedAt` and publish 409s stale_registry if the Library row changed
+  (token refreshed on reopen). The job flip inside the publish tx carries a status
+  predicate — a concurrent cancel/reopen aborts the whole publish.
+- **Queue sends never strand a row**: submit/retry roll the row back and 503 if the
+  Service Bus send fails ('queued' has no recovery route by design).
+- **catalog.json writes are ETag-guarded** (read etag → snapshot DB → conditional PUT,
+  retry on 412): two racing rebuilds converge to the newest DB state — a takedown can't
+  be resurrected by a slower rebuild landing later.
+
 - Two tables, two clocks: a studio_jobs row is an IMMUTABLE build record (what happened
   then); the pieces row owns the live lifecycle + published_version pointer. UIs JOIN at
   render time (job detail returns `piece {status, publishedVersion}`) — never denormalize
