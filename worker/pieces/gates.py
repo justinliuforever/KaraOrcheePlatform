@@ -135,8 +135,10 @@ def gate_preview(out_dir: Path, sf2_path: Path | None, program: int) -> dict:
     if sf2_path is None or not sf2_path.exists():
         return {"skipped": "soundfont unavailable"}
     try:
-        return render_preview(out_dir / "score_events.json", sf2_path,
-                              out_dir / "preview.m4a", program)
+        metrics = render_preview(out_dir / "score_events.json", sf2_path,
+                                 out_dir / "preview.m4a", program)
+        metrics["soundfont"] = sf2_path.name
+        return metrics
     except Exception as err:
         # Preview is a review aid, never a build blocker.
         return {"skipped": f"render failed: {str(err)[:120]}"}

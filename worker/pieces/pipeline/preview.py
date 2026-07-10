@@ -11,21 +11,25 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-# instrumentation.solo -> (SF2 blob name in the soundfont container, GM program).
-# Piano ships today; violin/guitar SF2s land with the multi-instrument asset work —
-# until then they fall back to piano with a "voice pending" note in the metrics.
+# instrumentation.solo -> (SF2 blob name in the soundfont container, MIDI program).
+# Blob names are immutable snapshots (date-stamped) — the app bundles the SAME files,
+# so preview == app sound. Selected 2026-07-09 via researched + rendered audition
+# (see docs/catalog_roadmap.md):
+#   violin  MuseScore_General (MIT, VSCO-2 CE solo violin samples), GM program 40
+#   guitar  FreePats Spanish Classical Guitar (CC0), dedicated font at program 0
 SOUNDFONTS = {
     "piano": ("SalC5Light2.sf2", 0),
-    "violin": ("SalC5Light2.sf2", 0),  # TODO(multi-instrument assets): vsco2ce_violin_v1.sf2, 40
-    "guitar": ("SalC5Light2.sf2", 0),  # TODO(multi-instrument assets): generaluser_guitar_v1.sf2, 24
+    "violin": ("MuseScore_General-20260709.sf2", 40),
+    "guitar": ("SpanishClassicalGuitar-20190618.sf2", 0),
 }
 
 
 def soundfont_for(instrument: str | None) -> tuple[str, int, bool]:
-    """(blob_name, program, is_fallback)."""
+    """(blob_name, program, is_fallback). Fallback = unknown instrument -> piano."""
     key = (instrument or "piano").lower()
+    is_fallback = key not in SOUNDFONTS
     blob, program = SOUNDFONTS.get(key, SOUNDFONTS["piano"])
-    return blob, program, key not in ("piano",) or key not in SOUNDFONTS
+    return blob, program, is_fallback
 
 
 def render_preview(score_events_path: Path, sf2_path: Path, out_m4a: Path, program: int = 0) -> dict:
