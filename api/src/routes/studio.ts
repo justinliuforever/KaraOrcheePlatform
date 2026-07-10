@@ -230,6 +230,17 @@ export function studioRouter(deps: Deps): Router {
         };
       }
 
+      // Instrument is chosen BEFORE upload so the very first preflight renders the
+      // preview with the right soundfont; pinned drafts inherit it from the piece.
+      if (!pin) {
+        const inst = req.body?.instrument as string | undefined;
+        if (inst !== undefined && !(INSTRUMENTS as readonly string[]).includes(inst)) {
+          res.status(400).json({ error: "invalid_instrument" });
+          return;
+        }
+        metadata = { instrument: inst ?? "piano" };
+      }
+
       const uploaded = await uploadSources(
         jobId,
         req.files as Record<string, Express.Multer.File[]> | undefined,
@@ -385,24 +396,29 @@ export function studioRouter(deps: Deps): Router {
           ? pieceSlug(composer, title, subtitle)
           : job.pieceId;
 
-      // Solo part is metadata that CHANGES artifacts — flipping it invalidates the
-      // preflight (display, timeline, preview were built from the old choice).
+      // Solo part and instrument are metadata that CHANGE artifacts — flipping either
+      // invalidates the preflight (display, timeline, preview were built from the old
+      // choice; the preview soundfont follows the instrument).
       const soloChanged =
         parsed.data.soloPart !== undefined && parsed.data.soloPart !== (prev.soloPart ?? null);
+      const instrumentChanged =
+        parsed.data.instrument !== undefined &&
+        parsed.data.instrument !== ((prev.instrument as string | undefined) ?? "piano");
+      const invalidated = soloChanged || instrumentChanged;
 
       const [updated] = await db
         .update(studioJobs)
         .set({
           metadata: merged,
           pieceId,
-          ...(soloChanged
+          ...(invalidated
             ? { checkStatus: "pending", gates: {}, artifacts: [], stage: null, error: null }
             : {}),
           updatedAt: sql`now()`,
         })
         .where(eq(studioJobs.id, id))
         .returning();
-      if (soloChanged && deps.piecesQueue) {
+      if (invalidated && deps.piecesQueue) {
         await deps.piecesQueue.sendPreflight({ jobId: id });
       }
       res.json(updated);

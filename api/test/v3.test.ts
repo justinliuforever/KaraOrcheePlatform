@@ -198,6 +198,68 @@ describe("solo-part change resets preflight", () => {
   });
 });
 
+describe("instrument at draft creation + change resets preflight", () => {
+  it("POST drafts seeds metadata.instrument; invalid value is rejected", async () => {
+    const app = makeApp();
+    const draft = await request(app)
+      .post("/admin/studio/drafts")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .field("instrument", "violin")
+      .attach("musicxml", Buffer.from("<score/>"), "x.musicxml")
+      .attach("midi", Buffer.from("MThd"), "x.mid");
+    expect(draft.status).toBe(201);
+    expect((draft.body.metadata as { instrument: string }).instrument).toBe("violin");
+
+    const bad = await request(app)
+      .post("/admin/studio/drafts")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .field("instrument", "kazoo")
+      .attach("musicxml", Buffer.from("<score/>"), "x.musicxml")
+      .attach("midi", Buffer.from("MThd"), "x.mid");
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe("invalid_instrument");
+
+    const defaulted = await request(app)
+      .post("/admin/studio/drafts")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("musicxml", Buffer.from("<score/>"), "x.musicxml")
+      .attach("midi", Buffer.from("MThd"), "x.mid");
+    expect((defaulted.body.metadata as { instrument: string }).instrument).toBe("piano");
+  });
+
+  it("PATCH instrument clears gates and re-queues preflight; same value does not", async () => {
+    const queue = fakeQueue();
+    const app = makeApp({ queue });
+    const draft = await request(app)
+      .post("/admin/studio/drafts")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .field("instrument", "violin")
+      .attach("musicxml", Buffer.from("<score/>"), "x.musicxml")
+      .attach("midi", Buffer.from("MThd"), "x.mid");
+    await db.orm
+      .update(studioJobs)
+      .set({ checkStatus: "pass", gates: { sanity: { status: "pass", metrics: {} } } })
+      .where(eq(studioJobs.id, draft.body.id));
+
+    const res = await request(app)
+      .patch(`/admin/studio/jobs/${draft.body.id}/metadata`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ instrument: "guitar" });
+    expect(res.status).toBe(200);
+    expect(res.body.checkStatus).toBe("pending");
+    expect(res.body.gates).toEqual({});
+    expect(queue.preflights).toHaveLength(2); // initial + reset
+
+    await db.orm.update(studioJobs).set({ checkStatus: "pass" }).where(eq(studioJobs.id, draft.body.id));
+    const same = await request(app)
+      .patch(`/admin/studio/jobs/${draft.body.id}/metadata`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ instrument: "guitar" });
+    expect(same.body.checkStatus).toBe("pass");
+    expect(queue.preflights).toHaveLength(2);
+  });
+});
+
 describe("publish v3", () => {
   it("filters preview audio via role allowlist, persists work/instrumentation/facts, emits works[] in catalog", async () => {
     const studio = fakeStudio();

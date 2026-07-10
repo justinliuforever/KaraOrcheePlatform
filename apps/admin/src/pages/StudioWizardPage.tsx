@@ -284,6 +284,7 @@ function FilesGate() {
   const [musicxml, setMusicxml] = useState<File | null>(null);
   const [midi, setMidi] = useState<File | null>(null);
   const [audio, setAudio] = useState<File | null>(null);
+  const [instrument, setInstrument] = useState<NonNullable<StudioMetadata["instrument"]>>("piano");
 
   const create = useMutation<StudioJob, Error>({
     mutationFn: () => {
@@ -291,6 +292,7 @@ function FilesGate() {
       form.set("musicxml", musicxml!);
       form.set("midi", midi!);
       if (audio) form.set("audio", audio);
+      if (!forPiece) form.set("instrument", instrument);
       return apiForm<StudioJob>(
         `/admin/studio/drafts${forPiece ? `?piece=${encodeURIComponent(forPiece)}` : ""}`,
         form,
@@ -322,6 +324,25 @@ function FilesGate() {
           in the rest while they run.
         </p>
         <div className="space-y-3">
+          {!forPiece && (
+            <div className="rounded-xl border border-line bg-card px-4 py-3.5">
+              <label className={labelCls}>Instrument (solo) — pick this first</label>
+              <select
+                className={`${inputCls} max-w-56`}
+                value={instrument}
+                onChange={(e) => setInstrument(e.target.value as NonNullable<StudioMetadata["instrument"]>)}
+              >
+                <option value="piano">Piano</option>
+                <option value="violin">Violin</option>
+                <option value="guitar">Guitar</option>
+              </select>
+              <p className="text-[11px] text-ink-faint mt-1.5 leading-relaxed">
+                The checks and the preview audio render with this instrument's sound, so it
+                has to be right before the files go up. You can still change it later — the
+                checks just re-run.
+              </p>
+            </div>
+          )}
           <FilePick
             label="MusicXML — the score"
             accept=".musicxml,.xml,.mxl"
@@ -713,11 +734,13 @@ function WizardBody({ jobId }: { jobId: string }) {
                   <option value="violin">Violin</option>
                   <option value="guitar">Guitar</option>
                 </select>
-                {meta.instrument && meta.instrument !== "piano" && (
-                  <p className="text-[11px] text-ink-faint mt-1">
-                    Non-piano pieces stay hidden from the app until instrument-aware builds ship.
-                  </p>
-                )}
+                <p className="text-[11px] text-ink-faint mt-1">
+                  Changing this re-runs the checks (~10s) — the preview audio is rendered
+                  with the instrument's sound.
+                  {meta.instrument && meta.instrument !== "piano"
+                    ? " Non-piano pieces stay hidden from the app until instrument-aware builds ship."
+                    : ""}
+                </p>
               </div>
             </div>
             {(derivedSlug ?? (job.pieceId.startsWith("draft_") ? null : job.pieceId)) && (
