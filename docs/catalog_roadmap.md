@@ -100,13 +100,34 @@ piano-only** (AMT is piano-trained; expected, gated in UI by instrumentation).
   founder ear-gate per instrument before committing catalog content.
 - **Instrument soundfonts are cloud-delivered per instrument** (soundfont/ container +
   existing download infra). Piano SF2 stays bundled.
-- **Soundfont selection (license-verified)**: primary = **VSCO-2 Community Edition (CC0)** —
-  real sampled SOLO violin + solo winds; extract per-instrument SF2 via Polyphone (~10-30MB
-  each). Fallback/gap-filler = **GeneralUser GS v2.0.3** (permissive since 2024-10; <30MB
-  full GM — covers cello/viola, which VSCO-2 CE lacks as solo patches). FluidR3 (MIT) ok.
-  ⚠️ SF2 ONLY — AVAudioUnitSampler silently fails on SF3 (MuseScore_General "36MB" is SF3;
-  real SF2 is 208MB). ⚠️ iOS: one sampler per instrument on a shared engine; watch fd
-  exhaustion (error -42) and the ~128-voice drop cap with piano+solo stacked.
+- **Soundfont selection — LOCKED 2026-07-09** (three deep-research passes + rendered
+  audition through the production preview path; clips in ~/Desktop/SoundfontAudition):
+  - **violin = `MuseScore_General-20260709.sf2` @ program 40** (MIT, in-app attribution;
+    215MB whole-bank snapshot in soundfont/; its solo violin = VSCO-2 CE real recordings).
+    VSCO-2 CE itself ships SFZ/WAV only — no official SF2 exists; MuseScore_General IS the
+    curated SF2 build of it.
+  - **guitar = `SpanishClassicalGuitar-20190618.sf2` @ program 0** (FreePats, CC0, 19MB
+    dedicated font, 48 per-key zones, real nylon recordings). ⚠️ NOT at GM 24 — program 0;
+    the SOUNDFONTS map carries per-instrument program, app must mirror that mapping.
+  - **piano: incumbent `SalC5Light2.sf2` has a LICENSE PROBLEM** — HED-Sounds build terms
+    forbid "sell or repackage and sell" (personal use only); underlying Salamander samples
+    are CC-BY 3.0 but that specific build is not shippable in a paid app. Replacement
+    candidate rendered + delivered for founder ear-gate: **YDP-GrandPiano (CC-BY 3.0,
+    113MB, 121 samples/5 vel layers vs incumbent 44/7 — big pitch-stretch win, coarser
+    soft layers)**. Swap pending founder ear decision — production sound identity.
+  - Rejected on license: All-Around Violin (pirated provenance), Aegean (NC), Timbres of
+    Heaven (no redistribution), Arachno (written consent), Maestro/Cathan (ND), Splendid
+    Grand (Akai provenance), soundfonts4u (login-walled/unclear). GeneralUser GS v2 stays
+    the documented gap-filler (free-commercial, GM-tier).
+  ⚠️ SF2 ONLY — AVAudioUnitSampler silently fails on SF3 (MuseScore_General default
+  download is SF3; our blob is the real 215MB SF2 — byte-verified RIFF/sfbk, zero OggS).
+  ⚠️ iOS RAM: sampler resident ≈ file size; >200MB risky on min-spec (jetsam) — for the
+  APP bundle, extract the violin preset from the whole-bank blob at app-batch time if
+  device tests demand (extraction preserves samples byte-identically, preview==app holds);
+  one sampler per instrument on a shared engine; watch fd exhaustion (error -42) and the
+  ~128-voice drop cap with piano+solo stacked.
+  Blob convention: immutable date-stamped names + sibling `.LICENSE.*` blob (MIT/CC-BY
+  attribution text ships with the asset, into the app credits screen later).
 - **Beta instruments (founder-locked 2026-07-08): violin + guitar. Voice = CUT** (no lyric
   synthesis exists; revisit post-beta via reference_audio only).
 - **Guitar first, violin second (repertoire-driven sequencing)**: classical guitar repertoire
