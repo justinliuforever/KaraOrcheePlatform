@@ -13,13 +13,13 @@ from pathlib import Path
 
 # instrumentation.solo -> (SF2 blob name in the soundfont container, MIDI program).
 # Blob names are immutable snapshots (date-stamped) — the app bundles the SAME files,
-# so preview == app sound. Selected 2026-07-09 via researched + rendered audition
+# so preview == app sound. Founder ear-gated 2026-07-09 from rendered auditions
 # (see docs/catalog_roadmap.md):
-#   violin  MuseScore_General (MIT, VSCO-2 CE solo violin samples), GM program 40
+#   violin  FluidR3 GM (MIT), GM program 40
 #   guitar  FreePats Spanish Classical Guitar (CC0), dedicated font at program 0
 SOUNDFONTS = {
     "piano": ("SalC5Light2.sf2", 0),
-    "violin": ("MuseScore_General-20260709.sf2", 40),
+    "violin": ("FluidR3_GM-20260709.sf2", 40),
     "guitar": ("SpanishClassicalGuitar-20190618.sf2", 0),
 }
 
