@@ -100,21 +100,21 @@ piano-only** (AMT is piano-trained; expected, gated in UI by instrumentation).
   founder ear-gate per instrument before committing catalog content.
 - **Instrument soundfonts are cloud-delivered per instrument** (soundfont/ container +
   existing download infra). Piano SF2 stays bundled.
-- **Soundfont selection — LOCKED 2026-07-09** (three deep-research passes + rendered
-  audition through the production preview path; clips in ~/Desktop/SoundfontAudition):
-  - **violin = `MuseScore_General-20260709.sf2` @ program 40** (MIT, in-app attribution;
-    215MB whole-bank snapshot in soundfont/; its solo violin = VSCO-2 CE real recordings).
-    VSCO-2 CE itself ships SFZ/WAV only — no official SF2 exists; MuseScore_General IS the
-    curated SF2 build of it.
+- **Soundfont selection — FOUNDER EAR-GATED FINAL 2026-07-09** (three deep-research
+  passes + rendered audition through the production preview path; clips in
+  ~/Desktop/SoundfontAudition; founder listened and picked):
+  - **violin = `FluidR3_GM-20260709.sf2` @ program 40** (MIT — Frank Wen's release
+    documented in the Debian fluid-soundfont copyright file, mirrored as the sibling
+    LICENSE blob; 148MB GM bank, MuseScore-distributed tarball snapshot). Founder chose
+    it BY EAR over MuseScore_General; the MuseScore_General-20260709 blob stays in the
+    container as the documented runner-up (its solo violin = VSCO-2 CE samples).
   - **guitar = `SpanishClassicalGuitar-20190618.sf2` @ program 0** (FreePats, CC0, 19MB
     dedicated font, 48 per-key zones, real nylon recordings). ⚠️ NOT at GM 24 — program 0;
     the SOUNDFONTS map carries per-instrument program, app must mirror that mapping.
-  - **piano: incumbent `SalC5Light2.sf2` has a LICENSE PROBLEM** — HED-Sounds build terms
-    forbid "sell or repackage and sell" (personal use only); underlying Salamander samples
-    are CC-BY 3.0 but that specific build is not shippable in a paid app. Replacement
-    candidate rendered + delivered for founder ear-gate: **YDP-GrandPiano (CC-BY 3.0,
-    113MB, 121 samples/5 vel layers vs incumbent 44/7 — big pitch-stretch win, coarser
-    soft layers)**. Swap pending founder ear decision — production sound identity.
+  - **piano: STAYS `SalC5Light2.sf2` (founder decision)**. The HED-Sounds build carries
+    "no sell / repackage" terms; founder is handling the license BUSINESS-SIDE (direct
+    negotiation with HED). Underlying Salamander samples are CC-BY 3.0. YDP-GrandPiano
+    (CC-BY, auditioned) remains the documented fallback if talks fail.
   - Rejected on license: All-Around Violin (pirated provenance), Aegean (NC), Timbres of
     Heaven (no redistribution), Arachno (written consent), Maestro/Cathan (ND), Splendid
     Grand (Akai provenance), soundfonts4u (login-walled/unclear). GeneralUser GS v2 stays
