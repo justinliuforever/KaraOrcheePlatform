@@ -15,7 +15,31 @@ export interface BundleFile {
 // publish. The emit shape is a VERSIONED PUBLIC API — the fielded app decodes it
 // tolerantly (unknown fields ignored), so every change here must be additive.
 // pieces[] stays FLAT (never nested under works); works[]/books[] are sibling indexes.
+//
+// Concurrency: two overlapping rebuilds are last-writer-wins on the blob, and the
+// last writer may carry the OLDER DB snapshot (e.g. resurrecting a takedown). The
+// ETag read happens BEFORE the DB snapshot, so a conditional write that fails means
+// someone else wrote in between — retry with a fresh snapshot; convergence is to the
+// newest state.
 export async function rebuildCatalog(db: Orm, studio: StudioStore): Promise<unknown> {
+  for (let attempt = 0; ; attempt++) {
+    const etag = studio.getBundleEtag ? await studio.getBundleEtag("catalog.json") : undefined;
+    const catalog = await buildCatalogDoc(db, studio);
+    try {
+      await studio.putBundleJson(
+        "catalog.json",
+        catalog,
+        etag === undefined ? undefined : etag ? { ifMatch: etag } : { ifNoneMatch: "*" },
+      );
+      return catalog;
+    } catch (err) {
+      if ((err as Error).name === "EtagConflictError" && attempt < 3) continue;
+      throw err;
+    }
+  }
+}
+
+async function buildCatalogDoc(db: Orm, studio: StudioStore): Promise<unknown> {
   const published = await db
     .select()
     .from(pieces)
@@ -119,6 +143,5 @@ export async function rebuildCatalog(db: Orm, studio: StudioStore): Promise<unkn
       ...(b.display && Object.keys(b.display as object).length > 0 ? { display: b.display } : {}),
     })),
   };
-  await studio.putBundleJson("catalog.json", catalog);
   return catalog;
 }

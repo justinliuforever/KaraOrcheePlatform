@@ -424,12 +424,14 @@ function WizardBody({ jobId }: { jobId: string }) {
     if (!xm || suggested.current || !seeded.current) return;
     suggested.current = true;
     setMeta((m) => {
-      const next = { ...m };
-      if (!next.title && xm.suggested_title) next.title = xm.suggested_title;
-      if (!next.composer && xm.suggested_composer) next.composer = xm.suggested_composer;
-      if (!next.subtitle && xm.suggested_movement) next.subtitle = xm.suggested_movement;
-      return next;
+      const patch: Partial<StudioMetadata> = {};
+      if (!m.title && xm.suggested_title) patch.title = xm.suggested_title;
+      if (!m.composer && xm.suggested_composer) patch.composer = xm.suggested_composer;
+      if (!m.subtitle && xm.suggested_movement) patch.subtitle = xm.suggested_movement;
+      if (Object.keys(patch).length > 0) save.mutate(patch); // prefill must PERSIST
+      return { ...m, ...patch };
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobQ.data]);
 
   const [pieceFindings, setPieceFindings] = useState<CheckFinding[]>([]);
@@ -441,7 +443,9 @@ function WizardBody({ jobId }: { jobId: string }) {
     mutationFn: (patch) =>
       api(`/admin/studio/jobs/${jobId}/metadata`, { method: "PATCH", body: JSON.stringify(patch) }),
     onSuccess: (job) => qc.setQueryData(["studio-job", jobId], (old: StudioJob | undefined) =>
-      old ? { ...old, metadata: job.metadata, pieceId: job.pieceId } : job,
+      // The PATCH response is the full row — checkStatus/gates/artifacts may have been
+      // RESET server-side (instrument/soloPart change); writing them re-arms polling.
+      old ? { ...old, ...job } : job,
     ),
   });
 
@@ -532,7 +536,8 @@ function WizardBody({ jobId }: { jobId: string }) {
 
   const cancel = useMutation<StudioJob, Error>({
     mutationFn: () => api(`/admin/studio/jobs/${jobId}/cancel`, { method: "POST" }),
-    onSuccess: () => {
+    onSuccess: (job) => {
+      qc.setQueryData(["studio-job", jobId], (old: StudioJob | undefined) => (old ? { ...old, ...job } : job));
       qc.invalidateQueries({ queryKey: ["studio-jobs"] });
       nav("/studio");
     },
@@ -733,7 +738,12 @@ function WizardBody({ jobId }: { jobId: string }) {
                 </p>
               </div>
             </div>
-            {(derivedSlug ?? (job.pieceId.startsWith("draft_") ? null : job.pieceId)) && (
+            {(job.metadata as { pinnedPieceId?: string }).pinnedPieceId ? (
+              <p className="text-[11px] text-ink-faint">
+                Piece ID (pinned — this upload becomes its next version):{" "}
+                <span className="font-mono text-ink-soft">{job.pieceId}</span>
+              </p>
+            ) : (derivedSlug ?? (job.pieceId.startsWith("draft_") ? null : job.pieceId)) && (
               <p className="text-[11px] text-ink-faint">
                 Piece ID (automatic):{" "}
                 <span className="font-mono text-ink-soft">
@@ -915,9 +925,9 @@ function BookSection({
           <input
             className={inputCls}
             type="number"
-            placeholder="41"
+            placeholder={creating && !meta.book ? "create the book first" : "41"}
             value={meta.book?.index ?? ""}
-            disabled={!meta.book && !creating}
+            disabled={!meta.book}
             onChange={(e) => {
               if (meta.book) {
                 onChange({ ...meta.book, index: e.target.value ? Number(e.target.value) : null });

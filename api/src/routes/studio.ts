@@ -113,6 +113,10 @@ const checksSchema = z.object({
     .optional(),
 });
 
+// Escape LIKE metacharacters in user text used inside ilike patterns — a title
+// containing % or _ must match literally, not as a wildcard.
+const likeEsc = (s: string) => s.replace(/[\\%_]/g, (m) => `\\${m}`);
+
 const XML_EXT = /\.(musicxml|xml|mxl)$/i;
 const MIDI_EXT = /\.(mid|midi)$/i;
 const AUDIO_EXT = /\.(m4a|mp3|wav|aac)$/i;
@@ -216,6 +220,10 @@ export function studioRouter(deps: Deps): Router {
         const facts = piece.facts as { solo_part?: string } | null;
         metadata = {
           pinnedPieceId: piece.id,
+          // Registry concurrency token: publish rejects if the Library row changed
+          // after this snapshot was taken (409 stale_registry), so a draft can never
+          // silently revert committed Library edits. Refreshed on reopen.
+          pinnedPieceUpdatedAt: piece.updatedAt.toISOString(),
           title: piece.title,
           composer: piece.composer,
           subtitle: piece.subtitle,
@@ -293,6 +301,18 @@ export function studioRouter(deps: Deps): Router {
         res.status(409).json({ error: "not_reopenable", status: job.status });
         return;
       }
+      // Reopening means the admin is deliberately revising — refresh the registry
+      // concurrency token so their next publish reflects awareness of current state.
+      const prevMeta = job.metadata as Record<string, unknown>;
+      let metadata = prevMeta;
+      if (prevMeta.pinnedPieceId) {
+        const [live] = await db
+          .select({ updatedAt: pieces.updatedAt })
+          .from(pieces)
+          .where(eq(pieces.id, String(prevMeta.pinnedPieceId)))
+          .limit(1);
+        if (live) metadata = { ...prevMeta, pinnedPieceUpdatedAt: live.updatedAt.toISOString() };
+      }
       const [updated] = await db
         .update(studioJobs)
         .set({
@@ -302,10 +322,15 @@ export function studioRouter(deps: Deps): Router {
           artifacts: [],
           stage: null,
           error: null,
+          metadata,
           updatedAt: sql`now()`,
         })
-        .where(eq(studioJobs.id, id))
+        .where(and(eq(studioJobs.id, id), eq(studioJobs.status, job.status)))
         .returning();
+      if (!updated) {
+        res.status(409).json({ error: "status_changed", message: "The job changed state under you — reload the page." });
+        return;
+      }
       await deps.piecesQueue.sendPreflight({ jobId: id });
       await audit(deps, req.adminUser!, "studio.job.reopen", { type: "studio_job", id });
       res.json(updated);
@@ -446,7 +471,7 @@ export function studioRouter(deps: Deps): Router {
         const siblings = await db
           .select()
           .from(works)
-          .where(ilike(works.composer, `%${composer.split(" ").pop()}%`));
+          .where(ilike(works.composer, `%${likeEsc(composer.split(" ").pop()!)}%`));
         const dup = siblings.find((s) => s.catalogue && normalizeCatalogue(s.catalogue) === norm);
         if (dup) {
           findings.push({
@@ -492,7 +517,7 @@ export function studioRouter(deps: Deps): Router {
           const similar = await db
             .select()
             .from(pieces)
-            .where(and(ilike(pieces.title, title), ilike(pieces.composer, composer), ne(pieces.id, slug)))
+            .where(and(ilike(pieces.title, likeEsc(title)), ilike(pieces.composer, likeEsc(composer)), ne(pieces.id, slug)))
             .limit(3);
           for (const s of similar) {
             findings.push({
@@ -525,7 +550,7 @@ export function studioRouter(deps: Deps): Router {
       } else if (book?.title) {
         const newId = bookSlug(book.title);
         const [byId] = await db.select().from(books).where(eq(books.id, newId)).limit(1);
-        const byTitle = byId ? [byId] : await db.select().from(books).where(ilike(books.title, book.title)).limit(1);
+        const byTitle = byId ? [byId] : await db.select().from(books).where(ilike(books.title, likeEsc(book.title))).limit(1);
         if (byTitle.length > 0) {
           findings.push({
             level: "error",
@@ -560,12 +585,24 @@ export function studioRouter(deps: Deps): Router {
         return;
       }
       if (job.checkStatus !== "pass") {
-        res.status(409).json({ error: "preflight_not_passed", checkStatus: job.checkStatus });
+        res.status(409).json({
+          error: "preflight_not_passed",
+          checkStatus: job.checkStatus,
+          message:
+            job.checkStatus === "fail"
+              ? "The automated checks failed — fix the reported problem (or replace the files) first."
+              : "The automated checks are still running — wait for them to pass, then submit.",
+        });
         return;
       }
       const meta = metadataSchema.safeParse(job.metadata);
       if (!meta.success) {
-        res.status(400).json({ error: "metadata_incomplete", detail: meta.success ? [] : meta.error.issues });
+        const missing = meta.error.issues.map((i) => i.path.join(".")).join(", ");
+        res.status(400).json({
+          error: "metadata_incomplete",
+          detail: meta.error.issues,
+          message: `Some required fields haven't been saved yet (${missing}) — click into each and make sure it saves, then submit again.`,
+        });
         return;
       }
       // Reviewed = published: the artifacts on this row must have been built from the
@@ -601,12 +638,44 @@ export function studioRouter(deps: Deps): Router {
           return;
         }
       }
+      // One open build per PIECE, pinned or not — two parallel builds of the same
+      // identity would race publishes and the loser's metadata silently wins the row.
+      const [openDup] = await db
+        .select({ id: studioJobs.id, status: studioJobs.status })
+        .from(studioJobs)
+        .where(and(eq(studioJobs.pieceId, pieceId), ne(studioJobs.id, id),
+          sql`${studioJobs.status} IN ('queued','running','ready_for_review')`))
+        .limit(1);
+      if (openDup) {
+        res.status(409).json({
+          error: "piece_has_open_build",
+          jobId: openDup.id,
+          message: `Another build for this piece is already ${openDup.status.replaceAll("_", " ")} — finish or discard it first.`,
+        });
+        return;
+      }
       const [updated] = await db
         .update(studioJobs)
         .set({ status: "queued", pieceId, stage: null, error: null, updatedAt: sql`now()` })
-        .where(eq(studioJobs.id, id))
+        .where(and(eq(studioJobs.id, id), eq(studioJobs.status, "draft")))
         .returning();
-      await deps.piecesQueue.send({ jobId: id, pieceId });
+      if (!updated) {
+        res.status(409).json({ error: "status_changed", message: "The job changed state while you were submitting — reload the page." });
+        return;
+      }
+      try {
+        await deps.piecesQueue.send({ jobId: id, pieceId });
+      } catch (err) {
+        // Never leave the row wedged in 'queued' with no message in flight — no
+        // route accepts 'queued', so roll back and let the admin retry.
+        await db
+          .update(studioJobs)
+          .set({ status: "draft", updatedAt: sql`now()` })
+          .where(eq(studioJobs.id, id));
+        console.error("submit: queue send failed, rolled back to draft", err);
+        res.status(503).json({ error: "queue_unavailable", message: "The verification queue is briefly unavailable — try submitting again in a moment." });
+        return;
+      }
       await audit(deps, req.adminUser!, "studio.job.submit", { type: "studio_job", id }, { pieceId });
       res.json(updated);
     }),
@@ -698,9 +767,23 @@ export function studioRouter(deps: Deps): Router {
       const [updated] = await db
         .update(studioJobs)
         .set({ status: "queued", stage: null, error: null, updatedAt: sql`now()` })
-        .where(eq(studioJobs.id, id))
+        .where(and(eq(studioJobs.id, id), eq(studioJobs.status, job.status)))
         .returning();
-      await deps.piecesQueue.send({ jobId: id, pieceId: job.pieceId });
+      if (!updated) {
+        res.status(409).json({ error: "status_changed", message: "The job changed state under you — reload the page." });
+        return;
+      }
+      try {
+        await deps.piecesQueue.send({ jobId: id, pieceId: job.pieceId });
+      } catch (err) {
+        await db
+          .update(studioJobs)
+          .set({ status: job.status, updatedAt: sql`now()` })
+          .where(eq(studioJobs.id, id));
+        console.error("retry: queue send failed, rolled back", err);
+        res.status(503).json({ error: "queue_unavailable", message: "The verification queue is briefly unavailable — try again in a moment." });
+        return;
+      }
       await audit(deps, req.adminUser!, "studio.job.retry", { type: "studio_job", id });
       res.json(updated);
     }),
@@ -723,8 +806,12 @@ export function studioRouter(deps: Deps): Router {
       const [updated] = await db
         .update(studioJobs)
         .set({ status: "canceled", updatedAt: sql`now()` })
-        .where(eq(studioJobs.id, id))
+        .where(and(eq(studioJobs.id, id), eq(studioJobs.status, job.status)))
         .returning();
+      if (!updated) {
+        res.status(409).json({ error: "status_changed", message: "The job changed state under you — reload the page." });
+        return;
+      }
       await audit(deps, req.adminUser!, "studio.job.cancel", { type: "studio_job", id });
       res.json(updated);
     }),
@@ -751,6 +838,27 @@ export function studioRouter(deps: Deps): Router {
       const meta = metadataSchema.parse(job.metadata);
       if (!PUBLISHABLE_RIGHTS.has(meta.rights)) {
         res.status(409).json({ error: "rights_blocked", rights: meta.rights });
+        return;
+      }
+      // The draft metadata is a SNAPSHOT — the live registry row is the truth for
+      // rights and for concurrent Library edits. Without these guards a stale draft
+      // could silently reverse a takedown or revert committed Library edits.
+      const [livePiece] = await db.select().from(pieces).where(eq(pieces.id, job.pieceId)).limit(1);
+      if (livePiece && !PUBLISHABLE_RIGHTS.has(livePiece.rights)) {
+        res.status(409).json({
+          error: "rights_blocked_live",
+          rights: livePiece.rights,
+          message: `This piece's rights were marked "${livePiece.rights}" in the Library after this draft was created${livePiece.status === "archived" ? " (it was taken down)" : ""} — resolve the rights question in Pieces Library before publishing.`,
+        });
+        return;
+      }
+      const rawMeta = job.metadata as Record<string, unknown>;
+      if (rawMeta.pinnedPieceId && rawMeta.pinnedPieceUpdatedAt && livePiece &&
+          livePiece.updatedAt.toISOString() !== String(rawMeta.pinnedPieceUpdatedAt)) {
+        res.status(409).json({
+          error: "stale_registry",
+          message: "The Library entry for this piece changed after this draft was created (someone edited it). Check the piece in Pieces Library, then use Edit details — it refreshes this draft — and resubmit.",
+        });
         return;
       }
       const allArtifacts = job.artifacts as BundleFile[];
@@ -819,7 +927,7 @@ export function studioRouter(deps: Deps): Router {
         }
       }
 
-      await db.transaction(async (tx) => {
+      const txResult = await db.transaction(async (tx) => {
         if (meta.book) {
           await tx
             .insert(books)
@@ -857,20 +965,41 @@ export function studioRouter(deps: Deps): Router {
           files: versionFiles,
           publishedBy: req.adminUser!.id,
         });
-        await tx
+        // Status predicate: if a concurrent cancel/reopen moved the job during the
+        // blob copies, abort the whole publish instead of overriding the admin.
+        const [flipped] = await tx
           .update(studioJobs)
           .set({ status: "published", publishedVersion: version, updatedAt: sql`now()` })
-          .where(eq(studioJobs.id, id));
+          .where(and(eq(studioJobs.id, id), eq(studioJobs.status, "ready_for_review")))
+          .returning({ id: studioJobs.id });
+        if (!flipped) throw Object.assign(new Error("job_state_changed"), { statusCode: 409 });
+      }).catch((err: Error & { statusCode?: number }) => {
+        if (err.statusCode !== 409) throw err;
+        return "conflict" as const;
       });
+      if (txResult === "conflict") {
+        res.status(409).json({ error: "status_changed", message: "The job was canceled or reopened while publishing — nothing went live. Reload the page." });
+        return;
+      }
 
-      await rebuildCatalog(db, deps.studio);
+      // The piece is committed as published; a transient catalog failure must not
+      // read as a failed publish (re-publish would 409). Any later catalog-touching
+      // mutation heals it — surface the warning instead.
+      let catalogWarning: string | null = null;
+      try {
+        await rebuildCatalog(db, deps.studio);
+      } catch (err) {
+        console.error("publish: catalog rebuild failed (piece IS published)", err);
+        catalogWarning =
+          "Published, but refreshing the app catalog failed — it will self-heal on the next publish or Library edit. If urgent, edit any field of any piece in the Library.";
+      }
       await audit(deps, req.adminUser!, "piece.publish", { type: "piece", id: pieceId }, {
         version,
         jobId: id,
       });
 
       const [updated] = await db.select().from(studioJobs).where(eq(studioJobs.id, id)).limit(1);
-      res.json(updated);
+      res.json({ ...updated, ...(catalogWarning ? { catalogWarning } : {}) });
     }),
   );
 

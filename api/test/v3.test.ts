@@ -11,7 +11,7 @@ import {
 import { createServer } from "../src/server";
 import { createJoseVerifier, type AuthVerifier } from "../src/auth";
 import { createTestDb } from "./testdb";
-import { users, pieces, studioJobs, works } from "../src/db/schema";
+import { users, pieces, studioJobs, works, books } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { StudioStore, CatalogStore } from "../src/storage";
 import type { JobQueue } from "../src/queue";
@@ -468,5 +468,117 @@ describe("library work membership editing", () => {
     expect(clear.status).toBe(200);
     expect(clear.body.workId).toBeNull();
     expect(clear.body.workIndex).toBeNull();
+  });
+});
+
+describe("review-hardening guards", () => {
+  it("publish 409s when the LIVE piece's rights were blocked after the draft snapshot (takedown reversal)", async () => {
+    const app = makeApp();
+    await db.orm.insert(pieces).values({
+      id: "takedown_victim", title: "Victim", composer: "X",
+      rights: "blocked", rightsNote: "rights claim", status: "archived", publishedVersion: 1,
+    });
+    const [job] = await db.orm.insert(studioJobs).values({
+      pieceId: "takedown_victim",
+      status: "ready_for_review",
+      checkStatus: "pass",
+      metadata: { title: "Victim", composer: "X", rights: "public_domain", rightsNote: "old snapshot", instrument: "piano" },
+      sources: [],
+      gates: { sanity: { status: "pass", metrics: {} } },
+      artifacts: [{ role: "score_events", path: "staging/x/score_events.json", bytes: 1, sha256: "a" }],
+    }).returning();
+    const res = await request(app)
+      .post(`/admin/studio/jobs/${job.id}/publish`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("rights_blocked_live");
+    const [p] = await db.orm.select().from(pieces).where(eq(pieces.id, "takedown_victim"));
+    expect(p.status).toBe("archived"); // takedown NOT reversed
+  });
+
+  it("publish 409s stale_registry when the Library row changed after a pinned draft snapshot", async () => {
+    const app = makeApp();
+    await db.orm.insert(pieces).values({
+      id: "edited_piece", title: "Edited", composer: "X",
+      rights: "licensed", status: "published", publishedVersion: 1,
+    });
+    const [row] = await db.orm.select().from(pieces).where(eq(pieces.id, "edited_piece"));
+    const staleToken = new Date(row.updatedAt.getTime() - 60_000).toISOString();
+    const [job] = await db.orm.insert(studioJobs).values({
+      pieceId: "edited_piece",
+      status: "ready_for_review",
+      checkStatus: "pass",
+      metadata: {
+        title: "Edited", composer: "X", rights: "licensed", instrument: "piano",
+        pinnedPieceId: "edited_piece", pinnedPieceUpdatedAt: staleToken,
+      },
+      sources: [],
+      gates: { sanity: { status: "pass", metrics: {} } },
+      artifacts: [{ role: "score_events", path: "staging/y/score_events.json", bytes: 1, sha256: "a" }],
+    }).returning();
+    const res = await request(app)
+      .post(`/admin/studio/jobs/${job.id}/publish`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("stale_registry");
+  });
+
+  it("submit rolls the row back to draft when the queue send fails (no queued wedge)", async () => {
+    const queue = fakeQueue();
+    let fail = false;
+    const origSend = queue.send.bind(queue);
+    queue.send = async (b: Record<string, unknown>) => {
+      if (fail) throw new Error("sb blip");
+      return origSend(b);
+    };
+    const app = makeApp({ queue });
+    const draft = await request(app)
+      .post("/admin/studio/drafts")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("musicxml", Buffer.from("<score/>"), "x.musicxml")
+      .attach("midi", Buffer.from("MThd"), "x.mid");
+    await db.orm.update(studioJobs)
+      .set({ checkStatus: "pass", metadata: { title: "Q", composer: "W", rights: "licensed", instrument: "piano" } })
+      .where(eq(studioJobs.id, draft.body.id));
+
+    fail = true;
+    const res = await request(app)
+      .post(`/admin/studio/jobs/${draft.body.id}/submit`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe("queue_unavailable");
+    const [j] = await db.orm.select().from(studioJobs).where(eq(studioJobs.id, draft.body.id));
+    expect(j.status).toBe("draft"); // recoverable, not wedged
+
+    fail = false;
+    const ok = await request(app)
+      .post(`/admin/studio/jobs/${draft.body.id}/submit`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(ok.status).toBe(200);
+    expect(ok.body.status).toBe("queued");
+  });
+
+  it("detaching a book clears its number; a number without a book is rejected", async () => {
+    const app = makeApp();
+    await db.orm.insert(books).values({ id: "guard_book", title: "Guard Book" }).onConflictDoNothing();
+    await db.orm.insert(pieces).values({
+      id: "book_member", title: "Member", composer: "X",
+      rights: "licensed", status: "published", publishedVersion: 1,
+      bookId: "guard_book", bookIndex: 5,
+    });
+    const clear = await request(app)
+      .patch("/admin/pieces/book_member")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ bookId: null });
+    expect(clear.status).toBe(200);
+    expect(clear.body.bookId).toBeNull();
+    expect(clear.body.bookIndex).toBeNull();
+
+    const bad = await request(app)
+      .patch("/admin/pieces/book_member")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ bookIndex: 7 });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe("book_index_without_book");
   });
 });

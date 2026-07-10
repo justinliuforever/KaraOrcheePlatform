@@ -31,7 +31,8 @@ PREFLIGHT_QUEUE = "pieces-preflight"
 SOURCES_CONTAINER = "piece-sources"
 BUNDLES_CONTAINER = "piece-bundles"
 
-CONTENT_TYPES = {".json": "application/json", ".svg": "image/svg+xml", ".mei": "application/xml"}
+CONTENT_TYPES = {".json": "application/json", ".svg": "image/svg+xml", ".mei": "application/xml",
+                 ".m4a": "audio/mp4"}
 
 
 def env(name: str) -> str:
@@ -61,9 +62,13 @@ def get_soundfont(blob: BlobServiceClient, instrument: str | None) -> tuple[Path
     _SF2_CACHE.mkdir(exist_ok=True)
     local = _SF2_CACHE / blob_name
     if not local.exists():
+        # Atomic install: both lanes can race this download, and a crash mid-write
+        # must never leave a truncated .sf2 that exists() then trusts forever.
         try:
             data = blob.get_container_client("soundfont").download_blob(blob_name).readall()
-            local.write_bytes(data)
+            tmp = _SF2_CACHE / f".{blob_name}.{os.getpid()}.part"
+            tmp.write_bytes(data)
+            os.replace(tmp, local)
         except Exception:
             traceback.print_exc()
             return None, program
@@ -146,6 +151,18 @@ def process(conn, blob: BlobServiceClient, job_id: str, mode: str) -> None:
 
         out_dir = tmpdir / "out"
         out_dir.mkdir()
+
+        # .mxl (MuseScore's DEFAULT export) is a zip; the ET-based passes need raw XML.
+        from pipeline.mxl import ensure_xml
+        try:
+            xml_path = ensure_xml(xml_path, tmpdir)
+        except Exception as err:
+            msg = f"could not read the MusicXML file ({str(err)[:120]}) — re-export it as .musicxml"
+            if mode == "preflight":
+                update_job(conn, job_id, check_status="fail", error=msg)
+            else:
+                update_job(conn, job_id, status="failed", error=msg)
+            return
 
         def on_gate(stage: str, gstatus: str, metrics: dict, error: str | None) -> None:
             entry = {"status": gstatus, "metrics": metrics}

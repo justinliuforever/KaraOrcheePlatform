@@ -23,6 +23,11 @@ function signUrls(node: unknown, store: CatalogStore): void {
         }
       }
     }
+    // Top-level string URLs (book covers, piece thumbnails) — the container is
+    // private, an unsigned URL is a guaranteed 403 in the app.
+    for (const key of ["cover_url", "thumbnail_url"]) {
+      if (typeof obj[key] === "string") obj[key] = store.signReadUrl(obj[key] as string);
+    }
     for (const value of Object.values(obj)) signUrls(value, store);
   }
 }
@@ -64,13 +69,15 @@ export function catalogRouter(deps: Deps): Router {
       // Interim: URLs stay signed for app builds ≤ b5ec4cf that download straight from the
       // catalog. Strip once the fleet is on /v1/pieces/:id/download; then add ETag caching.
       const copy = structuredClone(doc) as {
-        pieces?: { instrumentation?: { solo?: string }; work_id?: string }[];
-        works?: { id: string }[];
+        pieces?: { instrumentation?: { solo?: string }; work_id?: string; book_id?: string }[];
+        works?: { id: string; parent_work_id?: string | null }[];
+        books?: { id: string }[];
       };
       // CAPABILITY GATE: fielded decoders ignore unknown fields — an old app shown a
       // violin row would run the piano follower against guitar/violin audio. The only
       // lever over shipped builds is not sending rows they'd misrender. Instrument-aware
-      // builds opt in explicitly.
+      // builds opt in explicitly. works/books trim with the filtered pieces so the
+      // default view never lists an empty shelf or dangles a reference.
       const caps = String(req.query.caps ?? "");
       if (!caps.includes("instruments") && Array.isArray(copy.pieces)) {
         copy.pieces = copy.pieces.filter(
@@ -78,7 +85,20 @@ export function catalogRouter(deps: Deps): Router {
         );
         if (Array.isArray(copy.works)) {
           const referenced = new Set(copy.pieces.map((p) => p.work_id).filter(Boolean));
+          // Keep parent chains: the emitter includes parents deliberately.
+          const byId = new Map(copy.works.map((w) => [w.id, w]));
+          for (const id of [...referenced]) {
+            let cur = byId.get(id as string);
+            while (cur?.parent_work_id && !referenced.has(cur.parent_work_id)) {
+              referenced.add(cur.parent_work_id);
+              cur = byId.get(cur.parent_work_id);
+            }
+          }
           copy.works = copy.works.filter((w) => referenced.has(w.id));
+        }
+        if (Array.isArray(copy.books)) {
+          const usedBooks = new Set(copy.pieces.map((p) => p.book_id).filter(Boolean));
+          copy.books = copy.books.filter((b) => usedBooks.has(b.id));
         }
       }
       signUrls(copy, store);

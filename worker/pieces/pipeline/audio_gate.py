@@ -26,7 +26,14 @@ def check_reference_audio(audio_path: Path, score_events_path: Path) -> dict:
     score_onsets = sorted({round(e["onset_sec"], 4) for e in events})
     notated_end = max(e["onset_sec"] + max(e["durations"]) for e in events)
 
-    y, sr = librosa.load(str(audio_path), sr=22050, mono=True)
+    # A corrupt/odd-codec upload must yield a VERDICT, not a worker crash.
+    try:
+        y, sr = librosa.load(str(audio_path), sr=22050, mono=True)
+    except Exception as err:
+        raise AudioGateError(
+            f"The audio file could not be decoded ({type(err).__name__}) — re-export it as .m4a, .mp3, or .wav.",
+            {},
+        ) from err
     audio_dur = len(y) / sr
 
     # Trim silence head/tail for the duration comparison (lead-in/ring-out tolerance).

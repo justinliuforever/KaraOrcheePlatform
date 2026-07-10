@@ -212,6 +212,13 @@ def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out
             metrics["duration_ms"] = int((time.monotonic() - t0) * 1000)
             on_gate(stage, "fail", metrics, str(err))
             raise
+        except Exception as err:
+            # Unexpected crashes must still CLOSE the gate entry — otherwise the UI
+            # shows a spinner forever on a failed job — and surface as a normal
+            # gate failure instead of an opaque worker_crash.
+            on_gate(stage, "fail", {"duration_ms": int((time.monotonic() - t0) * 1000)},
+                    f"unexpected error: {str(err)[:160]}")
+            raise GateError(f"{stage} crashed: {str(err)[:160]}") from err
         metrics["duration_ms"] = int((time.monotonic() - t0) * 1000)
         on_gate(stage, "pass", metrics, None)
 

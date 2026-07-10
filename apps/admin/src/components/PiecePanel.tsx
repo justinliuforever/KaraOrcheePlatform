@@ -102,14 +102,21 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
   });
 
   const [form, setForm] = useState<EditForm | null>(null);
+  // Which snapshot the form was seeded from. Background refetches produce NEW data
+  // objects (signed URLs change every response) — reseeding on every one would wipe
+  // in-progress edits, so we only seed per piece id / after an explicit reset.
+  const [seededFor, setSeededFor] = useState<string | null>(null);
   const [confirmApply, setConfirmApply] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"archive" | "takedown" | "restore" | null>(null);
   const [takedownNote, setTakedownNote] = useState("");
   const [movementClash, setMovementClash] = useState<string | null>(null);
 
   useEffect(() => {
-    if (detail.data) setForm(toForm(detail.data));
-  }, [detail.data]);
+    if (detail.data && seededFor !== detail.data.id) {
+      setForm(toForm(detail.data));
+      setSeededFor(detail.data.id);
+    }
+  }, [detail.data, seededFor]);
 
   const dirty = useMemo(() => {
     if (!detail.data || !form) return false;
@@ -122,15 +129,14 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
     onSuccess: () => {
       setConfirmApply(false);
       setMovementClash(null);
+      setSeededFor(null); // reseed from the fresh row (picks up new expectedUpdatedAt)
       qc.invalidateQueries({ queryKey: ["piece", id] });
       qc.invalidateQueries({ queryKey: ["pieces"] });
       qc.invalidateQueries({ queryKey: ["works"] });
     },
     onError: (e) => {
-      if (e instanceof ApiError && e.code === "movement_taken") {
-        setConfirmApply(false);
-        setMovementClash(e.message);
-      }
+      setConfirmApply(false);
+      setMovementClash(e instanceof ApiError && e.code === "movement_taken" ? e.message : null);
     },
   });
 
@@ -139,6 +145,7 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
       api(`/admin/pieces/${id}/${action}`, { method: "POST", body: JSON.stringify(body ?? {}) }),
     onSuccess: () => {
       setConfirmAction(null);
+      setSeededFor(null);
       qc.invalidateQueries({ queryKey: ["piece", id] });
       qc.invalidateQueries({ queryKey: ["pieces"] });
     },
@@ -195,11 +202,11 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
     if (f.tracking !== d.tracking) patch.tracking = f.tracking;
     const bId = f.bookId || null;
     if (bId !== d.bookId) patch.bookId = bId;
-    const bIdx = f.bookIndex ? Number(f.bookIndex) : null;
+    const bIdx = bId && f.bookIndex !== "" ? Number(f.bookIndex) : null;
     if (bIdx !== d.bookIndex) patch.bookIndex = bIdx;
     const wId = f.workId || null;
     if (wId !== d.workId) patch.workId = wId;
-    const wIdx = wId && f.workIndex ? Number(f.workIndex) : null;
+    const wIdx = wId && f.workIndex !== "" ? Number(f.workIndex) : null;
     if (wIdx !== d.workIndex) patch.workIndex = wIdx;
     if (f.rights !== d.rights) patch.rights = f.rights as PieceEdit["rights"];
     if (f.rightsNote !== (d.rightsNote ?? "")) patch.rightsNote = f.rightsNote || null;
@@ -358,7 +365,22 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
           </div>
         </div>
       )}
-      {applyEdit.isError && !movementClash && <div className="mb-3"><ErrorNote message={applyEdit.error.message} /></div>}
+      {applyEdit.isError && !movementClash && (
+        <div className="mb-3">
+          <ErrorNote message={applyEdit.error.message} />
+          {applyEdit.error instanceof ApiError && applyEdit.error.code === "stale_edit" && (
+            <button
+              className="mt-2 rounded-lg border border-line text-sm font-medium px-3.5 py-1.5 hover:bg-paper"
+              onClick={() => {
+                setSeededFor(null);
+                qc.invalidateQueries({ queryKey: ["piece", id] });
+              }}
+            >
+              Load the latest values (discards your unapplied edits)
+            </button>
+          )}
+        </div>
+      )}
       {lifecycle.isError && <div className="mb-3"><ErrorNote message={lifecycle.error.message} /></div>}
 
       {/* ——— editable metadata ——— */}
@@ -399,7 +421,13 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
             </div>
             <div>
               <label className={labelCls}>Book</label>
-              <select className={inputCls} value={form.bookId} onChange={(e) => setForm({ ...form, bookId: e.target.value })}>
+              <select
+                className={inputCls}
+                value={form.bookId}
+                onChange={(e) =>
+                  setForm({ ...form, bookId: e.target.value, ...(e.target.value ? {} : { bookIndex: "" }) })
+                }
+              >
                 <option value="">none</option>
                 {booksQ.data?.items.map((b) => (
                   <option key={b.id} value={b.id}>{b.title}</option>
@@ -506,10 +534,16 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
                         <span className="text-brand"> (this piece)</span>
                       </p>
                     ) : (
-                      <Link className="text-xs font-medium text-brand hover:underline truncate block" to={`/pieces?sel=${s.id}`}>
+                      <button
+                        className="text-xs font-medium text-brand hover:underline truncate block text-left w-full"
+                        onClick={() => {
+                          if (dirty && !window.confirm("You have unapplied edits — discard them?")) return;
+                          nav(`/pieces?sel=${s.id}`);
+                        }}
+                      >
                         {s.title}
                         {s.subtitle && <span className="text-ink-soft font-normal"> · {s.subtitle}</span>}
-                      </Link>
+                      </button>
                     )}
                   </div>
                   {(s.instrumentation?.solo ?? "piano") !== "piano" && (

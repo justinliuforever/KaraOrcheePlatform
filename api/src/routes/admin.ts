@@ -468,12 +468,19 @@ export function adminRouter(deps: Deps): Router {
         return;
       }
       const p = parsed.data;
-      if (p.expectedUpdatedAt && new Date(p.expectedUpdatedAt).getTime() !== piece.updatedAt.getTime()) {
-        res.status(409).json({
-          error: "stale_edit",
-          message: "Someone else changed this piece since you opened it — reload and re-apply your edits.",
-        });
-        return;
+      if (p.expectedUpdatedAt) {
+        const expected = new Date(p.expectedUpdatedAt).getTime();
+        if (Number.isNaN(expected)) {
+          res.status(400).json({ error: "invalid_edit", message: "Malformed concurrency token — reload the page." });
+          return;
+        }
+        if (expected !== piece.updatedAt.getTime()) {
+          res.status(409).json({
+            error: "stale_edit",
+            message: "Someone else changed this piece since you opened it — reload and re-apply your edits.",
+          });
+          return;
+        }
       }
       const finalRights = p.rights ?? piece.rights;
       const finalNote = p.rightsNote === undefined ? piece.rightsNote : p.rightsNote;
@@ -532,8 +539,18 @@ export function adminRouter(deps: Deps): Router {
         }
       }
 
+      // Same rule as works: detaching the book clears its number — otherwise the
+      // stale number silently re-applies on the next attach.
       const finalBookId = p.bookId === undefined ? piece.bookId : p.bookId;
-      const finalIndex = p.bookIndex === undefined ? piece.bookIndex : p.bookIndex;
+      const finalIndex =
+        finalBookId == null ? null : p.bookIndex === undefined ? piece.bookIndex : p.bookIndex;
+      if (p.bookIndex != null && finalBookId == null) {
+        res.status(400).json({
+          error: "book_index_without_book",
+          message: "A number-in-book needs a book — pick the book first.",
+        });
+        return;
+      }
       if (finalBookId) {
         const [book] = await db.select().from(books).where(eq(books.id, finalBookId)).limit(1);
         if (!book) {
@@ -564,8 +581,9 @@ export function adminRouter(deps: Deps): Router {
           ...(p.subtitle !== undefined ? { subtitle: p.subtitle } : {}),
           ...(p.difficulty !== undefined ? { difficulty: p.difficulty } : {}),
           ...(p.tracking !== undefined ? { tracking: p.tracking } : {}),
-          ...(p.bookId !== undefined ? { bookId: p.bookId } : {}),
-          ...(p.bookIndex !== undefined ? { bookIndex: p.bookIndex } : {}),
+          ...(p.bookId !== undefined || p.bookIndex !== undefined
+            ? { bookId: finalBookId, bookIndex: finalIndex }
+            : {}),
           ...(p.workId !== undefined || p.workIndex !== undefined
             ? { workId: finalWorkId, workIndex: finalWorkIndex }
             : {}),

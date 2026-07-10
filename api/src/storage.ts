@@ -19,6 +19,13 @@ export class CatalogNotFoundError extends Error {
   }
 }
 
+export class EtagConflictError extends Error {
+  constructor() {
+    super("blob_etag_conflict");
+    this.name = "EtagConflictError";
+  }
+}
+
 export interface CatalogStore {
   readCatalog(): Promise<unknown>;
   signReadUrl(blobUrl: string): string;
@@ -31,11 +38,13 @@ export interface StudioStore {
   uploadSource(path: string, data: Buffer, contentType?: string): Promise<void>;
   copySource(fromPath: string, toPath: string): Promise<void>;
   copyWithinBundles(fromPath: string, toPath: string): Promise<void>;
-  putBundleJson(path: string, body: unknown): Promise<void>;
+  putBundleJson(path: string, body: unknown, opts?: { ifMatch?: string; ifNoneMatch?: string }): Promise<void>;
   putBundleBlob(path: string, data: Buffer, contentType: string): Promise<void>;
   bundleUrl(path: string): string;
   sourceUrl(path: string): string;
   listSources(prefix: string): Promise<{ path: string; bytes: number }[]>;
+  // Optional (fakes may omit): current ETag of a bundle blob, null when absent.
+  getBundleEtag?(path: string): Promise<string | null>;
 }
 
 function parseConnectionString(cs: string): { accountName: string; accountKey: string } {
@@ -136,11 +145,21 @@ export function createBlobStudioStore(connectionString: string): StudioStore {
         .getBlockBlobClient(toPath)
         .syncCopyFromURL(signedCopyUrl(CONTAINER, fromPath, src.url));
     },
-    async putBundleJson(path, body) {
+    async putBundleJson(path, body, opts) {
       const data = Buffer.from(JSON.stringify(body)); // minified: catalog is a wire payload
-      await bundles.getBlockBlobClient(path).uploadData(data, {
-        blobHTTPHeaders: { blobContentType: "application/json" },
-      });
+      try {
+        await bundles.getBlockBlobClient(path).uploadData(data, {
+          blobHTTPHeaders: { blobContentType: "application/json" },
+          ...(opts?.ifMatch || opts?.ifNoneMatch
+            ? { conditions: { ...(opts.ifMatch ? { ifMatch: opts.ifMatch } : {}), ...(opts.ifNoneMatch ? { ifNoneMatch: opts.ifNoneMatch } : {}) } }
+            : {}),
+        });
+      } catch (err) {
+        if (err instanceof RestError && (err.statusCode === 412 || err.statusCode === 409)) {
+          throw new EtagConflictError();
+        }
+        throw err;
+      }
     },
     async putBundleBlob(path, data, contentType) {
       await bundles.getBlockBlobClient(path).uploadData(data, {
@@ -159,6 +178,15 @@ export function createBlobStudioStore(connectionString: string): StudioStore {
         out.push({ path: blob.name, bytes: blob.properties.contentLength ?? 0 });
       }
       return out;
+    },
+    async getBundleEtag(path) {
+      try {
+        const props = await bundles.getBlockBlobClient(path).getProperties();
+        return props.etag ?? null;
+      } catch (err) {
+        if (err instanceof RestError && err.statusCode === 404) return null;
+        throw err;
+      }
     },
   };
 }
