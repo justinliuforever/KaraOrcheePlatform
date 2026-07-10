@@ -100,23 +100,34 @@ karaorchee.com sender), `acrkaraorchee` (images), CIAM tenant (below).
 
 ## Pieces Library (admin registry manager)
 
-- List = search + filter chips + sortable columns + CSV export; row → LARGE slide-over
-  panel (`?sel=<id>` in the URL — deep-linkable, table state never lost). `/pieces/:id`
-  stays as the full-page escape hatch.
+- List = search (title/composer/subtitle/id + work title/catalogue) + filter selects
+  (status/shelf/rights/instrument/work/book) + sortable columns (incl. Work column) +
+  CSV export; row → LARGE slide-over panel (`?sel=<id>` in the URL — deep-linkable,
+  table state never lost). `/pieces/:id` redirects into `?sel=` — ONE canonical piece
+  view, so the two surfaces can never drift.
 - Two edit lanes: display/catalog fields (title/composer/subtitle/difficulty/shelf/book/
-  rights/note) edit IN the panel — per-guard validation (book-index clash, provenance
-  required for PD, optimistic-concurrency `expectedUpdatedAt` → 409 stale_edit) → one
-  Apply w/ live-catalog confirm → SQL + catalog rebuild + audit. Score-content changes =
+  **work membership**/rights/note) edit IN the panel — per-guard validation (book-index
+  clash, provenance required for PD, work_missing / work_index_without_work /
+  movement_taken 409 requiring explicit `confirmMovementClash` when same work+No.+
+  instrument already exists, optimistic-concurrency `expectedUpdatedAt` → 409
+  stale_edit) → one Apply w/ live-catalog confirm → SQL + catalog rebuild + audit.
+  Work membership is catalog metadata BY DESIGN — re-grouping/movement-number fixes
+  must not require re-running the build pipeline. Score-content changes =
   "Upload new version" → studio wizard with `?piece=<id>` — the draft is PINNED to the
   permanent piece id (identity never re-derived from title strings; renames can't break
   the version chain) → full gates → review → publish v(N+1).
 - Lifecycle: Archive (reversible, instant catalog removal) / Take down (one step:
   archive + rights=blocked + reason recorded) / Restore (guards: has published version +
   publishable rights). Rights can't go unknown/blocked in-place while published.
-- Detail shows EVERYTHING: signed downloads for every bundle file per version, original
-  MusicXML/MIDI sources (studio uploads at staging/<jobId>/ AND the pre-studio archive at
-  <pieceId>/ in piece-sources), engraving previews, build history (links to studio jobs),
-  per-piece audit trail.
+- Detail shows EVERYTHING: signed downloads for every bundle file per version (roles
+  humanized in UI), original MusicXML/MIDI sources (studio uploads at staging/<jobId>/
+  AND the pre-studio archive at <pieceId>/ in piece-sources), engraving previews,
+  **score-facts card** (read-only — MusicXML is ground truth; empty for pre-v3 pieces
+  until their next upload), **work section w/ all sibling movements**, **audio section**
+  (latest build's staged preview render + published reference audio, with why-preview-
+  is-never-bundled notes), build history (links to studio jobs), per-piece audit trail.
+  API errors carry their human explanation end-to-end (ApiError.message = server's
+  `message` field), so every guard shows its reason in the UI.
 
 ### Jobs ↔ registry consistency laws
 
