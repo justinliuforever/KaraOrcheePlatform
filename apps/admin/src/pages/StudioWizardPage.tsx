@@ -13,6 +13,7 @@ import {
 } from "../api";
 import { Badge, Card, ErrorNote, Spinner } from "../components/ui";
 import { PREFLIGHT_GATES, RENDER_GATE, failureHint, keyLabel } from "../studio/gateInfo";
+import Diagnosis, { diagnosisOf } from "../studio/Diagnosis";
 
 const inputCls =
   "w-full rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none focus:border-brand";
@@ -218,9 +219,13 @@ function CheckRail({ job }: { job: StudioJob }) {
             {entry?.status === "fail" && (
               <div className="mt-2 space-y-1.5">
                 <p className="text-[11px] text-bad leading-relaxed">{entry.error}</p>
-                <p className="text-[11px] text-ink leading-relaxed rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-2">
-                  💡 {failureHint(g.key, entry.error ?? "")}
-                </p>
+                {diagnosisOf(entry.metrics).length > 0 ? (
+                  <Diagnosis items={diagnosisOf(entry.metrics)} />
+                ) : (
+                  <p className="text-[11px] text-ink leading-relaxed rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-2">
+                    💡 {failureHint(g.key, entry.error ?? "")}
+                  </p>
+                )}
               </div>
             )}
           </div>

@@ -212,6 +212,22 @@ def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out
         except GateError as err:
             metrics = dict(err.metrics)
             metrics["duration_ms"] = int((time.monotonic() - t0) * 1000)
+            # Post-failure attribution: classify WHY the timelines disagree so the
+            # uploader gets data facts instead of a generic rejection. Best-effort —
+            # a diagnosis crash must never change the verdict.
+            if stage == "geometry" and midi_path is not None and state.get("meta"):
+                try:
+                    from pipeline.diagnose import diagnose
+                    eff = _effective_paths(xml_path, out_dir, state["meta"], state["solo"])
+                    multi = state["meta"]["n_parts"] > 1 and state["solo"] is not None
+                    sidx = ([p["id"] for p in state["meta"]["parts"]].index(state["solo"])
+                            if multi else None)
+                    d = diagnose(xml_path, eff, midi_path, sidx)
+                    if d:
+                        metrics["diagnosis"] = d
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
             on_gate(stage, "fail", metrics, str(err))
             raise
         except Exception as err:
