@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pretty_midi
 
-from pipeline.vrv import make_toolkit
 from pipeline.score_events import _mei_pitches, CLUSTER_EPS_SEC
 from pipeline.tempo_norm import _metronome_qpm
 
@@ -36,6 +35,7 @@ JUMP_PERSIST = 8
 # ---------- extraction ----------
 
 def _xml_side(effective_xml: Path) -> dict:
+    from pipeline.vrv import make_toolkit  # lazy: keeps the pure-math helpers testable without verovio
     tk = make_toolkit()
     tk.setOptions({"xmlIdChecksum": True, "header": "none", "footer": "none"})
     if not tk.loadFile(str(effective_xml)):

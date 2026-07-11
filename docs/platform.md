@@ -129,6 +129,22 @@ karaorchee.com sender), `acrkaraorchee` (images), CIAM tenant (below).
   API errors carry their human explanation end-to-end (ApiError.message = server's
   `message` field), so every guard shows its reason in the UI.
 
+### Dead-letter runbook
+
+Alert `alert-sb-deadletter` (action group `ag-karaorchee-ops` → founder email) fires when
+any Service Bus queue dead-letters a message (delivery attempts exhausted — an upload
+died without updating its job row; the wizard shows an eternal spinner).
+
+1. Which queue: `az servicebus queue show -g rg-karaorchee-app-dev --namespace-name
+   sb-karaorchee-app-dev -n pieces-jobs --query countDetails` (repeat for
+   `pieces-preflight`, `notes-jobs`).
+2. Peek the poison message (Service Bus Explorer in the portal is easiest) → body carries
+   `{jobId}`; look the job up on the Studio board and in worker logs
+   (Log Analytics `ContainerAppConsoleLogs_CL | where Log_s contains "<jobId>"`).
+3. Fix the underlying cause, then mark the job failed by hand if the row is stuck on
+   `running` (`UPDATE studio_jobs SET status='failed', error='dead-lettered: <reason>'`),
+   and dead-letter-receive-and-complete the message to clear the alert.
+
 ### Jobs ↔ registry consistency laws
 
 - **Publish trusts the LIVE registry, not the draft snapshot** (2026-07-09 adversarial
