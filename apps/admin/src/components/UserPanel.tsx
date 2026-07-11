@@ -2,33 +2,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { api, type AdminUser, type AdminUserDetail, type RolePatch } from "../api";
 import { ErrorNote, Spinner, statusTone } from "./ui";
-import { Badge } from "@/components/ui-kit/badge";
+import ToneBadge from "./ToneBadge";
 import { Button } from "@/components/ui-kit/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui-kit/sheet";
 
 // The panel is deliberately sectioned: Notes-phase sections (subscription/entitlements,
 // lessons, teacher-student links) slot in as new <Section>s without reshaping this file.
-
-// Tone MAPPING (statusTone) is unchanged — only rendering swaps to a ui-kit Badge.
-const TONE_VARIANT: Record<
-  string,
-  { variant: "default" | "secondary" | "destructive" | "outline"; className?: string }
-> = {
-  brand: { variant: "default" },
-  bad: { variant: "destructive" },
-  muted: { variant: "secondary" },
-  ok: { variant: "outline", className: "border-emerald-200 bg-emerald-50 text-ok" },
-  warn: { variant: "outline", className: "border-amber-200 bg-amber-50 text-warn" },
-};
-
-function ToneBadge({ tone, children }: { tone: string; children: ReactNode }) {
-  const t = TONE_VARIANT[tone] ?? TONE_VARIANT.muted;
-  return (
-    <Badge variant={t.variant} className={t.className}>
-      {children}
-    </Badge>
-  );
-}
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -172,8 +151,8 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
               <Row label="Status">
                 <ToneBadge tone={statusTone(u.status)}>{u.status}</ToneBadge>
               </Row>
-              <Row label="Joined">{new Date(u.createdAt).toLocaleString()}</Row>
-              <Row label="Updated">{new Date(u.updatedAt).toLocaleString()}</Row>
+              <Row label="Joined"><span className="tabular-nums">{new Date(u.createdAt).toLocaleString()}</span></Row>
+              <Row label="Updated"><span className="tabular-nums">{new Date(u.updatedAt).toLocaleString()}</span></Row>
               <Row label="Referred by">{u.referredBy ?? "—"}</Row>
             </Section>
 
@@ -201,7 +180,7 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
                   <div key={e.id} className="py-1.5 border-b border-line/60 last:border-0">
                     <p className="text-xs font-medium">{e.action}</p>
                     <p className="text-[11px] text-ink-faint">
-                      {new Date(e.createdAt).toLocaleString()}
+                      <span className="tabular-nums">{new Date(e.createdAt).toLocaleString()}</span>
                       {e.detail && "changes" in e.detail
                         ? ` · ${JSON.stringify(e.detail.changes)}`
                         : ""}

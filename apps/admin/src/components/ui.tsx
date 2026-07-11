@@ -1,69 +1,26 @@
 import type { ReactNode } from "react";
 
 export const inputCls =
-  "w-full rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none focus:border-brand";
+  "w-full rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none focus:border-brand focus-visible:ring-[3px] focus-visible:ring-ring/30";
 
-export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return (
-    <div className={`bg-card border border-line rounded-xl overflow-hidden ${className}`}>
-      {children}
-    </div>
-  );
-}
+/** Shared column-header treatment for ui-kit TableHead across every table. */
+export const thCls = "px-4 text-xs font-medium uppercase tracking-wide text-ink-faint";
 
 export function PageHeader({ title, subtitle, right }: { title: string; subtitle?: string; right?: ReactNode }) {
   return (
-    <div className="flex items-end justify-between mb-5">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+    <div className="flex items-end justify-between gap-4 mb-5">
+      <div className="min-w-0">
+        <h1 className="text-xl font-semibold tracking-tight text-ink">{title}</h1>
         {subtitle && <p className="text-sm text-ink-soft mt-0.5">{subtitle}</p>}
       </div>
-      {right}
+      {right && <div className="shrink-0">{right}</div>}
     </div>
   );
 }
 
-export function Th({ children, className = "" }: { children?: ReactNode; className?: string }) {
-  return (
-    <th className={`text-left text-xs font-medium uppercase tracking-wide text-ink-faint px-4 py-2.5 ${className}`}>
-      {children}
-    </th>
-  );
-}
+export type Tone = "ok" | "warn" | "bad" | "muted" | "brand";
 
-export function Td({
-  children,
-  className = "",
-  colSpan,
-}: {
-  children?: ReactNode;
-  className?: string;
-  colSpan?: number;
-}) {
-  return (
-    <td colSpan={colSpan} className={`px-4 py-3 text-sm border-t border-line ${className}`}>
-      {children}
-    </td>
-  );
-}
-
-const badgeTones: Record<string, string> = {
-  ok: "bg-emerald-50 text-ok border-emerald-200",
-  warn: "bg-amber-50 text-warn border-amber-200",
-  bad: "bg-red-50 text-bad border-red-200",
-  muted: "bg-gray-50 text-ink-soft border-line",
-  brand: "bg-brand-soft text-brand border-indigo-200",
-};
-
-export function Badge({ tone = "muted", children }: { tone?: keyof typeof badgeTones; children: ReactNode }) {
-  return (
-    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${badgeTones[tone]}`}>
-      {children}
-    </span>
-  );
-}
-
-export function statusTone(status: string): keyof typeof badgeTones {
+export function statusTone(status: string): Tone {
   switch (status) {
     case "published":
     case "active":
@@ -79,7 +36,7 @@ export function statusTone(status: string): keyof typeof badgeTones {
   }
 }
 
-export function rightsTone(rights: string): keyof typeof badgeTones {
+export function rightsTone(rights: string): Tone {
   switch (rights) {
     case "public_domain":
     case "licensed":

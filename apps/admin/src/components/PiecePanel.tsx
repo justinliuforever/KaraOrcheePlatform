@@ -9,7 +9,8 @@ import {
   type AdminWork,
   type PieceEdit,
 } from "../api";
-import { Badge, ErrorNote, Spinner, inputCls, rightsTone, statusTone } from "./ui";
+import { ErrorNote, Spinner, inputCls, rightsTone, statusTone } from "./ui";
+import ToneBadge from "./ToneBadge";
 import SlideOver from "./SlideOver";
 import {
   AlertDialog,
@@ -245,12 +246,16 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <Badge tone={(d.instrumentation?.solo ?? "piano") === "piano" ? "muted" : "ok"}>
+            <ToneBadge tone={(d.instrumentation?.solo ?? "piano") === "piano" ? "muted" : "ok"}>
               {d.instrumentation?.solo ?? "piano"}
-            </Badge>
-            <Badge tone={rightsTone(d.rights)}>{d.rights.replace("_", " ")}</Badge>
-            <Badge tone={statusTone(d.status)}>{d.status}</Badge>
-            <button className="text-ink-faint hover:text-ink text-xl leading-none px-1" onClick={onClose} aria-label="Close">
+            </ToneBadge>
+            <ToneBadge tone={rightsTone(d.rights)}>{d.rights.replace("_", " ")}</ToneBadge>
+            <ToneBadge tone={statusTone(d.status)}>{d.status}</ToneBadge>
+            <button
+              className="text-ink-faint hover:text-ink text-xl leading-none px-1 rounded-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              onClick={onClose}
+              aria-label="Close"
+            >
               ×
             </button>
           </div>
@@ -565,7 +570,7 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
                     <span className="text-[11px] text-ok shrink-0">{s.instrumentation!.solo}</span>
                   )}
                   <span className="shrink-0">
-                    <Badge tone={statusTone(s.status)}>{s.status}</Badge>
+                    <ToneBadge tone={statusTone(s.status)}>{s.status}</ToneBadge>
                   </span>
                   {s.publishedVersion != null && (
                     <span className="text-[11px] text-ink-faint tabular-nums shrink-0">v{s.publishedVersion}</span>
@@ -742,10 +747,10 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
               <span className="text-sm font-semibold">
                 v{v.version}
                 {v.version === d.publishedVersion && (
-                  <span className="ml-2 align-middle"><Badge tone="ok">current</Badge></span>
+                  <span className="ml-2 align-middle"><ToneBadge tone="ok">current</ToneBadge></span>
                 )}
               </span>
-              <span className="text-[11px] text-ink-faint">
+              <span className="text-[11px] text-ink-faint tabular-nums">
                 {new Date(v.publishedAt).toLocaleString()}
                 {v.engineSha && ` · ${v.engineSha}`}
               </span>
@@ -811,7 +816,7 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
                 {j.publishedVersion != null && ` → v${j.publishedVersion}`}
               </span>
             </div>
-            <span className="text-[11px] text-ink-faint" title={new Date(j.updatedAt).toLocaleString()}>
+            <span className="text-[11px] text-ink-faint tabular-nums" title={new Date(j.updatedAt).toLocaleString()}>
               {timeAgo(j.updatedAt)}
             </span>
           </div>
@@ -824,7 +829,7 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
           <div key={e.id} className="py-1.5 border-b border-line/50 last:border-0">
             <p className="text-xs font-medium">{e.action}</p>
             <p className="text-[11px] text-ink-faint">
-              {new Date(e.createdAt).toLocaleString()}
+              <span className="tabular-nums">{new Date(e.createdAt).toLocaleString()}</span>
               {e.detail && Object.keys(e.detail).length > 0 && ` · ${JSON.stringify(e.detail).slice(0, 120)}`}
             </p>
           </div>

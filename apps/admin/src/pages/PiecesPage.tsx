@@ -2,11 +2,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { api, type AdminBook, type AdminPiece, type AdminWork } from "../api";
-import { Badge, Card, ErrorNote, PageHeader, Spinner, Td, Th, rightsTone, statusTone } from "../components/ui";
+import { ErrorNote, PageHeader, Spinner, rightsTone, statusTone, thCls } from "../components/ui";
+import ToneBadge from "../components/ToneBadge";
 import PiecePanel from "../components/PiecePanel";
+import { cn } from "@/lib/utils";
+import { Card } from "@/components/ui-kit/card";
 import { Input } from "@/components/ui-kit/input";
 import { Button } from "@/components/ui-kit/button";
-import { Table } from "@/components/ui-kit/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui-kit/table";
 import { timeAgo } from "../studio/gateInfo";
 
 type SortKey = "title" | "composer" | "difficulty" | "publishedVersion" | "updatedAt";
@@ -49,6 +59,12 @@ function exportCsv(rows: AdminPiece[]) {
   a.click();
   URL.revokeObjectURL(a.href);
 }
+
+// Library holds hundreds of rows — deliberately denser than the other tables.
+const CELL = "px-4 py-2";
+
+const SELECT_CLS =
+  "rounded-lg border border-line bg-card pl-2.5 pr-7 py-2 text-sm outline-none focus:border-brand focus-visible:ring-[3px] focus-visible:ring-ring/30 appearance-none bg-no-repeat bg-[right_0.5rem_center] bg-[length:14px] bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 20 20%22 fill=%22%239aa0af%22%3E%3Cpath d=%22M5.5 7.5l4.5 5 4.5-5z%22/%3E%3C/svg%3E')]";
 
 export default function PiecesPage() {
   const [params, setParams] = useSearchParams();
@@ -115,18 +131,20 @@ export default function PiecesPage() {
     });
   }, [query.data, q, filters, sort]);
 
+  const dirty = JSON.stringify(filters) !== JSON.stringify(NO_FILTERS);
+
   function sortHeader(key: SortKey, label: string, extra = "") {
     const active = sort.key === key;
     return (
-      <Th className={extra}>
+      <TableHead className={cn(thCls, extra)}>
         <button
-          className={`inline-flex items-center gap-1 uppercase tracking-wide text-xs font-medium ${active ? "text-ink" : "text-ink-faint hover:text-ink-soft"}`}
+          className={`inline-flex items-center gap-1 uppercase tracking-wide text-xs font-medium rounded-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${active ? "text-ink" : "text-ink-faint hover:text-ink-soft"}`}
           onClick={() => setSort(active ? { key, dir: sort.dir === 1 ? -1 : 1 } : { key, dir: 1 })}
         >
           {label}
-          {active && <span>{sort.dir === 1 ? "↑" : "↓"}</span>}
+          {active && <span aria-hidden>{sort.dir === 1 ? "↑" : "↓"}</span>}
         </button>
-      </Th>
+      </TableHead>
     );
   }
 
@@ -142,114 +160,127 @@ export default function PiecesPage() {
         }
       />
 
-      {(() => {
-        const sel =
-          "rounded-lg border border-line bg-card pl-2.5 pr-7 py-2 text-sm outline-none focus:border-brand appearance-none bg-no-repeat bg-[right_0.5rem_center] bg-[length:14px] bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 20 20%22 fill=%22%239aa0af%22%3E%3Cpath d=%22M5.5 7.5l4.5 5 4.5-5z%22/%3E%3C/svg%3E')]";
-        const dirty = filters !== NO_FILTERS && JSON.stringify(filters) !== JSON.stringify(NO_FILTERS);
-        return (
-          <div className="flex items-center gap-2 mb-4 rounded-xl border border-line bg-card px-3 py-2.5 flex-wrap">
-            <Input
-              ref={searchRef}
-              className="flex-1 w-auto min-w-52 rounded-lg bg-paper/60 border-transparent text-sm"
-              placeholder="Search title, composer, id…  ( / )"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-            <select className={sel} value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
-              <option value="">Status: all</option>
-              <option value="published">Published</option>
-              <option value="archived">Archived</option>
-            </select>
-            <select className={sel} value={filters.shelf} onChange={(e) => setFilters({ ...filters, shelf: e.target.value })}>
-              <option value="">Shelf: all</option>
-              <option value="validated">Pieces</option>
-              <option value="experimental">Challenge</option>
-            </select>
-            <select className={sel} value={filters.rights} onChange={(e) => setFilters({ ...filters, rights: e.target.value })}>
-              <option value="">Rights: all</option>
-              <option value="public_domain">Public domain</option>
-              <option value="licensed">Licensed</option>
-              <option value="unknown">Unknown</option>
-              <option value="blocked">Blocked</option>
-            </select>
-            <select className={sel} value={filters.instrument} onChange={(e) => setFilters({ ...filters, instrument: e.target.value })}>
-              <option value="">Instrument: all</option>
-              <option value="piano">Piano</option>
-              <option value="violin">Violin</option>
-              <option value="guitar">Guitar</option>
-            </select>
-            <select className={sel} value={filters.work} onChange={(e) => setFilters({ ...filters, work: e.target.value })}>
-              <option value="">Work: all</option>
-              <option value="none">Standalone (no work)</option>
-              {worksQ.data?.items.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.composer.split(" ").pop()} · {w.catalogue ?? w.title}
-                </option>
-              ))}
-            </select>
-            <select className={sel} value={filters.book} onChange={(e) => setFilters({ ...filters, book: e.target.value })}>
-              <option value="">Book: all</option>
-              <option value="none">No book</option>
-              {booksQ.data?.items.map((b) => (
-                <option key={b.id} value={b.id}>{b.title}</option>
-              ))}
-            </select>
-            {(dirty || q) && (
-              <button
-                className="text-xs text-ink-soft hover:text-ink px-1.5"
-                onClick={() => {
-                  setFilters(NO_FILTERS);
-                  setQ("");
-                }}
-              >
-                ✕ Reset
-              </button>
-            )}
-          </div>
-        );
-      })()}
+      <div className="flex items-center gap-2 mb-4 rounded-xl border border-line bg-card px-3 py-2.5 flex-wrap">
+        <Input
+          ref={searchRef}
+          className="flex-1 w-auto min-w-52 rounded-lg bg-paper/60 border-transparent text-sm"
+          placeholder="Search title, composer, id…  ( / )"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <select className={SELECT_CLS} value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
+          <option value="">Status: all</option>
+          <option value="published">Published</option>
+          <option value="archived">Archived</option>
+        </select>
+        <select className={SELECT_CLS} value={filters.shelf} onChange={(e) => setFilters({ ...filters, shelf: e.target.value })}>
+          <option value="">Shelf: all</option>
+          <option value="validated">Pieces</option>
+          <option value="experimental">Challenge</option>
+        </select>
+        <select className={SELECT_CLS} value={filters.rights} onChange={(e) => setFilters({ ...filters, rights: e.target.value })}>
+          <option value="">Rights: all</option>
+          <option value="public_domain">Public domain</option>
+          <option value="licensed">Licensed</option>
+          <option value="unknown">Unknown</option>
+          <option value="blocked">Blocked</option>
+        </select>
+        <select className={SELECT_CLS} value={filters.instrument} onChange={(e) => setFilters({ ...filters, instrument: e.target.value })}>
+          <option value="">Instrument: all</option>
+          <option value="piano">Piano</option>
+          <option value="violin">Violin</option>
+          <option value="guitar">Guitar</option>
+        </select>
+        <select className={SELECT_CLS} value={filters.work} onChange={(e) => setFilters({ ...filters, work: e.target.value })}>
+          <option value="">Work: all</option>
+          <option value="none">Standalone (no work)</option>
+          {worksQ.data?.items.map((w) => (
+            <option key={w.id} value={w.id}>
+              {w.composer.split(" ").pop()} · {w.catalogue ?? w.title}
+            </option>
+          ))}
+        </select>
+        <select className={SELECT_CLS} value={filters.book} onChange={(e) => setFilters({ ...filters, book: e.target.value })}>
+          <option value="">Book: all</option>
+          <option value="none">No book</option>
+          {booksQ.data?.items.map((b) => (
+            <option key={b.id} value={b.id}>{b.title}</option>
+          ))}
+        </select>
+        {(dirty || q) && (
+          <button
+            className="text-xs text-ink-soft hover:text-ink px-1.5 py-1 rounded-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            onClick={() => {
+              setFilters(NO_FILTERS);
+              setQ("");
+            }}
+          >
+            ✕ Reset
+          </button>
+        )}
+      </div>
 
       {query.isPending && <Spinner />}
       {query.isError && <ErrorNote message={query.error.message} />}
       {query.data && items.length === 0 && (
-        <Card className="p-10 text-center text-sm text-ink-soft">No pieces match.</Card>
+        <Card className="items-center gap-1 p-10 text-center">
+          <p className="text-sm font-medium">No pieces match</p>
+          <p className="text-sm text-ink-soft">
+            {q || dirty
+              ? "Try a different search, or clear the filters below."
+              : "The library fills up as Studio builds are published."}
+          </p>
+          {(q || dirty) && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2"
+              onClick={() => {
+                setFilters(NO_FILTERS);
+                setQ("");
+              }}
+            >
+              Clear search & filters
+            </Button>
+          )}
+        </Card>
       )}
       {items.length > 0 && (
-        <Card>
+        <Card className="overflow-hidden p-0 gap-0">
           <Table>
-            <thead>
-              <tr>
+            <TableHeader>
+              <TableRow>
                 {sortHeader("title", "Piece")}
                 {sortHeader("composer", "Composer")}
-                <Th>Work</Th>
-                <Th>Book</Th>
-                {sortHeader("difficulty", "Diff")}
-                <Th>Shelf</Th>
-                <Th>Rights</Th>
-                <Th>Status</Th>
+                <TableHead className={thCls}>Work</TableHead>
+                <TableHead className={thCls}>Book</TableHead>
+                {sortHeader("difficulty", "Diff", "text-right")}
+                <TableHead className={thCls}>Shelf</TableHead>
+                <TableHead className={thCls}>Rights</TableHead>
+                <TableHead className={thCls}>Status</TableHead>
                 {sortHeader("publishedVersion", "Ver", "text-right")}
                 {sortHeader("updatedAt", "Updated", "text-right")}
-              </tr>
-            </thead>
-            <tbody>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {items.map((p) => (
-                <tr
+                <TableRow
                   key={p.id}
-                  className={`hover:bg-paper/60 cursor-pointer ${selected === p.id ? "bg-brand-soft/40" : ""}`}
+                  className={cn("cursor-pointer", selected === p.id && "bg-brand-soft/40 hover:bg-brand-soft/50")}
                   onClick={() => setParams({ sel: p.id })}
                 >
-                  <Td className="font-medium">
+                  <TableCell className={`${CELL} font-medium whitespace-normal`}>
                     {p.title}
                     {p.subtitle && <span className="text-ink-soft font-normal"> · {p.subtitle}</span>}
                     <span className="block text-[11px] font-mono text-ink-faint">{p.id}</span>
-                  </Td>
-                  <Td className="text-ink-soft">
+                  </TableCell>
+                  <TableCell className={`${CELL} text-ink-soft whitespace-normal`}>
                     {p.composer}
                     {soloOf(p) !== "piano" && (
                       <span className="block text-[11px] text-brand">{soloOf(p)}</span>
                     )}
-                  </Td>
-                  <Td className="text-ink-soft">
+                  </TableCell>
+                  <TableCell className={`${CELL} text-ink-soft`}>
                     {p.workId ? (
                       <>
                         {p.workCatalogue ?? p.workTitle ?? p.workId}
@@ -263,31 +294,31 @@ export default function PiecesPage() {
                     ) : (
                       "—"
                     )}
-                  </Td>
-                  <Td className="text-ink-soft">
+                  </TableCell>
+                  <TableCell className={`${CELL} text-ink-soft`}>
                     {p.bookTitle ? `${p.bookTitle}${p.bookIndex != null ? ` #${p.bookIndex}` : ""}` : "—"}
-                  </Td>
-                  <Td className="tabular-nums">{p.difficulty ?? "—"}</Td>
-                  <Td>
-                    <Badge tone={p.tracking === "validated" ? "ok" : "muted"}>
+                  </TableCell>
+                  <TableCell className={`${CELL} text-right tabular-nums`}>{p.difficulty ?? "—"}</TableCell>
+                  <TableCell className={CELL}>
+                    <ToneBadge tone={p.tracking === "validated" ? "ok" : "muted"}>
                       {p.tracking === "validated" ? "Pieces" : "Challenge"}
-                    </Badge>
-                  </Td>
-                  <Td>
-                    <Badge tone={rightsTone(p.rights)}>{p.rights.replace("_", " ")}</Badge>
-                  </Td>
-                  <Td>
-                    <Badge tone={statusTone(p.status)}>{p.status}</Badge>
-                  </Td>
-                  <Td className="text-right tabular-nums text-ink-soft">
+                    </ToneBadge>
+                  </TableCell>
+                  <TableCell className={CELL}>
+                    <ToneBadge tone={rightsTone(p.rights)}>{p.rights.replace("_", " ")}</ToneBadge>
+                  </TableCell>
+                  <TableCell className={CELL}>
+                    <ToneBadge tone={statusTone(p.status)}>{p.status}</ToneBadge>
+                  </TableCell>
+                  <TableCell className={`${CELL} text-right tabular-nums text-ink-soft`}>
                     {p.publishedVersion != null ? `v${p.publishedVersion}` : "—"}
-                  </Td>
-                  <Td className="text-right text-xs text-ink-soft tabular-nums">
+                  </TableCell>
+                  <TableCell className={`${CELL} text-right text-xs text-ink-soft tabular-nums`}>
                     <span title={new Date(p.updatedAt).toLocaleString()}>{timeAgo(p.updatedAt)}</span>
-                  </Td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
+            </TableBody>
           </Table>
         </Card>
       )}

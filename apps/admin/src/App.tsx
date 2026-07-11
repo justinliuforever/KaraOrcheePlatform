@@ -1,9 +1,11 @@
+import { useState } from "react";
 import { useIsAuthenticated, useMsal } from "@azure/msal-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { API_SCOPE } from "./auth";
 import { api, ApiError, type AdminUser } from "./api";
 import { Spinner } from "./components/ui";
+import CommandPalette, { isMac } from "./components/CommandPalette";
 import { Button } from "@/components/ui-kit/button";
 import { Separator } from "@/components/ui-kit/separator";
 import { Toaster } from "@/components/ui-kit/sonner";
@@ -45,6 +47,7 @@ function SignIn() {
 function Shell() {
   const { instance } = useMsal();
   const account = instance.getAllAccounts()[0];
+  const [cmdOpen, setCmdOpen] = useState(false);
   const me = useQuery<AdminUser, Error>({
     queryKey: ["me"],
     // Sync first so a first-ever sign-in has a users row an admin can then flag.
@@ -104,6 +107,15 @@ function Shell() {
               {n.label}
             </NavLink>
           ))}
+          <button
+            className="mt-2 flex w-full items-center justify-between rounded-lg border border-line bg-paper/60 px-3 py-1.5 text-xs text-ink-faint transition-colors hover:border-ink-faint/40 hover:text-ink-soft focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            onClick={() => setCmdOpen(true)}
+          >
+            <span>Jump to…</span>
+            <kbd className="rounded border border-line bg-card px-1.5 py-0.5 text-[10px] font-medium text-ink-soft">
+              {isMac ? "⌘K" : "Ctrl K"}
+            </kbd>
+          </button>
         </nav>
         <Separator />
         <div className="p-3">
@@ -120,6 +132,7 @@ function Shell() {
           v{__APP_VERSION__} · {__BUILD_SHA__}
         </p>
       </aside>
+      <CommandPalette open={cmdOpen} onOpenChange={setCmdOpen} />
       <main className="flex-1 min-w-0 px-8 py-6">
         <Routes>
           <Route path="/" element={<Navigate to="/studio" replace />} />

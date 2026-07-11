@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, type StudioJob } from "../api";
-import { Badge, ErrorNote, PageHeader, Spinner, rightsTone } from "../components/ui";
+import { ErrorNote, PageHeader, Spinner, rightsTone } from "../components/ui";
+import ToneBadge from "../components/ToneBadge";
 import { Button } from "@/components/ui-kit/button";
 import { Card } from "@/components/ui-kit/card";
 import { ALL_GATES, failureHint, jobTone, statusLabel } from "../studio/gateInfo";
@@ -50,7 +51,7 @@ function PreviewCard({ variant, url }: { variant: string; url: string }) {
         <img src={url} alt={`${variant} engraving`} className="w-full" />
         {!expanded && (
           <button
-            className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-white to-transparent flex items-end justify-center pb-1.5 text-xs text-brand font-medium"
+            className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-white to-transparent flex items-end justify-center pb-1.5 text-xs text-brand font-medium focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-ring/50"
             onClick={() => setExpanded(true)}
           >
             Show full score
@@ -143,8 +144,8 @@ export default function StudioJobPage() {
         subtitle={`${m.composer ?? ""}${m.subtitle ? ` · ${m.subtitle}` : ""} · ${job.pieceId}`}
         right={
           <div className="flex items-center gap-2">
-            {m.rights && <Badge tone={rightsTone(m.rights)}>{m.rights.replace("_", " ")}</Badge>}
-            <Badge tone={jobTone(job.status)}>{statusLabel(job)}</Badge>
+            {m.rights && <ToneBadge tone={rightsTone(m.rights)}>{m.rights.replace("_", " ")}</ToneBadge>}
+            <ToneBadge tone={jobTone(job.status)}>{statusLabel(job)}</ToneBadge>
           </div>
         }
       />
@@ -250,7 +251,9 @@ export default function StudioJobPage() {
           <p className="text-sm text-ink-soft">
             Running full verification
             {job.stage ? ` — ${ALL_GATES.find((g) => g.key === job.stage)?.label.toLowerCase() ?? job.stage}` : ""}
-            {Number.isFinite(Date.parse(job.updatedAt)) ? ` · ${formatElapsed(now - Date.parse(job.updatedAt))}` : ""}…
+            {Number.isFinite(Date.parse(job.updatedAt)) ? (
+              <> · <span className="tabular-nums">{formatElapsed(now - Date.parse(job.updatedAt))}</span></>
+            ) : null}…
             you can leave this page; the board updates on its own.
           </p>
         </Card>
@@ -305,7 +308,7 @@ export default function StudioJobPage() {
             label="Book"
             value={m.book ? `${m.book.id}${m.book.index != null ? ` · No. ${m.book.index}` : ""}` : "—"}
           />
-          <Row label="Rights" value={m.rights ? <Badge tone={rightsTone(m.rights)}>{m.rights.replace("_", " ")}</Badge> : "—"} />
+          <Row label="Rights" value={m.rights ? <ToneBadge tone={rightsTone(m.rights)}>{m.rights.replace("_", " ")}</ToneBadge> : "—"} />
           {m.rightsNote && (
             <p className="text-xs text-ink-soft mt-2 rounded-lg bg-paper/60 border border-line px-3 py-2 leading-relaxed">
               {m.rightsNote}

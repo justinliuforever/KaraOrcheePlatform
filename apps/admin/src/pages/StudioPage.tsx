@@ -1,12 +1,11 @@
 import { useMemo, useState } from "react";
-import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { api, type StudioJob } from "../api";
-import { ErrorNote, PageHeader, Spinner } from "../components/ui";
+import { ErrorNote, PageHeader, Spinner, thCls } from "../components/ui";
+import ToneBadge from "../components/ToneBadge";
 import { ALL_GATES, jobTone, statusLabel, timeAgo } from "../studio/gateInfo";
 import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui-kit/badge";
 import { Button } from "@/components/ui-kit/button";
 import { Card } from "@/components/ui-kit/card";
 import { Input } from "@/components/ui-kit/input";
@@ -18,29 +17,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui-kit/table";
-
-// Tone MAPPING (jobTone) is unchanged — only rendering swaps to a ui-kit Badge.
-const TONE_VARIANT: Record<
-  string,
-  { variant: "default" | "secondary" | "destructive" | "outline"; className?: string }
-> = {
-  brand: { variant: "default" },
-  bad: { variant: "destructive" },
-  muted: { variant: "secondary" },
-  ok: { variant: "outline", className: "border-emerald-200 bg-emerald-50 text-ok" },
-  warn: { variant: "outline", className: "border-amber-200 bg-amber-50 text-warn" },
-};
-
-function ToneBadge({ tone, children }: { tone: string; children: ReactNode }) {
-  const t = TONE_VARIANT[tone] ?? TONE_VARIANT.muted;
-  return (
-    <Badge variant={t.variant} className={t.className}>
-      {children}
-    </Badge>
-  );
-}
-
-const HEAD_CLS = "px-4 text-xs uppercase tracking-wide text-ink-faint";
 
 export function GateDots({ job }: { job: StudioJob }) {
   return (
@@ -206,8 +182,30 @@ export default function StudioPage() {
       {query.isPending && <Spinner />}
       {query.isError && <ErrorNote message={query.error.message} />}
       {query.data && items.length === 0 && (
-        <Card className="p-10 text-center text-sm text-ink-soft gap-0">
-          {stage === "failed" ? "No failures." : "No builds here yet."}
+        <Card className="items-center gap-1 p-10 text-center">
+          {q.trim() ? (
+            <>
+              <p className="text-sm font-medium">No builds match</p>
+              <p className="text-sm text-ink-soft">Nothing here for "{q.trim()}" — try a title, composer, or piece id.</p>
+            </>
+          ) : stage === "all" ? (
+            <>
+              <p className="text-sm font-medium">No builds yet</p>
+              <p className="text-sm text-ink-soft">Upload a score to start the first verification run.</p>
+              <Button asChild size="sm" className="mt-2">
+                <Link to="/studio/new">New piece</Link>
+              </Button>
+            </>
+          ) : (
+            <p className="text-sm text-ink-soft">
+              {stage === "draft" && "No drafts — everything in flight has been submitted."}
+              {stage === "verifying" && "Nothing verifying right now — submitted builds show up here while checks run."}
+              {stage === "review" && "Nothing waiting on you — builds land here when every check passes."}
+              {stage === "published" && "Nothing published from the Studio yet."}
+              {stage === "failed" && "No failures."}
+              {stage === "canceled" && "No canceled builds."}
+            </p>
+          )}
         </Card>
       )}
       {items.length > 0 && (
@@ -215,12 +213,12 @@ export default function StudioPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className={HEAD_CLS}>Piece</TableHead>
-                <TableHead className={HEAD_CLS}>Composer</TableHead>
-                <TableHead className={HEAD_CLS}>Book</TableHead>
-                <TableHead className={HEAD_CLS}>Checks</TableHead>
-                <TableHead className={HEAD_CLS}>Status</TableHead>
-                <TableHead className={`${HEAD_CLS} text-right`}>Updated</TableHead>
+                <TableHead className={thCls}>Piece</TableHead>
+                <TableHead className={thCls}>Composer</TableHead>
+                <TableHead className={thCls}>Book</TableHead>
+                <TableHead className={thCls}>Checks</TableHead>
+                <TableHead className={thCls}>Status</TableHead>
+                <TableHead className={`${thCls} text-right`}>Updated</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

@@ -1,9 +1,8 @@
 import { useState } from "react";
-import type { ReactNode } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { api, type AdminUser } from "../api";
-import { ErrorNote, PageHeader, Spinner, statusTone } from "../components/ui";
-import { Badge } from "@/components/ui-kit/badge";
+import { ErrorNote, PageHeader, Spinner, statusTone, thCls } from "../components/ui";
+import ToneBadge from "../components/ToneBadge";
 import { Button } from "@/components/ui-kit/button";
 import { Card } from "@/components/ui-kit/card";
 import { Input } from "@/components/ui-kit/input";
@@ -18,30 +17,6 @@ import {
 import UserPanel from "../components/UserPanel";
 
 const PAGE = 50;
-
-// The tone MAPPING (statusTone) is unchanged — only the rendering swaps to a ui-kit
-// Badge. ok/warn keep the house emerald/amber via the outline variant + custom classes.
-const TONE_VARIANT: Record<
-  string,
-  { variant: "default" | "secondary" | "destructive" | "outline"; className?: string }
-> = {
-  brand: { variant: "default" },
-  bad: { variant: "destructive" },
-  muted: { variant: "secondary" },
-  ok: { variant: "outline", className: "border-emerald-200 bg-emerald-50 text-ok" },
-  warn: { variant: "outline", className: "border-amber-200 bg-amber-50 text-warn" },
-};
-
-function ToneBadge({ tone, children }: { tone: string; children: ReactNode }) {
-  const t = TONE_VARIANT[tone] ?? TONE_VARIANT.muted;
-  return (
-    <Badge variant={t.variant} className={t.className}>
-      {children}
-    </Badge>
-  );
-}
-
-const HEAD_CLS = "px-4 text-xs uppercase tracking-wide text-ink-faint";
 
 export default function UsersPage() {
   const [q, setQ] = useState("");
@@ -78,11 +53,11 @@ export default function UsersPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className={HEAD_CLS}>Email</TableHead>
-                <TableHead className={HEAD_CLS}>Name</TableHead>
-                <TableHead className={HEAD_CLS}>Roles</TableHead>
-                <TableHead className={HEAD_CLS}>Status</TableHead>
-                <TableHead className={`${HEAD_CLS} text-right`}>Joined</TableHead>
+                <TableHead className={thCls}>Email</TableHead>
+                <TableHead className={thCls}>Name</TableHead>
+                <TableHead className={thCls}>Roles</TableHead>
+                <TableHead className={thCls}>Status</TableHead>
+                <TableHead className={`${thCls} text-right`}>Joined</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -113,9 +88,16 @@ export default function UsersPage() {
                 </TableRow>
               ))}
               {query.data.items.length === 0 && (
-                <TableRow>
-                  <TableCell className="px-4 text-ink-faint text-center py-8" colSpan={5}>
-                    No matching users
+                <TableRow className="hover:bg-transparent">
+                  <TableCell className="px-4 py-10 text-center whitespace-normal" colSpan={5}>
+                    <p className="text-sm font-medium text-ink">
+                      {q ? "No accounts match" : "No accounts yet"}
+                    </p>
+                    <p className="text-sm text-ink-soft mt-1">
+                      {q
+                        ? `Nothing found for "${q}" — try part of an email or display name.`
+                        : "Accounts appear here after their first sign-in to the app."}
+                    </p>
                   </TableCell>
                 </TableRow>
               )}
