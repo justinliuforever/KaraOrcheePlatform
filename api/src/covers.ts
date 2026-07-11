@@ -1,9 +1,9 @@
 import sharp from "sharp";
 
 // Book covers render on an iOS bookshelf: portrait 3:4. Acceptance floor 900×1200
-// (founder call 2026-07-10 — visually clear covers were being rejected under the old
-// 1200×1600 floor); storage output stays a normalized 1200×1600 webp pair (mild
-// upscale for smaller inputs) so the app always receives one consistent size.
+// (visually clear covers were being rejected under the old 1200×1600 floor); storage
+// output stays a normalized 1200×1600 webp pair (mild upscale for smaller inputs) so
+// the app always receives one consistent size.
 const MIN_W = 900;
 const MIN_H = 1200;
 const OUT_W = 1200;

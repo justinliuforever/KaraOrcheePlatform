@@ -5,6 +5,7 @@ Spike-verified 2026-07-08: Verovio has no native part filter; MusicXML pre-surge
 timing-neutral (0.000ms residual). MIDI instrument separation is a pretty_midi filter.
 """
 from __future__ import annotations
+import copy
 import xml.etree.ElementTree as ET
 from pathlib import Path
 import pretty_midi
@@ -44,7 +45,6 @@ def reduce_xml_to_part(src_xml: Path, out_xml: Path, keep_part_id: str) -> None:
         for mi, measure in enumerate(pt.findall("measure")):
             for d in measure.findall("direction"):
                 if _is_tempo_direction(d):
-                    import copy
                     c = copy.deepcopy(d)
                     for tag in ("staff", "voice"):  # would reference removed staves
                         for child in c.findall(tag):

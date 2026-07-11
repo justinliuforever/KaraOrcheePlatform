@@ -11,7 +11,7 @@ import {
 import { createServer } from "../src/server";
 import { createJoseVerifier, type AuthVerifier } from "../src/auth";
 import { createTestDb } from "./testdb";
-import { users, pieces, studioJobs, works, books } from "../src/db/schema";
+import { users, pieces, studioJobs, books } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { StudioStore, CatalogStore } from "../src/storage";
 import type { JobQueue } from "../src/queue";

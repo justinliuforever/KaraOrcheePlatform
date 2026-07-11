@@ -25,6 +25,8 @@ from azure.servicebus import AutoLockRenewer, ServiceBusClient
 from azure.storage.blob import BlobServiceClient, ContentSettings
 
 from gates import run_all, GateError, ARTIFACT_LAYOUT
+from pipeline.mxl import ensure_xml
+from pipeline.preview import soundfont_for
 
 FULL_QUEUE = "pieces-jobs"
 PREFLIGHT_QUEUE = "pieces-preflight"
@@ -33,6 +35,7 @@ BUNDLES_CONTAINER = "piece-bundles"
 
 CONTENT_TYPES = {".json": "application/json", ".svg": "image/svg+xml", ".mei": "application/xml",
                  ".m4a": "audio/mp4"}
+_SF2_CACHE = Path("/tmp/sf2cache")
 
 
 def env(name: str) -> str:
@@ -51,14 +54,9 @@ def fetch_job(conn, job_id: str):
         return cur.fetchone()
 
 
-_SF2_CACHE = Path("/tmp/sf2cache")
-
-
 def get_soundfont(blob: BlobServiceClient, instrument: str | None) -> tuple[Path | None, int]:
     """Download (once) the SF2 for this instrument from the soundfont container."""
-    from pipeline.preview import soundfont_for
-
-    blob_name, program, _ = soundfont_for(instrument)
+    blob_name, program = soundfont_for(instrument)
     _SF2_CACHE.mkdir(exist_ok=True)
     local = _SF2_CACHE / blob_name
     if not local.exists():
@@ -153,7 +151,6 @@ def process(conn, blob: BlobServiceClient, job_id: str, mode: str) -> None:
         out_dir.mkdir()
 
         # .mxl (MuseScore's DEFAULT export) is a zip; the ET-based passes need raw XML.
-        from pipeline.mxl import ensure_xml
         try:
             xml_path = ensure_xml(xml_path, tmpdir)
         except Exception as err:

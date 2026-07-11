@@ -9,7 +9,7 @@ import { requireAuth } from "../auth";
 import { requireAdmin, audit } from "../admin";
 import { books, pieces, pieceVersions, studioJobs, works } from "../db/schema";
 import { rebuildCatalog, type BundleFile } from "../catalog_build";
-import { pieceSlug, bookSlug, normalizeCatalogue } from "../slug";
+import { pieceSlug, bookSlug, normalizeCatalogue, likeEsc } from "../slug";
 
 const PUBLISH_ROLES = new Set(["score_events", "accompaniment_events", "geometry", "svg", "reference_audio"]);
 const INSTRUMENTS = ["piano", "violin", "guitar"] as const;
@@ -112,10 +112,6 @@ const checksSchema = z.object({
     .nullable()
     .optional(),
 });
-
-// Escape LIKE metacharacters in user text used inside ilike patterns — a title
-// containing % or _ must match literally, not as a wildcard.
-const likeEsc = (s: string) => s.replace(/[\\%_]/g, (m) => `\\${m}`);
 
 const XML_EXT = /\.(musicxml|xml|mxl)$/i;
 const MIDI_EXT = /\.(mid|midi)$/i;

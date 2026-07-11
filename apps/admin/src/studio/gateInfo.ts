@@ -54,10 +54,6 @@ export const RENDER_GATE: GateInfo = {
 
 export const ALL_GATES = [...PREFLIGHT_GATES, RENDER_GATE];
 
-export function gateLabel(key: string): string {
-  return ALL_GATES.find((g) => g.key === key)?.label ?? key;
-}
-
 // Actionable remediation, matched on the worker's failure text.
 export function failureHint(gateKey: string, error: string): string {
   const e = error.toLowerCase();

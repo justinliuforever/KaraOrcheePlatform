@@ -1,8 +1,8 @@
 """Post-failure attribution for the geometry gate.
 
 When the score/MIDI timelines disagree, classify WHY from data shape alone and tell
-the uploader in plain facts (never guessing their software). Design was adversarially
-reviewed 2026-07-10; the load-bearing rules from that review:
+the uploader in plain facts (never guessing their software). The load-bearing design
+rules:
   - pitch-aware alignment, never index pairing (ornament surpluses shift indices);
   - robust fit BEFORE jump detection, jumps on the detrended residue and only when
     the shift PERSISTS (repeats are sustained, graces are transient);
@@ -12,8 +12,11 @@ reviewed 2026-07-10; the load-bearing rules from that review:
     worse than none, so anything unproven stays silent and the generic message stands.
 """
 from __future__ import annotations
+import bisect
+import random
 import re
 import xml.etree.ElementTree as ET
+from collections import Counter
 from pathlib import Path
 
 import pretty_midi
@@ -191,7 +194,6 @@ def _align(xa: list[dict], xb: list[dict]) -> list[tuple[int, int]]:
 
 
 def _theil_sen(xs: list[float], ys: list[float]) -> tuple[float, float]:
-    import random
     n = len(xs)
     rng = random.Random(7)
     slopes = []
@@ -208,7 +210,6 @@ def _theil_sen(xs: list[float], ys: list[float]) -> tuple[float, float]:
 
 def _nearest_median_ms(ref_secs: list[float], midi_secs: list[float]) -> float:
     """The gate's own metric shape: for each MIDI onset, distance to nearest ref onset."""
-    import bisect
     ref = sorted(ref_secs)
     ds = []
     for t in midi_secs:
@@ -233,7 +234,6 @@ def diagnose(original_xml: Path, effective_xml: Path, midi_path: Path,
     # -- note-level counting + identity (notes, not events: humanize splits chords) --
     xml_notes = sum(len(e["pitches"]) for e in xe)
     midi_notes = sum(len(e["pitches"]) for e in me)
-    from collections import Counter
     xh = Counter(p for e in xe for p in e["pitches"])
     mh = Counter(p for e in me for p in e["pitches"])
     overlap = sum((xh & mh).values()) / max(sum((xh | mh).values()), 1)

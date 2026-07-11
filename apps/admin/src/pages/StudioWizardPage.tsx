@@ -11,12 +11,10 @@ import {
   type StudioMetadata,
   type XmlMeta,
 } from "../api";
-import { Badge, Card, ErrorNote, Spinner } from "../components/ui";
+import { Badge, Card, ErrorNote, Spinner, inputCls } from "../components/ui";
 import { PREFLIGHT_GATES, RENDER_GATE, failureHint, keyLabel } from "../studio/gateInfo";
 import Diagnosis, { diagnosisOf } from "../studio/Diagnosis";
 
-const inputCls =
-  "w-full rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none focus:border-brand";
 const labelCls = "block text-xs font-medium text-ink-soft mb-1.5";
 const btnPrimary =
   "rounded-lg bg-brand text-white text-sm font-medium px-4 py-2 hover:opacity-90 disabled:opacity-40";

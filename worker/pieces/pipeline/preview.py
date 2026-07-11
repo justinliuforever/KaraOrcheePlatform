@@ -24,12 +24,10 @@ SOUNDFONTS = {
 }
 
 
-def soundfont_for(instrument: str | None) -> tuple[str, int, bool]:
-    """(blob_name, program, is_fallback). Fallback = unknown instrument -> piano."""
+def soundfont_for(instrument: str | None) -> tuple[str, int]:
+    """(blob_name, MIDI program) for an instrument; unknown falls back to piano."""
     key = (instrument or "piano").lower()
-    is_fallback = key not in SOUNDFONTS
-    blob, program = SOUNDFONTS.get(key, SOUNDFONTS["piano"])
-    return blob, program, is_fallback
+    return SOUNDFONTS.get(key, SOUNDFONTS["piano"])
 
 
 def render_preview(score_events_path: Path, sf2_path: Path, out_m4a: Path, program: int = 0) -> dict:

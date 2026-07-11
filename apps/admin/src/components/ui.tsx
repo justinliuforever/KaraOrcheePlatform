@@ -1,5 +1,8 @@
 import type { ReactNode } from "react";
 
+export const inputCls =
+  "w-full rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none focus:border-brand";
+
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
     <div className={`bg-card border border-line rounded-xl overflow-hidden ${className}`}>

@@ -19,7 +19,7 @@ Dev API (live 2026-07-05): `https://ca-app-api-dev.graymoss-40d67a2f.centralus.a
 — image `acrkaraorchee.azurecr.io/karaorchee-app/api:<tag>` (built via `az acr build`), secrets
 `dburl`/`storagecs` on the container app, AUTH_* env pointed at the CIAM iOS App Registration.
 Database `karaorchee_app` on `pg-karaorchee-app-dev` (migrations applied); catalog has
-`bach_bwv_846` + `czerny_599_41` v1 bundles.
+`bach_bwv_846` + `czerny_599_41` v1 bundles (count as of 2026-07-05; the Pieces Library is live truth).
 
 ## Resources (per env)
 
@@ -89,7 +89,7 @@ karaorchee.com sender), `acrkaraorchee` (images), CIAM tenant (below).
 - Failed runs reopen ON THE SAME ROW (`POST .../reopen` → back to draft, re-preflights) —
   one board row per piece; attempt history lives in audit_events.
 - Books are created with a MANDATORY cover (multipart `POST /admin/books`; sharp validates
-  portrait ~3:4 ≥1200×1600 → `books/<id>/cover.webp` + `cover_thumb.webp`, signed URLs in
+  portrait ~3:4, floor 900×1200, normalized output 1200×1600 → `books/<id>/cover.webp` + `cover_thumb.webp`, signed URLs in
   `GET /admin/books`; `PUT /admin/books/:id/cover` replaces).
 - ⚠️ verovio: the default `verovio.toolkit()` auto-init is MAIN-THREAD-ONLY (fonts fail to
   load on a worker thread → every load returns False). Always construct via

@@ -1,15 +1,15 @@
 import { Router } from "express";
 import multer from "multer";
-import { asc, desc, eq, ilike, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireAdmin, audit } from "../admin";
 import { auditEvents, books, pieces, pieceVersions, studioJobs, users, works } from "../db/schema";
-import { and } from "drizzle-orm";
 import { processCover, CoverError } from "../covers";
-import { bookSlug, normalizeCatalogue, slugify } from "../slug";
+import { bookSlug, likeEsc, normalizeCatalogue, slugify } from "../slug";
+import { rebuildCatalog } from "../catalog_build";
 
 const workSchema = z.object({
   title: z.string().min(1).max(200),
@@ -28,7 +28,6 @@ function workSlugFor(composer: string, title: string, catalogue: string | null |
   const tail = catalogue ? normalizeCatalogue(catalogue) : slugify(title).split("_").slice(0, 4).join("_");
   return `${surname}_${tail}`.slice(0, 64).replace(/_+$/, "");
 }
-import { rebuildCatalog } from "../catalog_build";
 
 // Registry-owned edits: display/catalog fields only. Anything baked into the bundle
 // (score files) must go through the studio as a new version — never patched here.
@@ -62,7 +61,7 @@ const coverUpload = multer({
 });
 
 // Only explicit role flags are patchable here; identity/status changes get their
-// own endpoints when account-deletion (5.1.1(v)) lands in Phase B.
+// own endpoints when account-deletion lands in Phase B.
 const rolesSchema = z
   .object({
     isAdmin: z.boolean().optional(),
@@ -261,7 +260,7 @@ export function adminRouter(deps: Deps): Router {
         const siblings = await db
           .select()
           .from(works)
-          .where(ilike(works.composer, `%${w.composer.split(" ").pop()}%`));
+          .where(ilike(works.composer, `%${likeEsc(w.composer.split(" ").pop()!)}%`));
         const dup = siblings.find((s) => s.catalogue && normalizeCatalogue(s.catalogue) === norm);
         if (dup) {
           res.status(409).json({

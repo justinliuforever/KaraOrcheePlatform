@@ -50,3 +50,9 @@ export function pieceSlug(composer: string, title: string, subtitle: string): st
 export function bookSlug(title: string): string {
   return tokens(title, 5).slice(0, 64).replace(/_+$/, "");
 }
+
+// Escape LIKE metacharacters in user text used inside ilike patterns — a title or
+// composer containing % or _ must match literally, not as a wildcard.
+export function likeEsc(s: string): string {
+  return s.replace(/[\\%_]/g, (m) => `\\${m}`);
+}

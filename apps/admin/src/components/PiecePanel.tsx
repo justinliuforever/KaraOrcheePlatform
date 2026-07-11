@@ -9,7 +9,7 @@ import {
   type AdminWork,
   type PieceEdit,
 } from "../api";
-import { Badge, ErrorNote, Spinner, rightsTone, statusTone } from "./ui";
+import { Badge, ErrorNote, Spinner, inputCls, rightsTone, statusTone } from "./ui";
 import SlideOver from "./SlideOver";
 import { keyLabel, timeAgo } from "../studio/gateInfo";
 
@@ -22,8 +22,6 @@ const ROLE_LABELS: Record<string, string> = {
   reference_audio: "Reference audio — replaces synthesized playback in the app",
 };
 
-const inputCls =
-  "w-full rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none focus:border-brand";
 const labelCls = "block text-xs font-medium text-ink-soft mb-1";
 
 function fmtBytes(n?: number): string {

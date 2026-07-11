@@ -10,7 +10,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
-// Deletion is soft (5.1.1(v)/GDPR): erase scrubs email/display_name/entra_oid, keeps the row
+// Deletion is soft (GDPR): erase scrubs email/display_name/entra_oid, keeps the row
 // so financial and referral history stays intact.
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),

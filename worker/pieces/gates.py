@@ -7,9 +7,9 @@ stream); preview audio renders with the app's SF2; optional reference audio is
 verified against the notated timeline (Tier-1 linear-map gate).
 """
 from __future__ import annotations
-import json
 import shutil
 import time
+import traceback
 from pathlib import Path
 import pretty_midi
 
@@ -226,7 +226,6 @@ def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out
                     if d:
                         metrics["diagnosis"] = d
                 except Exception:
-                    import traceback
                     traceback.print_exc()
             on_gate(stage, "fail", metrics, str(err))
             raise

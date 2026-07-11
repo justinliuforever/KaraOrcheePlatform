@@ -61,7 +61,7 @@ resource blobSvc 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
   }
 }
 
-var containerNames = ['piece-bundles', 'soundfont', 'lesson-audio', 'notes-assets']
+var containerNames = ['piece-bundles', 'piece-sources', 'soundfont', 'lesson-audio', 'notes-assets']
 
 resource containers 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = [
   for c in containerNames: {
@@ -194,6 +194,11 @@ resource cae 'Microsoft.App/managedEnvironments@2024-03-01' = {
   }
 }
 
+// ⚠️ DRIFT WARNING: the live container apps carry image tags, secrets (dburl/
+// storagecs/sbcs), and env (AUTH_*, ADMIN_ORIGINS) applied via `az` CLI — NOT
+// declared here. Re-running this deployment against a live env resets them.
+// The pieces worker app (ca-pieces-worker-<env>) is CLI-managed and not declared
+// here at all. Reconcile before creating prod.
 // Placeholder image until the API image lands in ACR; swap via `az containerapp update`.
 resource api 'Microsoft.App/containerApps@2024-03-01' = {
   name: 'ca-app-api-${env}'
@@ -202,7 +207,7 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
   properties: {
     managedEnvironmentId: cae.id
     configuration: {
-      ingress: { external: true, targetPort: 80, transport: 'auto' }
+      ingress: { external: true, targetPort: 8080, transport: 'auto' }
     }
     template: {
       containers: [
