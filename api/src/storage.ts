@@ -47,6 +47,9 @@ export interface StudioStore {
   getBundleEtag?(path: string): Promise<string | null>;
   // Optional (fakes may omit): remove a bundle blob; a missing blob is a no-op.
   deleteBundleBlob?(path: string): Promise<void>;
+  // Optional: staging GC support.
+  listBundles?(prefix: string): Promise<{ path: string; bytes: number }[]>;
+  deleteSourceBlob?(path: string): Promise<void>;
 }
 
 function parseConnectionString(cs: string): { accountName: string; accountKey: string } {
@@ -192,6 +195,16 @@ export function createBlobStudioStore(connectionString: string): StudioStore {
     },
     async deleteBundleBlob(path) {
       await bundles.getBlockBlobClient(path).deleteIfExists();
+    },
+    async listBundles(prefix) {
+      const out: { path: string; bytes: number }[] = [];
+      for await (const blob of bundles.listBlobsFlat({ prefix })) {
+        out.push({ path: blob.name, bytes: blob.properties.contentLength ?? 0 });
+      }
+      return out;
+    },
+    async deleteSourceBlob(path) {
+      await sources.getBlockBlobClient(path).deleteIfExists();
     },
   };
 }

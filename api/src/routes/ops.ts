@@ -1,10 +1,10 @@
 import { Router } from "express";
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, like, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
-import { requireAdmin } from "../admin";
+import { requireAdmin, audit } from "../admin";
 import { auditEvents, studioJobs, users } from "../db/schema";
 import { OpsQueryError, type OpsFilters, type OpsLogRow } from "../opslogs";
 
@@ -201,6 +201,49 @@ export function opsRouter(deps: Deps): Router {
       }
       events.sort((a, b) => a.t.localeCompare(b.t));
       res.json({ events });
+    }),
+  );
+
+  // Staging sweeper, safest slice: blobs of canceled/failed jobs older than 7 days
+  // that never became a real piece (draft_* ids). Published pieces' staged sources
+  // double as their source archive and are never touched. Dry-run by default.
+  router.post(
+    "/admin/ops/gc",
+    wrap(async (req, res) => {
+      const dryRun = req.body?.dryRun !== false;
+      if (!deps.studio?.listBundles || !deps.studio.deleteBundleBlob || !deps.studio.deleteSourceBlob) {
+        res.status(503).json({ error: "ops_not_configured", message: "Storage is not configured for GC." });
+        return;
+      }
+      const db = deps.db!.orm;
+      const cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+      const stale = await db
+        .select({ id: studioJobs.id, status: studioJobs.status, updatedAt: studioJobs.updatedAt })
+        .from(studioJobs)
+        .where(and(
+          inArray(studioJobs.status, ["canceled", "failed"]),
+          like(studioJobs.pieceId, "draft\\_%"),
+          lt(studioJobs.updatedAt, cutoff),
+        ));
+      let blobs = 0;
+      let bytes = 0;
+      const jobs: string[] = [];
+      for (const job of stale) {
+        const staged = await deps.studio.listBundles(`staging/${job.id}/`);
+        const sources = await deps.studio.listSources(`staging/${job.id}/`);
+        if (staged.length + sources.length === 0) continue;
+        jobs.push(job.id);
+        blobs += staged.length + sources.length;
+        bytes += [...staged, ...sources].reduce((n, b) => n + b.bytes, 0);
+        if (!dryRun) {
+          for (const b of staged) await deps.studio.deleteBundleBlob(b.path);
+          for (const b of sources) await deps.studio.deleteSourceBlob(b.path);
+        }
+      }
+      if (!dryRun && jobs.length > 0) {
+        await audit(deps, req, "ops.gc", undefined, { jobs, blobs, bytes });
+      }
+      res.json({ dryRun, jobs: jobs.length, blobs, bytes });
     }),
   );
 
