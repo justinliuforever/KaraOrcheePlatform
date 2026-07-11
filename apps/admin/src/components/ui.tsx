@@ -36,20 +36,6 @@ export function statusTone(status: string): Tone {
   }
 }
 
-export function rightsTone(rights: string): Tone {
-  switch (rights) {
-    case "public_domain":
-    case "licensed":
-      return "ok";
-    case "unknown":
-      return "warn";
-    case "blocked":
-      return "bad";
-    default:
-      return "muted";
-  }
-}
-
 export function Spinner({ label = "Loading…" }: { label?: string }) {
   return (
     <div className="flex items-center gap-2 text-sm text-ink-soft py-10 justify-center">

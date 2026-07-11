@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui-kit/badge";
 
-// Single tone → Badge rendering for the whole console. The tone MAPPINGS
-// (statusTone / rightsTone / jobTone) live with their domains; this only decides
-// how a tone looks, so every status/rights badge is the same size and shape.
+// Tone → Badge rendering for NON-state badges (user roles, instrument, "current").
+// State tags (lifecycle / rights / shelf) render through StatusTag + the lib/tags
+// registry instead — do not add state values here.
 const TONE_VARIANT: Record<
   string,
   { variant: "default" | "secondary" | "destructive" | "outline"; className?: string }

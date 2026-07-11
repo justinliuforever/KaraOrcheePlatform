@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { api, type AdminBook, type AdminPiece, type AdminWork } from "../api";
-import { ErrorNote, PageHeader, Spinner, rightsTone, statusTone, thCls } from "../components/ui";
-import ToneBadge from "../components/ToneBadge";
+import { ErrorNote, PageHeader, Spinner, thCls } from "../components/ui";
+import StatusTag from "../components/StatusTag";
+import DifficultyMeter from "../components/DifficultyMeter";
 import PiecePanel from "../components/PiecePanel";
 import { cn } from "@/lib/utils";
 import { Card } from "@/components/ui-kit/card";
@@ -298,17 +299,40 @@ export default function PiecesPage() {
                   <TableCell className={`${CELL} text-ink-soft`}>
                     {p.bookTitle ? `${p.bookTitle}${p.bookIndex != null ? ` #${p.bookIndex}` : ""}` : "—"}
                   </TableCell>
-                  <TableCell className={`${CELL} text-right tabular-nums`}>{p.difficulty ?? "—"}</TableCell>
-                  <TableCell className={CELL}>
-                    <ToneBadge tone={p.tracking === "validated" ? "ok" : "muted"}>
-                      {p.tracking === "validated" ? "Pieces" : "Challenge"}
-                    </ToneBadge>
+                  <TableCell className={`${CELL} text-right`}>
+                    <div className="flex justify-end">
+                      <DifficultyMeter value={p.difficulty} />
+                    </div>
                   </TableCell>
                   <TableCell className={CELL}>
-                    <ToneBadge tone={rightsTone(p.rights)}>{p.rights.replace("_", " ")}</ToneBadge>
+                    <StatusTag
+                      value={p.tracking}
+                      family="shelf"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFilters({ ...filters, shelf: p.tracking });
+                      }}
+                    />
                   </TableCell>
                   <TableCell className={CELL}>
-                    <ToneBadge tone={statusTone(p.status)}>{p.status}</ToneBadge>
+                    <StatusTag
+                      value={p.rights}
+                      family="rights"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFilters({ ...filters, rights: p.rights });
+                      }}
+                    />
+                  </TableCell>
+                  <TableCell className={CELL}>
+                    <StatusTag
+                      value={p.status}
+                      family="lifecycle"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFilters({ ...filters, status: p.status });
+                      }}
+                    />
                   </TableCell>
                   <TableCell className={`${CELL} text-right tabular-nums text-ink-soft`}>
                     {p.publishedVersion != null ? `v${p.publishedVersion}` : "—"}

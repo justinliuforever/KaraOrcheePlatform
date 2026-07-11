@@ -106,24 +106,6 @@ export function failureHint(gateKey: string, error: string): string {
   return "Check the details above, fix the export, and replace the files to re-run the checks.";
 }
 
-export function jobTone(status: StudioJob["status"]) {
-  switch (status) {
-    case "published":
-      return "ok" as const;
-    case "ready_for_review":
-      return "brand" as const;
-    case "failed":
-      return "bad" as const;
-    case "draft":
-      return "muted" as const;
-    case "queued":
-    case "running":
-      return "warn" as const;
-    default:
-      return "muted" as const;
-  }
-}
-
 export function statusLabel(job: Pick<StudioJob, "status" | "checkStatus">): string {
   if (job.status === "draft") {
     switch (job.checkStatus) {

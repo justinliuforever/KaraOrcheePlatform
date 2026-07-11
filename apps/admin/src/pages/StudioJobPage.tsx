@@ -3,11 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, type StudioJob } from "../api";
-import { ErrorNote, PageHeader, Spinner, rightsTone } from "../components/ui";
-import ToneBadge from "../components/ToneBadge";
+import { ErrorNote, PageHeader, Spinner } from "../components/ui";
+import StatusTag from "../components/StatusTag";
 import { Button } from "@/components/ui-kit/button";
 import { Card } from "@/components/ui-kit/card";
-import { ALL_GATES, failureHint, jobTone, statusLabel } from "../studio/gateInfo";
+import { ALL_GATES, failureHint, statusLabel } from "../studio/gateInfo";
 import Diagnosis, { diagnosisOf } from "../studio/Diagnosis";
 import { PipelineStepper } from "../studio/Stepper";
 
@@ -144,8 +144,8 @@ export default function StudioJobPage() {
         subtitle={`${m.composer ?? ""}${m.subtitle ? ` · ${m.subtitle}` : ""} · ${job.pieceId}`}
         right={
           <div className="flex items-center gap-2">
-            {m.rights && <ToneBadge tone={rightsTone(m.rights)}>{m.rights.replace("_", " ")}</ToneBadge>}
-            <ToneBadge tone={jobTone(job.status)}>{statusLabel(job)}</ToneBadge>
+            {m.rights && <StatusTag value={m.rights} family="rights" />}
+            <StatusTag value={job.status} family="lifecycle" label={statusLabel(job)} />
           </div>
         }
       />
@@ -308,7 +308,7 @@ export default function StudioJobPage() {
             label="Book"
             value={m.book ? `${m.book.id}${m.book.index != null ? ` · No. ${m.book.index}` : ""}` : "—"}
           />
-          <Row label="Rights" value={m.rights ? <ToneBadge tone={rightsTone(m.rights)}>{m.rights.replace("_", " ")}</ToneBadge> : "—"} />
+          <Row label="Rights" value={m.rights ? <StatusTag value={m.rights} family="rights" /> : "—"} />
           {m.rightsNote && (
             <p className="text-xs text-ink-soft mt-2 rounded-lg bg-paper/60 border border-line px-3 py-2 leading-relaxed">
               {m.rightsNote}

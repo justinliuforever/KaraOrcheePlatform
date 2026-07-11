@@ -3,8 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { api, type StudioJob } from "../api";
 import { ErrorNote, PageHeader, Spinner, thCls } from "../components/ui";
-import ToneBadge from "../components/ToneBadge";
-import { ALL_GATES, jobTone, statusLabel, timeAgo } from "../studio/gateInfo";
+import StatusTag from "../components/StatusTag";
+import { ALL_GATES, statusLabel, timeAgo } from "../studio/gateInfo";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui-kit/button";
 import { Card } from "@/components/ui-kit/card";
@@ -245,7 +245,7 @@ export default function StudioPage() {
                       <GateDots job={j} />
                     </TableCell>
                     <TableCell className="px-4 py-3">
-                      <ToneBadge tone={jobTone(j.status)}>{statusLabel(j)}</ToneBadge>
+                      <StatusTag value={j.status} family="lifecycle" label={statusLabel(j)} />
                       {j.publishedVersion != null && (
                         <span className="text-xs text-ink-faint ml-1.5 tabular-nums">v{j.publishedVersion}</span>
                       )}

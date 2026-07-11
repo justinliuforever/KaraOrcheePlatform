@@ -9,8 +9,9 @@ import {
   type AdminWork,
   type PieceEdit,
 } from "../api";
-import { ErrorNote, Spinner, inputCls, rightsTone, statusTone } from "./ui";
+import { ErrorNote, Spinner, inputCls } from "./ui";
 import ToneBadge from "./ToneBadge";
+import StatusTag from "./StatusTag";
 import SlideOver from "./SlideOver";
 import {
   AlertDialog,
@@ -49,14 +50,14 @@ function Section({
 }: {
   title: string;
   defaultOpen?: boolean;
-  badge?: string;
+  badge?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <details className="rounded-xl border border-line bg-card mb-3 overflow-hidden" open={defaultOpen}>
       <summary className="px-4 py-3 cursor-pointer select-none flex items-center justify-between text-sm font-semibold">
         {title}
-        {badge && <span className="text-xs text-ink-faint font-normal">{badge}</span>}
+        {badge != null && <span className="text-xs text-ink-faint font-normal">{badge}</span>}
       </summary>
       <div className="px-4 pb-4 border-t border-line pt-3">{children}</div>
     </details>
@@ -249,8 +250,8 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
             <ToneBadge tone={(d.instrumentation?.solo ?? "piano") === "piano" ? "muted" : "ok"}>
               {d.instrumentation?.solo ?? "piano"}
             </ToneBadge>
-            <ToneBadge tone={rightsTone(d.rights)}>{d.rights.replace("_", " ")}</ToneBadge>
-            <ToneBadge tone={statusTone(d.status)}>{d.status}</ToneBadge>
+            <StatusTag value={d.rights} family="rights" />
+            <StatusTag value={d.status} family="lifecycle" />
             <button
               className="text-ink-faint hover:text-ink text-xl leading-none px-1 rounded-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
               onClick={onClose}
@@ -570,7 +571,7 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
                     <span className="text-[11px] text-ok shrink-0">{s.instrumentation!.solo}</span>
                   )}
                   <span className="shrink-0">
-                    <ToneBadge tone={statusTone(s.status)}>{s.status}</ToneBadge>
+                    <StatusTag value={s.status} family="lifecycle" />
                   </span>
                   {s.publishedVersion != null && (
                     <span className="text-[11px] text-ink-faint tabular-nums shrink-0">v{s.publishedVersion}</span>
@@ -583,7 +584,7 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
       )}
 
       {form && (
-        <Section title="Rights" defaultOpen badge={d.rights.replace("_", " ")}>
+        <Section title="Rights" defaultOpen badge={<StatusTag value={d.rights} family="rights" />}>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className={labelCls}>Status</label>

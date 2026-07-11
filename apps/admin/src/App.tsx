@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useIsAuthenticated, useMsal } from "@azure/msal-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { toast } from "sonner";
 import { API_SCOPE } from "./auth";
 import { api, ApiError, type AdminUser } from "./api";
 import { Spinner } from "./components/ui";
@@ -9,6 +10,12 @@ import CommandPalette, { isMac } from "./components/CommandPalette";
 import { Button } from "@/components/ui-kit/button";
 import { Separator } from "@/components/ui-kit/separator";
 import { Toaster } from "@/components/ui-kit/sonner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui-kit/tooltip";
 import UsersPage from "./pages/UsersPage";
 import PiecesPage from "./pages/PiecesPage";
 import PieceDetailPage from "./pages/PieceDetailPage";
@@ -128,9 +135,25 @@ function Shell() {
             Sign out
           </Button>
         </div>
-        <p className="px-1 pt-3 text-[10px] text-ink-faint tabular-nums select-all">
-          v{__APP_VERSION__} · {__BUILD_SHA__}
-        </p>
+        <div className="px-3 pb-3">
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  className="rounded border border-line bg-card px-2 py-1 text-[11px] font-medium text-ink-soft tabular-nums hover:text-ink focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  onClick={() => {
+                    void navigator.clipboard
+                      .writeText(`v${__APP_VERSION__} · ${__BUILD_SHA__}`)
+                      .then(() => toast("Version copied"));
+                  }}
+                >
+                  v{__APP_VERSION__} · {__BUILD_SHA__.slice(0, 7)}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent sideOffset={4}>Console version · build commit</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
       </aside>
       <CommandPalette open={cmdOpen} onOpenChange={setCmdOpen} />
       <main className="flex-1 min-w-0 px-8 py-6">

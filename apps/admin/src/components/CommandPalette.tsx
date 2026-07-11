@@ -3,9 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Hammer, Library, Plus, Users } from "lucide-react";
 import { api, type AdminPiece, type StudioJob } from "../api";
-import { jobTone, statusLabel } from "../studio/gateInfo";
-import { statusTone } from "./ui";
-import ToneBadge from "./ToneBadge";
+import { statusLabel } from "../studio/gateInfo";
+import StatusTag from "./StatusTag";
 import {
   CommandDialog,
   CommandEmpty,
@@ -105,9 +104,7 @@ export default function CommandPalette({
                 {p.title}
                 <span className="text-ink-faint"> · {p.composer}</span>
               </span>
-              <ToneBadge tone={statusTone(p.status)} className="ml-auto shrink-0">
-                {p.status}
-              </ToneBadge>
+              <StatusTag value={p.status} family="lifecycle" className="ml-auto" />
             </CommandItem>
           ))}
         </CommandGroup>
@@ -131,9 +128,7 @@ export default function CommandPalette({
                   <span className="text-ink-faint font-mono text-xs"> · {j.pieceId}</span>
                 )}
               </span>
-              <ToneBadge tone={jobTone(j.status)} className="ml-auto shrink-0">
-                {statusLabel(j)}
-              </ToneBadge>
+              <StatusTag value={j.status} family="lifecycle" label={statusLabel(j)} className="ml-auto" />
             </CommandItem>
           ))}
         </CommandGroup>
