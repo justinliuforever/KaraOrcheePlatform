@@ -41,6 +41,18 @@ export const PREFLIGHT_GATES: GateInfo[] = [
   },
 ];
 
+export const AUDIO_GATE: GateInfo = {
+  key: "audio",
+  label: "Reference audio verification",
+  blurb: "Confirms the recording follows the score",
+  explain: [
+    "Tap-to-seek, cursor sync, and start-anywhere all assume the audio matches the score timeline — an unverified recording would silently break them.",
+    "A recording at the notated tempo passes directly (tier 1).",
+    "An expressive performance (rubato, ritardando) is aligned automatically against the score and the alignment itself is verified — onsets AND pitch content (tier 2).",
+    "The recording's structure must match the score exactly: same number of repeats, nothing added or cut.",
+  ],
+};
+
 export const RENDER_GATE: GateInfo = {
   key: "render",
   label: "On-screen verification",
@@ -52,7 +64,7 @@ export const RENDER_GATE: GateInfo = {
   ],
 };
 
-export const ALL_GATES = [...PREFLIGHT_GATES, RENDER_GATE];
+export const ALL_GATES = [...PREFLIGHT_GATES, AUDIO_GATE, RENDER_GATE];
 
 // Actionable remediation, matched on the worker's failure text.
 export function failureHint(gateKey: string, error: string): string {
@@ -75,6 +87,18 @@ export function failureHint(gateKey: string, error: string): string {
     if (e.includes("pitch")) {
       return "Some notes couldn't be read from the score. Re-export the MusicXML, or upload a reference MIDI exported from the same project.";
     }
+  }
+  if (gateKey === "audio") {
+    if (e.includes("structure") || e.includes("repeats")) {
+      return "The recording and the score disagree structurally — most often a repeat played a different number of times, or extra/missing material. Make the recording follow the written score exactly (write out repeats in the score if needed) and re-upload.";
+    }
+    if (e.includes("does not appear to be this piece") || e.includes("pitch content")) {
+      return "This looks like the wrong audio file for this piece — double-check which recording you attached.";
+    }
+    if (e.includes("decoded")) {
+      return "The audio file couldn't be read — re-export it as .m4a, .mp3, or .wav.";
+    }
+    return "The recording drifts too far from the score timeline. Either re-render it at the notated tempo, or make sure the performance follows the score's structure exactly.";
   }
   if (gateKey === "render") {
     return "This is usually a pipeline problem, not your files. Re-run the checks; if it fails again, flag it to engineering.";

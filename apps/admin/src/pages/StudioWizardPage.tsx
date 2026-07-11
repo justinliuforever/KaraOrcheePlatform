@@ -12,7 +12,7 @@ import {
   type XmlMeta,
 } from "../api";
 import { Badge, Card, ErrorNote, Spinner, inputCls } from "../components/ui";
-import { PREFLIGHT_GATES, RENDER_GATE, failureHint, keyLabel } from "../studio/gateInfo";
+import { AUDIO_GATE, PREFLIGHT_GATES, RENDER_GATE, failureHint, keyLabel } from "../studio/gateInfo";
 import Diagnosis, { diagnosisOf } from "../studio/Diagnosis";
 
 const labelCls = "block text-xs font-medium text-ink-soft mb-1.5";
@@ -162,12 +162,16 @@ function PartPicker({
 /** Live check rail: GitHub-Actions-style step list fed by the polled job row. */
 function CheckRail({ job }: { job: StudioJob }) {
   const [open, setOpen] = useState<string | null>(null);
+  // The audio card only exists when a recording was actually uploaded.
+  const gatesShown = job.sources?.some((s) => s.kind === "audio")
+    ? [...PREFLIGHT_GATES, AUDIO_GATE]
+    : PREFLIGHT_GATES;
   return (
     <div className="space-y-2">
       <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
         Automated checks
       </p>
-      {PREFLIGHT_GATES.map((g) => {
+      {gatesShown.map((g) => {
         const entry = job.gates?.[g.key];
         const icon =
           entry?.status === "pass" ? (
@@ -194,6 +198,13 @@ function CheckRail({ job }: { job: StudioJob }) {
               </div>
               <span className="text-ink-faint text-xs mt-0.5">{open === g.key ? "−" : "?"}</span>
             </button>
+            {g.key === "audio" && entry?.status === "pass" && (
+              <p className="text-[11px] text-ok mt-1.5">
+                {(m.tier as number) === 2
+                  ? `expressive performance — aligned & verified (${Math.round(((m.map_onset_agreement as number) ?? 0) * 100)}% of notes locked)`
+                  : "matches the notated tempo"}
+              </p>
+            )}
             {g.key === "sanity" && entry?.status === "pass" && (
               <p className="text-[11px] text-ink-soft mt-1.5 tabular-nums">
                 {String(m.measures)} measures · {String(m.xml_onsets)} score notes ·{" "}
@@ -564,6 +575,8 @@ function WizardBody({ jobId }: { jobId: string }) {
   const xmlMeta = (job.gates?.sanity?.metrics as { xml_meta?: XmlMeta } | undefined)?.xml_meta;
   const stampedSolo = (job.gates?.sanity?.metrics as { solo_part?: string } | undefined)?.solo_part;
   const previewAudio = job.previews?.find((p) => p.role === "preview_audio");
+  const referenceAudio = job.previews?.find((p) => p.role === "reference_audio");
+  const audioTier = (job.gates?.audio?.metrics as { tier?: number } | undefined)?.tier;
   const hasErrors =
     pieceFindings.some((f) => f.level === "error") || bookFindings.some((f) => f.level === "error");
   const metaComplete =
@@ -645,6 +658,21 @@ function WizardBody({ jobId }: { jobId: string }) {
                     <p className="text-[11px] text-ink-faint mt-1.5 leading-relaxed">
                       Synthesized with the app's own sound. Not good enough for this piece?
                       Add a produced reference audio in section 5.
+                    </p>
+                  </div>
+                )}
+                {referenceAudio && (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 px-3.5 py-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-1.5">
+                      🎧 Your uploaded recording — this is what ships in the app
+                    </p>
+                    <audio controls preload="none" src={referenceAudio.url} className="w-full h-9" />
+                    <p className="text-[11px] text-ink-faint mt-1.5 leading-relaxed">
+                      {audioTier === 2
+                        ? "Verified as an expressive performance — the app will sync the cursor and tap-to-seek to it through its alignment map."
+                        : audioTier === 1
+                          ? "Verified at the notated tempo — full sync in the app."
+                          : "Verification result appears in the checks on the right."}
                     </p>
                   </div>
                 )}

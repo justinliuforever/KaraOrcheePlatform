@@ -98,6 +98,9 @@ export default function StudioJobPage() {
   const publishable =
     job.status === "ready_for_review" && (m.rights === "public_domain" || m.rights === "licensed");
   const svgPreviews = (job.previews ?? []).filter((p) => p.role === "svg");
+  const previewAudio = (job.previews ?? []).find((p) => p.role === "preview_audio");
+  const referenceAudio = (job.previews ?? []).find((p) => p.role === "reference_audio");
+  const audioTier = (job.gates?.audio?.metrics as { tier?: number } | undefined)?.tier;
 
   return (
     <>
@@ -345,6 +348,32 @@ export default function StudioJobPage() {
           </div>
         </Card>
       </div>
+
+      {(previewAudio || referenceAudio) && (
+        <Card className="p-4 mb-5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-3">
+            Listen before publishing
+          </p>
+          <div className="grid grid-cols-2 gap-4">
+            {previewAudio && (
+              <div>
+                <p className="text-xs font-medium mb-1">Synthesized preview (app sound)</p>
+                <audio controls preload="none" src={previewAudio.url} className="w-full h-9" />
+              </div>
+            )}
+            {referenceAudio && (
+              <div>
+                <p className="text-xs font-medium mb-1">
+                  Uploaded recording — ships in the app
+                  {audioTier === 2 && <span className="text-ok"> · expressive, aligned & verified</span>}
+                  {audioTier === 1 && <span className="text-ok"> · notated tempo</span>}
+                </p>
+                <audio controls preload="none" src={referenceAudio.url} className="w-full h-9" />
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
 
       {svgPreviews.length > 0 && (
         <>
