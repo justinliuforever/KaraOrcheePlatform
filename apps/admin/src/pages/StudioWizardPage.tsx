@@ -245,9 +245,9 @@ function validateCoverFile(f: File): Promise<string | null> {
       const h = img.naturalHeight;
       const aspect = h / w;
       if (aspect < 1.2 || aspect > 1.5) {
-        resolve(`Image is ${w}×${h} — covers must be portrait, close to 3:4 (e.g. 1200×1600).`);
-      } else if (w < 1200 || h < 1600) {
-        resolve(`Image is ${w}×${h}px — needs at least 1200×1600px to stay sharp in the app.`);
+        resolve(`Image is ${w}×${h} — covers must be portrait, close to 3:4 (e.g. 900×1200).`);
+      } else if (w < 900 || h < 1200) {
+        resolve(`Image is ${w}×${h}px — needs at least 900×1200px to stay sharp in the app.`);
       } else {
         resolve(null);
       }
@@ -968,7 +968,7 @@ function BookSection({
           </div>
           <div>
             <label className={labelCls}>
-              Cover image <span className="text-bad">*</span> — portrait 3:4, at least 1200×1600, JPEG/PNG/WebP
+              Cover image <span className="text-bad">*</span> — portrait 3:4, at least 900×1200, JPEG/PNG/WebP
             </label>
             <FilePick
               label="Book cover"

@@ -100,3 +100,43 @@ describe("GET /v1/pieces/:id/download", () => {
     expect(res.body.files[0].url.match(/sig=fake/g)?.length).toBe(1);
   });
 });
+
+describe("top-level url signing", () => {
+  it("signs book cover_url and piece thumbnail_url (private container — unsigned = 403)", async () => {
+    const app = createServer({
+      catalog: fakeStore({
+        async readCatalog() {
+          return {
+            pieces: [{ id: "p1", book_id: "b1", thumbnail_url: "https://acct.blob.core.windows.net/piece-bundles/p1/thumb.webp" }],
+            books: [{ id: "b1", cover_url: "https://acct.blob.core.windows.net/piece-bundles/books/b1/cover.webp" }],
+          };
+        },
+      }),
+    });
+    const res = await request(app).get("/v1/catalog");
+    expect(res.status).toBe(200);
+    expect(res.body.books[0].cover_url.endsWith("?sig=fake")).toBe(true);
+    expect(res.body.pieces[0].thumbnail_url.endsWith("?sig=fake")).toBe(true);
+  });
+
+  it("capability gate trims books whose pieces are all filtered", async () => {
+    const app = createServer({
+      catalog: fakeStore({
+        async readCatalog() {
+          return {
+            pieces: [
+              { id: "v1", instrumentation: { solo: "violin", parts: ["violin"] }, book_id: "vb" },
+              { id: "p1", book_id: "pb" },
+            ],
+            books: [{ id: "vb" }, { id: "pb" }],
+          };
+        },
+      }),
+    });
+    const res = await request(app).get("/v1/catalog");
+    expect(res.body.pieces.map((p: { id: string }) => p.id)).toEqual(["p1"]);
+    expect(res.body.books.map((b: { id: string }) => b.id)).toEqual(["pb"]);
+    const caps = await request(app).get("/v1/catalog?caps=instruments");
+    expect(caps.body.books).toHaveLength(2);
+  });
+});

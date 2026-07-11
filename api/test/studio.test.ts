@@ -30,7 +30,7 @@ interface FakeStudio extends StudioStore {
   uploads: { path: string; bytes: number }[];
   copies: { from: string; to: string }[];
   jsons: { path: string; body: unknown }[];
-  blobs: { path: string; contentType: string }[];
+  blobs: { path: string; contentType: string; data: Buffer }[];
 }
 
 function fakeStudio(): FakeStudio {
@@ -51,8 +51,8 @@ function fakeStudio(): FakeStudio {
     async putBundleJson(path, body) {
       store.jsons.push({ path, body });
     },
-    async putBundleBlob(path, _data, contentType) {
-      store.blobs.push({ path, contentType });
+    async putBundleBlob(path, data, contentType) {
+      store.blobs.push({ path, contentType, data });
     },
     bundleUrl(path) {
       return `https://test.blob.core.windows.net/piece-bundles/${path}`;
@@ -555,6 +555,29 @@ describe("books with covers", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("invalid_cover");
     expect(res.body.message).toContain("at least");
+  });
+
+  it("accepts a 1086×1448 cover (above the 900×1200 floor) and normalizes it", async () => {
+    const studio = fakeStudio();
+    const res = await request(makeApp({ studio }))
+      .post("/admin/books")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .field("title", "Colleague Real Cover Case")
+      .field("rights", "public_domain")
+      .attach("cover", await testCover(1086, 1448), "cover.png");
+    expect(res.status).toBe(201);
+    const meta = await sharp(studio.blobs[0].data).metadata();
+    expect([meta.width, meta.height]).toEqual([1200, 1600]); // storage output stays normalized
+  });
+
+  it("rejects below the 900×1200 floor", async () => {
+    const res = await request(makeApp())
+      .post("/admin/books")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .field("title", "Too Small")
+      .attach("cover", await testCover(800, 1067), "cover.png");
+    expect(res.status).toBe(400);
+    expect(res.body.message).toContain("900\u00d71200");
   });
 
   it("rejects a landscape cover", async () => {

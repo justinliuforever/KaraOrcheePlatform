@@ -1,10 +1,13 @@
 import sharp from "sharp";
 
-// Book covers render on an iOS bookshelf: portrait 3:4, retina-ready. Minimum tracks
-// Apple Books' ~1400px shorter-edge guidance (600px would look soft at @3x). One
-// normalized webp pair per book — the app never sees the original upload.
-const MIN_W = 1200;
-const MIN_H = 1600;
+// Book covers render on an iOS bookshelf: portrait 3:4. Acceptance floor 900×1200
+// (founder call 2026-07-10 — visually clear covers were being rejected under the old
+// 1200×1600 floor); storage output stays a normalized 1200×1600 webp pair (mild
+// upscale for smaller inputs) so the app always receives one consistent size.
+const MIN_W = 900;
+const MIN_H = 1200;
+const OUT_W = 1200;
+const OUT_H = 1600;
 const ASPECT_MIN = 1.2; // h/w — accepts real-world book scans around 3:4
 const ASPECT_MAX = 1.5;
 
@@ -37,7 +40,7 @@ export async function processCover(buf: Buffer): Promise<ProcessedCover> {
   const aspect = height / width;
   if (aspect < ASPECT_MIN || aspect > ASPECT_MAX) {
     throw new CoverError(
-      `Image is ${width}×${height} — covers must be portrait, close to 3:4 (e.g. 1200×1600). Crop it and re-upload.`,
+      `Image is ${width}×${height} — covers must be portrait, close to 3:4 (e.g. 900×1200). Crop it and re-upload.`,
     );
   }
   if (width < MIN_W || height < MIN_H) {
@@ -46,7 +49,7 @@ export async function processCover(buf: Buffer): Promise<ProcessedCover> {
     );
   }
   try {
-    const cover = await sharp(buf).rotate().resize(MIN_W, MIN_H, { fit: "cover" }).webp({ quality: 82 }).toBuffer();
+    const cover = await sharp(buf).rotate().resize(OUT_W, OUT_H, { fit: "cover" }).webp({ quality: 82 }).toBuffer();
     const thumb = await sharp(buf).rotate().resize(300, 400, { fit: "cover" }).webp({ quality: 80 }).toBuffer();
     return { cover, thumb };
   } catch {
