@@ -7,7 +7,7 @@ import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireAdmin, audit } from "../admin";
-import { books, pieces, pieceVersions, studioJobs, works } from "../db/schema";
+import { books, pieces, pieceVersions, studioJobs, users, works } from "../db/schema";
 import { rebuildCatalog, type BundleFile } from "../catalog_build";
 import { pieceSlug, bookSlug, normalizeCatalogue, likeEsc } from "../slug";
 
@@ -696,8 +696,10 @@ export function studioRouter(deps: Deps): Router {
           publishedVersion: studioJobs.publishedVersion,
           createdAt: studioJobs.createdAt,
           updatedAt: studioJobs.updatedAt,
+          createdByEmail: users.email,
         })
         .from(studioJobs)
+        .leftJoin(users, eq(studioJobs.createdBy, users.id))
         .where(status ? eq(studioJobs.status, status) : undefined)
         .orderBy(desc(studioJobs.updatedAt))
         .limit(Math.min(Number(req.query.limit) || 100, 200));
@@ -709,15 +711,18 @@ export function studioRouter(deps: Deps): Router {
     "/admin/studio/jobs/:id",
     wrap(async (req, res) => {
       const db = deps.db!.orm;
-      const [job] = await db
-        .select()
+      const [row] = await db
+        .select({ job: studioJobs, createdByEmail: users.email })
         .from(studioJobs)
+        .leftJoin(users, eq(studioJobs.createdBy, users.id))
         .where(eq(studioJobs.id, String(req.params.id)))
         .limit(1);
-      if (!job) {
+      if (!row) {
         res.status(404).json({ error: "not_found" });
         return;
       }
+      const job = row.job;
+      const createdByEmail = row.createdByEmail;
       let previews: { role: string; variant?: string; url: string }[] = [];
       if (deps.studio && deps.catalog && Array.isArray(job.artifacts)) {
         previews = (job.artifacts as BundleFile[]).map((a) => ({
@@ -737,7 +742,7 @@ export function studioRouter(deps: Deps): Router {
           .limit(1);
         piece = p ?? null;
       }
-      res.json({ ...job, previews, piece });
+      res.json({ ...job, createdByEmail, previews, piece });
     }),
   );
 

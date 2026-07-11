@@ -65,6 +65,7 @@ export interface AuditEntry {
   action: string;
   detail: Record<string, unknown>;
   createdAt: string;
+  actorEmail: string | null;
 }
 
 export interface AdminUserDetail {
@@ -106,6 +107,7 @@ export interface PieceVersionRow {
   engineSha: string | null;
   files: { role: string; variant?: string; path: string; bytes?: number; sha256?: string; url?: string | null }[];
   publishedAt: string;
+  publishedByEmail: string | null;
 }
 
 export interface PieceSource {
@@ -249,6 +251,7 @@ export interface StudioJob {
   publishedVersion: number | null;
   createdAt: string;
   updatedAt: string;
+  createdByEmail?: string | null;
   previews?: { role: string; variant?: string; url: string }[];
   // Live-registry cross-check (detail endpoint only): what this piece id currently
   // looks like in the catalog — null when never published.

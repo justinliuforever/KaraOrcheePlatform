@@ -9,7 +9,7 @@ import {
   type AdminWork,
   type PieceEdit,
 } from "../api";
-import { ErrorNote, Spinner, inputCls } from "./ui";
+import { ErrorNote, Spinner, inputCls, AuditTrail } from "./ui";
 import ToneBadge from "./ToneBadge";
 import StatusTag from "./StatusTag";
 import SlideOver from "./SlideOver";
@@ -753,6 +753,7 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
               </span>
               <span className="text-[11px] text-ink-faint tabular-nums">
                 {new Date(v.publishedAt).toLocaleString()}
+                {v.publishedByEmail && ` · by ${v.publishedByEmail}`}
                 {v.engineSha && ` · ${v.engineSha}`}
               </span>
             </div>
@@ -825,16 +826,7 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
       </Section>
 
       <Section title="Activity" badge={`${d.recentAudit.length} events`}>
-        {d.recentAudit.length === 0 && <p className="text-xs text-ink-faint">No admin actions recorded yet.</p>}
-        {d.recentAudit.map((e) => (
-          <div key={e.id} className="py-1.5 border-b border-line/50 last:border-0">
-            <p className="text-xs font-medium">{e.action}</p>
-            <p className="text-[11px] text-ink-faint">
-              <span className="tabular-nums">{new Date(e.createdAt).toLocaleString()}</span>
-              {e.detail && Object.keys(e.detail).length > 0 && ` · ${JSON.stringify(e.detail).slice(0, 120)}`}
-            </p>
-          </div>
-        ))}
+        <AuditTrail events={d.recentAudit} />
       </Section>
 
       <AlertDialog open={discard !== null} onOpenChange={(open) => { if (!open) setDiscard(null); }}>

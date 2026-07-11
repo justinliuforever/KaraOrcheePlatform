@@ -394,6 +394,15 @@ describe("books & works management", () => {
     expect(res.body.rights).toBe("public_domain");
   });
 
+  it("audit history carries the actor's email", async () => {
+    const res = await request(app())
+      .get("/admin/books/beyer_op101")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    const evt = res.body.recentAudit.find((e: { action: string }) => e.action === "book.update");
+    expect(evt.actorEmail).toBe("admin@karaorchee.com");
+  });
+
   it("rejects an empty book patch and a missing book", async () => {
     const empty = await request(app())
       .patch("/admin/books/beyer_op101")

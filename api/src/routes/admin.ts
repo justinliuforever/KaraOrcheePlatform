@@ -121,6 +121,22 @@ export function adminRouter(deps: Deps): Router {
   const router = Router();
   router.use("/admin", requireAuth(deps.auth), requireAdmin(deps));
 
+  // Every audit list ships the actor's email — "what happened" without "who did
+  // it" is half an audit trail.
+  const auditWithActor = (db: NonNullable<Deps["db"]>["orm"]) =>
+    db
+      .select({
+        id: auditEvents.id,
+        action: auditEvents.action,
+        subjectType: auditEvents.subjectType,
+        subjectId: auditEvents.subjectId,
+        detail: auditEvents.detail,
+        createdAt: auditEvents.createdAt,
+        actorEmail: users.email,
+      })
+      .from(auditEvents)
+      .leftJoin(users, eq(auditEvents.actorUserId, users.id));
+
   router.get(
     "/admin/me",
     wrap(async (req, res) => {
@@ -204,9 +220,7 @@ export function adminRouter(deps: Deps): Router {
         return;
       }
       // Admin actions ABOUT this user (role changes, future comps/disables) — not actions BY them.
-      const recentAudit = await db
-        .select()
-        .from(auditEvents)
+      const recentAudit = await auditWithActor(db)
         .where(and(eq(auditEvents.subjectType, "user"), eq(auditEvents.subjectId, id)))
         .orderBy(desc(auditEvents.createdAt))
         .limit(20);
@@ -396,9 +410,7 @@ export function adminRouter(deps: Deps): Router {
         .where(eq(pieces.workId, id))
         .orderBy(asc(pieces.workIndex), asc(pieces.id));
       const children = await db.select().from(works).where(eq(works.parentWorkId, id));
-      const recentAudit = await db
-        .select()
-        .from(auditEvents)
+      const recentAudit = await auditWithActor(db)
         .where(and(eq(auditEvents.subjectType, "work"), eq(auditEvents.subjectId, id)))
         .orderBy(desc(auditEvents.createdAt))
         .limit(20);
@@ -534,9 +546,7 @@ export function adminRouter(deps: Deps): Router {
         .from(pieces)
         .where(eq(pieces.bookId, id))
         .orderBy(asc(pieces.bookIndex), asc(pieces.title));
-      const recentAudit = await db
-        .select()
-        .from(auditEvents)
+      const recentAudit = await auditWithActor(db)
         .where(and(eq(auditEvents.subjectType, "book"), eq(auditEvents.subjectId, id)))
         .orderBy(desc(auditEvents.createdAt))
         .limit(20);
@@ -1013,12 +1023,14 @@ export function adminRouter(deps: Deps): Router {
       const sign = (url: string) => (deps.catalog ? deps.catalog.signReadUrl(url) : url);
 
       const versionRows = await db
-        .select()
+        .select({ version: pieceVersions, publishedByEmail: users.email })
         .from(pieceVersions)
+        .leftJoin(users, eq(pieceVersions.publishedBy, users.id))
         .where(eq(pieceVersions.pieceId, piece.id))
         .orderBy(desc(pieceVersions.version));
-      const versions = versionRows.map((v) => ({
+      const versions = versionRows.map(({ version: v, publishedByEmail }) => ({
         ...v,
+        publishedByEmail,
         files: (v.files as { role: string; variant?: string; path: string; bytes?: number; sha256?: string }[]).map(
           (f) => ({ ...f, url: deps.studio ? sign(deps.studio.bundleUrl(f.path)) : null }),
         ),
@@ -1108,9 +1120,7 @@ export function adminRouter(deps: Deps): Router {
         }
       }
 
-      const recentAudit = await db
-        .select()
-        .from(auditEvents)
+      const recentAudit = await auditWithActor(db)
         .where(and(eq(auditEvents.subjectType, "piece"), eq(auditEvents.subjectId, id)))
         .orderBy(desc(auditEvents.createdAt))
         .limit(20);

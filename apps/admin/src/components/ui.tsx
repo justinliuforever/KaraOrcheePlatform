@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import type { AuditEntry } from "../api";
 
 export const inputCls =
@@ -81,15 +82,31 @@ export function AuditTrail({ events }: { events: AuditEntry[] }) {
   return (
     <>
       {events.length === 0 && <p className="text-xs text-ink-faint">No admin actions recorded yet.</p>}
-      {events.map((e) => (
-        <div key={e.id} className="py-1.5 border-b border-line/50 last:border-0">
-          <p className="text-xs font-medium">{e.action}</p>
-          <p className="text-[11px] text-ink-faint">
-            <span className="tabular-nums">{new Date(e.createdAt).toLocaleString()}</span>
-            {e.detail && Object.keys(e.detail).length > 0 && ` · ${JSON.stringify(e.detail).slice(0, 120)}`}
-          </p>
-        </div>
-      ))}
+      {events.map((e) => {
+        // reqId is plumbing, not payload — it gets its own trace link instead of
+        // cluttering the detail preview.
+        const { reqId, ...rest } = e.detail ?? {};
+        return (
+          <div key={e.id} className="py-1.5 border-b border-line/50 last:border-0">
+            <p className="text-xs font-medium">
+              {e.action}
+              {e.actorEmail && <span className="font-normal text-ink-soft"> · {e.actorEmail}</span>}
+            </p>
+            <p className="text-[11px] text-ink-faint">
+              <span className="tabular-nums">{new Date(e.createdAt).toLocaleString()}</span>
+              {Object.keys(rest).length > 0 && ` · ${JSON.stringify(rest).slice(0, 120)}`}
+              {typeof reqId === "string" && (
+                <>
+                  {" · "}
+                  <Link className="text-brand hover:underline" to={`/ops?reqId=${reqId}&tl=1`}>
+                    trace
+                  </Link>
+                </>
+              )}
+            </p>
+          </div>
+        );
+      })}
     </>
   );
 }

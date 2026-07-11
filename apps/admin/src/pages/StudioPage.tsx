@@ -218,6 +218,7 @@ export default function StudioPage() {
                 <TableHead className={thCls}>Book</TableHead>
                 <TableHead className={thCls}>Checks</TableHead>
                 <TableHead className={thCls}>Status</TableHead>
+                <TableHead className={thCls}>By</TableHead>
                 <TableHead className={`${thCls} text-right`}>Updated</TableHead>
               </TableRow>
             </TableHeader>
@@ -248,6 +249,13 @@ export default function StudioPage() {
                       <StatusTag value={j.status} family="lifecycle" label={statusLabel(j)} />
                       {j.publishedVersion != null && (
                         <span className="text-xs text-ink-faint ml-1.5 tabular-nums">v{j.publishedVersion}</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="px-4 py-3 text-ink-soft text-xs">
+                      {j.createdByEmail ? (
+                        <span title={j.createdByEmail}>{j.createdByEmail.split("@")[0]}</span>
+                      ) : (
+                        "—"
                       )}
                     </TableCell>
                     <TableCell className="px-4 py-3 text-right text-ink-soft text-xs tabular-nums">

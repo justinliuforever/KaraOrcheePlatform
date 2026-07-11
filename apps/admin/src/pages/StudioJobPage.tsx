@@ -141,7 +141,7 @@ export default function StudioJobPage() {
       </div>
       <PageHeader
         title={m.title || job.pieceId}
-        subtitle={`${m.composer ?? ""}${m.subtitle ? ` · ${m.subtitle}` : ""} · ${job.pieceId}`}
+        subtitle={`${m.composer ?? ""}${m.subtitle ? ` · ${m.subtitle}` : ""} · ${job.pieceId}${job.createdByEmail ? ` · by ${job.createdByEmail}` : ""}`}
         right={
           <div className="flex items-center gap-2">
             {m.rights && <StatusTag value={m.rights} family="rights" />}

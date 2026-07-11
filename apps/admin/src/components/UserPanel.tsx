@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { api, type AdminUser, type AdminUserDetail, type RolePatch } from "../api";
-import { ErrorNote, Spinner, statusTone } from "./ui";
+import { ErrorNote, Spinner, statusTone, AuditTrail } from "./ui";
 import ToneBadge from "./ToneBadge";
 import { Button } from "@/components/ui-kit/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui-kit/sheet";
@@ -173,21 +173,7 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
             </Section>
 
             <Section title="Admin history">
-              {detail.data!.recentAudit.length === 0 ? (
-                <p className="text-xs text-ink-faint">No admin actions on this account yet.</p>
-              ) : (
-                detail.data!.recentAudit.map((e) => (
-                  <div key={e.id} className="py-1.5 border-b border-line/60 last:border-0">
-                    <p className="text-xs font-medium">{e.action}</p>
-                    <p className="text-[11px] text-ink-faint">
-                      <span className="tabular-nums">{new Date(e.createdAt).toLocaleString()}</span>
-                      {e.detail && "changes" in e.detail
-                        ? ` · ${JSON.stringify(e.detail.changes)}`
-                        : ""}
-                    </p>
-                  </div>
-                ))
-              )}
+              <AuditTrail events={detail.data!.recentAudit} />
             </Section>
           </>
         )}
