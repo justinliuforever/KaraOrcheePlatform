@@ -21,7 +21,8 @@ from pipeline.cursor_gate import run_gate
 from pipeline.parts import reduce_xml_to_part, split_midi_notes
 from pipeline.tempo_norm import normalize_tempo
 from pipeline.preview import render_preview
-from pipeline.audio_gate import check_reference_audio, AudioGateError
+from pipeline.audio_gate import AudioGateError
+from pipeline.audio_map import build_time_map
 
 
 class GateError(Exception):
@@ -146,9 +147,10 @@ def gate_preview(out_dir: Path, sf2_path: Path | None, program: int) -> dict:
         return {"skipped": f"render failed: {str(err)[:120]}"}
 
 
-def gate_audio(audio_path: Path, out_dir: Path) -> dict:
+def gate_audio(audio_path: Path, out_dir: Path, sf2_path: Path | None, program: int) -> dict:
     try:
-        return check_reference_audio(audio_path, out_dir / "score_events.json")
+        return build_time_map(audio_path, out_dir / "score_events.json", out_dir,
+                              sf2_path, program)
     except AudioGateError as err:
         raise GateError(str(err), err.metrics) from err
 
@@ -170,9 +172,10 @@ ARTIFACT_LAYOUT = [
     ("{p}.ipad.svg", "score.ipad.svg", "svg", "ipad"),
     ("{p}.ipad_portrait.svg", "score.ipad_portrait.svg", "svg", "ipad_portrait"),
     ("reference.m4a", "reference.m4a", "reference_audio", None),
+    ("audio_map.json", "audio_map.json", "audio_map", None),
     ("preview.m4a", "preview.m4a", "preview_audio", None),
 ]
-PUBLISH_ROLES = {"score_events", "accompaniment_events", "geometry", "svg", "reference_audio"}
+PUBLISH_ROLES = {"score_events", "accompaniment_events", "geometry", "svg", "reference_audio", "audio_map"}
 
 
 def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out_dir: Path,
@@ -200,7 +203,7 @@ def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out
     if audio_path is not None:
         # Stage the uploaded audio under the canonical name before checking it.
         shutil.copyfile(audio_path, out_dir / "reference.m4a")
-        stages.append(("audio", lambda: gate_audio(audio_path, out_dir)))
+        stages.append(("audio", lambda: gate_audio(audio_path, out_dir, sf2_path, program)))
     if include_render:
         stages.append(("render", lambda: gate_render(piece, out_dir)))
 

@@ -11,7 +11,7 @@ import { books, pieces, pieceVersions, studioJobs, works } from "../db/schema";
 import { rebuildCatalog, type BundleFile } from "../catalog_build";
 import { pieceSlug, bookSlug, normalizeCatalogue, likeEsc } from "../slug";
 
-const PUBLISH_ROLES = new Set(["score_events", "accompaniment_events", "geometry", "svg", "reference_audio"]);
+const PUBLISH_ROLES = new Set(["score_events", "accompaniment_events", "geometry", "svg", "reference_audio", "audio_map"]);
 const INSTRUMENTS = ["piano", "violin", "guitar"] as const;
 
 const upload = multer({
