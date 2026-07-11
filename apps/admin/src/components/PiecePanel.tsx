@@ -242,8 +242,7 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
         </div>
       }
     >
-      {/* ——— sticky-ish action row ——— */}
-      <div className="flex items-center gap-2 mb-4 flex-wrap">
+      <div className="sticky top-[57px] z-10 bg-paper -mx-6 px-6 py-2.5 border-b border-line/60 flex items-center gap-2 mb-4 flex-wrap">
         <button
           className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2 hover:opacity-90 disabled:opacity-40"
           disabled={!dirty || applyEdit.isPending}

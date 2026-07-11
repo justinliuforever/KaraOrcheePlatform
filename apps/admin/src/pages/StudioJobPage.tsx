@@ -196,7 +196,7 @@ export default function StudioJobPage() {
               ) : (
                 job.stage && job.error && (
                   <p className="text-xs mt-2 rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-2 leading-relaxed">
-                    💡 {failureHint(job.stage, job.error)}
+                    {failureHint(job.stage, job.error)}
                   </p>
                 )
               )}

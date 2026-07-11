@@ -130,7 +130,7 @@ function PartPicker({
   return (
     <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-3.5 py-3">
       <p className="text-xs font-semibold mb-1.5">
-        🎻 {meta.n_parts} parts detected — which one is the SOLO part?
+        {meta.n_parts} parts detected — which one is the SOLO part?
       </p>
       <p className="text-[11px] text-ink-soft mb-2 leading-relaxed">
         Students see and follow the solo part; the other part becomes the play-along
@@ -232,7 +232,7 @@ function CheckRail({ job }: { job: StudioJob }) {
                   <Diagnosis items={diagnosisOf(entry.metrics)} />
                 ) : (
                   <p className="text-[11px] text-ink leading-relaxed rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-2">
-                    💡 {failureHint(g.key, entry.error ?? "")}
+                    {failureHint(g.key, entry.error ?? "")}
                   </p>
                 )}
               </div>
@@ -363,7 +363,7 @@ function FilesGate() {
           />
           <details className="rounded-xl border border-line bg-card">
             <summary className="px-4 py-3 text-sm font-medium cursor-pointer text-ink-soft">
-              🎧 Reference audio (optional) — produced/polished recording
+              Reference audio (optional) — produced/polished recording
             </summary>
             <div className="px-4 pb-4 space-y-2">
               <p className="text-[11px] text-ink-soft leading-relaxed">
@@ -595,9 +595,14 @@ function WizardBody({ jobId }: { jobId: string }) {
         <Link to="/studio" className="text-sm text-brand hover:underline">
           ← Studio
         </Link>
-        <button className="text-xs text-ink-faint hover:text-bad" onClick={() => cancel.mutate()}>
-          Discard draft
-        </button>
+        <div className="flex items-center gap-4">
+          <span className="text-xs text-ink-faint" aria-live="polite">
+            {save.isPending ? "Saving…" : save.isSuccess ? "All changes saved" : ""}
+          </span>
+          <button className="text-xs text-ink-faint hover:text-bad" onClick={() => cancel.mutate()}>
+            Discard draft
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-[1fr_310px] gap-6 items-start max-w-5xl">
@@ -652,7 +657,7 @@ function WizardBody({ jobId }: { jobId: string }) {
                 {previewAudio && (
                   <div className="rounded-xl border border-line bg-card px-3.5 py-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-1.5">
-                      🔊 Preview — how the app will sound
+                      Preview — how the app will sound
                     </p>
                     <audio controls preload="none" src={previewAudio.url} className="w-full h-9" />
                     <p className="text-[11px] text-ink-faint mt-1.5 leading-relaxed">
@@ -664,7 +669,7 @@ function WizardBody({ jobId }: { jobId: string }) {
                 {referenceAudio && (
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 px-3.5 py-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-1.5">
-                      🎧 Your uploaded recording — this is what ships in the app
+                      Your uploaded recording — this is what ships in the app
                     </p>
                     <audio controls preload="none" src={referenceAudio.url} className="w-full h-9" />
                     <p className="text-[11px] text-ink-faint mt-1.5 leading-relaxed">
