@@ -51,5 +51,7 @@ jobs:
           cache: pip
           cache-dependency-path: worker/pieces/requirements.lock.txt
       # Tests exercise the pipeline math/XML paths — no fluidsynth/browsers needed.
-      - run: pip install -r requirements.lock.txt
+      # pytest rides alongside the lock: the lock mirrors the PRODUCTION image,
+      # which never ships test tooling.
+      - run: pip install -r requirements.lock.txt pytest
       - run: python -m pytest tests/ -q
