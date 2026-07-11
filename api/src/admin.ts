@@ -1,4 +1,4 @@
-import type { RequestHandler } from "express";
+import type { Request, RequestHandler } from "express";
 import { eq } from "drizzle-orm";
 import type { Deps } from "./deps";
 import { users, auditEvents, type User } from "./db/schema";
@@ -45,17 +45,18 @@ export function requireAdmin(deps: Deps): RequestHandler {
 
 export async function audit(
   deps: Deps,
-  actor: User,
+  req: Request,
   action: string,
   subject?: { type: string; id: string },
   detail: Record<string, unknown> = {},
 ): Promise<void> {
   if (!deps.db) return;
   await deps.db.orm.insert(auditEvents).values({
-    actorUserId: actor.id,
+    actorUserId: req.adminUser!.id,
     action,
     subjectType: subject?.type ?? null,
     subjectId: subject?.id ?? null,
-    detail,
+    // reqId joins this business event to its technical logs (Ops timeline).
+    detail: req.reqId ? { ...detail, reqId: req.reqId } : detail,
   });
 }

@@ -10,6 +10,7 @@ import { catalogRouter } from "./routes/catalog";
 import { usersRouter } from "./routes/users";
 import { adminRouter } from "./routes/admin";
 import { studioRouter } from "./routes/studio";
+import { opsRouter } from "./routes/ops";
 import { rateLimit } from "./ratelimit";
 import { cors } from "./cors";
 import { requestLog } from "./reqlog";
@@ -33,6 +34,7 @@ export function createServer(deps: Deps = {}): Express {
   app.use(catalogRouter(deps));
   app.use(usersRouter(deps));
   app.use(studioRouter(deps));
+  app.use(opsRouter(deps));
   app.use(adminRouter(deps));
 
   app.use((_req: Request, res: Response) => {

@@ -268,7 +268,7 @@ export function studioRouter(deps: Deps): Router {
         .returning();
 
       await deps.piecesQueue.sendPreflight({ jobId, reqId: req.reqId });
-      await audit(deps, req.adminUser!, "studio.draft.create", { type: "studio_job", id: jobId }, {
+      await audit(deps, req, "studio.draft.create", { type: "studio_job", id: jobId }, {
         ...(pin ? { newVersionOf: pin } : {}),
       });
       res.status(201).json(job);
@@ -328,7 +328,7 @@ export function studioRouter(deps: Deps): Router {
         return;
       }
       await deps.piecesQueue.sendPreflight({ jobId: id, reqId: req.reqId });
-      await audit(deps, req.adminUser!, "studio.job.reopen", { type: "studio_job", id });
+      await audit(deps, req, "studio.job.reopen", { type: "studio_job", id });
       res.json(updated);
     }),
   );
@@ -672,7 +672,7 @@ export function studioRouter(deps: Deps): Router {
         res.status(503).json({ error: "queue_unavailable", message: "The verification queue is briefly unavailable — try submitting again in a moment." });
         return;
       }
-      await audit(deps, req.adminUser!, "studio.job.submit", { type: "studio_job", id }, { pieceId });
+      await audit(deps, req, "studio.job.submit", { type: "studio_job", id }, { pieceId });
       res.json(updated);
     }),
   );
@@ -780,7 +780,7 @@ export function studioRouter(deps: Deps): Router {
         res.status(503).json({ error: "queue_unavailable", message: "The verification queue is briefly unavailable — try again in a moment." });
         return;
       }
-      await audit(deps, req.adminUser!, "studio.job.retry", { type: "studio_job", id });
+      await audit(deps, req, "studio.job.retry", { type: "studio_job", id });
       res.json(updated);
     }),
   );
@@ -808,7 +808,7 @@ export function studioRouter(deps: Deps): Router {
         res.status(409).json({ error: "status_changed", message: "The job changed state under you — reload the page." });
         return;
       }
-      await audit(deps, req.adminUser!, "studio.job.cancel", { type: "studio_job", id });
+      await audit(deps, req, "studio.job.cancel", { type: "studio_job", id });
       res.json(updated);
     }),
   );
@@ -989,7 +989,7 @@ export function studioRouter(deps: Deps): Router {
         catalogWarning =
           "Published, but refreshing the app catalog failed — it will self-heal on the next publish or Library edit. If urgent, edit any field of any piece in the Library.";
       }
-      await audit(deps, req.adminUser!, "piece.publish", { type: "piece", id: pieceId }, {
+      await audit(deps, req, "piece.publish", { type: "piece", id: pieceId }, {
         version,
         jobId: id,
       });

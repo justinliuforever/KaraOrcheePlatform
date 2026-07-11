@@ -239,7 +239,7 @@ export function adminRouter(deps: Deps): Router {
         .set({ ...parsed.data, updatedAt: sql`now()` })
         .where(eq(users.id, id))
         .returning();
-      await audit(deps, req.adminUser!, "user.set_roles", { type: "user", id }, {
+      await audit(deps, req, "user.set_roles", { type: "user", id }, {
         changes: parsed.data,
         email: target.email,
       });
@@ -314,7 +314,7 @@ export function adminRouter(deps: Deps): Router {
         .insert(works)
         .values({ id, title: w.title, composer: w.composer, catalogue: w.catalogue ?? null, workType: w.workType, sortIndex: w.sortIndex ?? null })
         .returning();
-      await audit(deps, req.adminUser!, "work.create", { type: "work", id });
+      await audit(deps, req, "work.create", { type: "work", id });
       res.status(201).json(row);
     }),
   );
@@ -341,7 +341,7 @@ export function adminRouter(deps: Deps): Router {
         .returning();
       // Works feed the app's collapse headers — edits rebuild the catalog like pieces do.
       if (deps.studio) await rebuildCatalog(db, deps.studio);
-      await audit(deps, req.adminUser!, "work.update", { type: "work", id }, { changes: parsed.data });
+      await audit(deps, req, "work.update", { type: "work", id }, { changes: parsed.data });
       res.json(row);
     }),
   );
@@ -361,7 +361,7 @@ export function adminRouter(deps: Deps): Router {
         return;
       }
       await db.delete(works).where(eq(works.id, id));
-      await audit(deps, req.adminUser!, "work.delete", { type: "work", id });
+      await audit(deps, req, "work.delete", { type: "work", id });
       res.json({ ok: true });
     }),
   );
@@ -477,7 +477,7 @@ export function adminRouter(deps: Deps): Router {
         await tx.delete(works).where(eq(works.id, sourceId));
       });
       if (deps.studio) await rebuildCatalog(db, deps.studio);
-      await audit(deps, req.adminUser!, "work.merge", { type: "work", id: targetId }, {
+      await audit(deps, req, "work.merge", { type: "work", id: targetId }, {
         absorbed: sourceId,
         absorbedTitle: source.title,
         movedPieces: moved.map((m) => m.id),
@@ -566,7 +566,7 @@ export function adminRouter(deps: Deps): Router {
         .returning();
       // Title/author/sort feed the app's bookshelf — edits rebuild like work edits do.
       if (deps.studio) await rebuildCatalog(db, deps.studio);
-      await audit(deps, req.adminUser!, "book.update", { type: "book", id }, { changes: parsed.data });
+      await audit(deps, req, "book.update", { type: "book", id }, { changes: parsed.data });
       res.json({ ...row!, ...signCover(row!.coverPath) });
     }),
   );
@@ -595,7 +595,7 @@ export function adminRouter(deps: Deps): Router {
         await deps.studio.deleteBundleBlob(book.coverPath);
         await deps.studio.deleteBundleBlob(book.coverPath.replace(/cover\.webp$/, "cover_thumb.webp"));
       }
-      await audit(deps, req.adminUser!, "book.delete", { type: "book", id }, { title: book.title });
+      await audit(deps, req, "book.delete", { type: "book", id }, { title: book.title });
       res.json({ ok: true });
     }),
   );
@@ -662,7 +662,7 @@ export function adminRouter(deps: Deps): Router {
       if (changes.length > 0 && members.some((m) => m.status === "published") && deps.studio) {
         await rebuildCatalog(db, deps.studio);
       }
-      await audit(deps, req.adminUser!, "book.renumber", { type: "book", id }, { changes });
+      await audit(deps, req, "book.renumber", { type: "book", id }, { changes });
       res.json({ ok: true, changed: changes.length });
     }),
   );
@@ -721,7 +721,7 @@ export function adminRouter(deps: Deps): Router {
         .insert(books)
         .values({ ...parsed.data, id, coverPath })
         .returning();
-      await audit(deps, req.adminUser!, "book.create", { type: "book", id });
+      await audit(deps, req, "book.create", { type: "book", id });
       res.status(201).json({ ...row, ...signCover(coverPath) });
     }),
   );
@@ -764,7 +764,7 @@ export function adminRouter(deps: Deps): Router {
       // presentable — its catalog entry gains cover_url. Same-path replacements
       // need no rebuild: the emitted URL is unchanged and signed per request.
       if (!book.coverPath && deps.studio) await rebuildCatalog(db, deps.studio);
-      await audit(deps, req.adminUser!, "book.set_cover", { type: "book", id });
+      await audit(deps, req, "book.set_cover", { type: "book", id });
       res.json({ ...row, ...signCover(coverPath) });
     }),
   );
@@ -914,7 +914,7 @@ export function adminRouter(deps: Deps): Router {
       if (piece.status === "published" && deps.studio) {
         await rebuildCatalog(db, deps.studio);
       }
-      await audit(deps, req.adminUser!, "piece.update", { type: "piece", id }, { changes: p });
+      await audit(deps, req, "piece.update", { type: "piece", id }, { changes: p });
       res.json(updated);
     }),
   );
@@ -956,7 +956,7 @@ export function adminRouter(deps: Deps): Router {
         .where(eq(pieces.id, id))
         .returning();
       if (deps.studio) await rebuildCatalog(db, deps.studio);
-      await audit(deps, req.adminUser!, body.data.rights ? "piece.takedown" : "piece.archive", { type: "piece", id }, {
+      await audit(deps, req, body.data.rights ? "piece.takedown" : "piece.archive", { type: "piece", id }, {
         ...(body.data.rights ? { rights: body.data.rights, note: body.data.rightsNote } : {}),
       });
       res.json(updated);
@@ -991,7 +991,7 @@ export function adminRouter(deps: Deps): Router {
         .where(eq(pieces.id, id))
         .returning();
       if (deps.studio) await rebuildCatalog(db, deps.studio);
-      await audit(deps, req.adminUser!, "piece.restore", { type: "piece", id });
+      await audit(deps, req, "piece.restore", { type: "piece", id });
       res.json(updated);
     }),
   );

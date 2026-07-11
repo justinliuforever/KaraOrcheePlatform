@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { BookCopy, Hammer, Library, ListMusic, Plus, Users } from "lucide-react";
+import { Activity, AlertTriangle, BookCopy, Hammer, Inbox, Library, ListMusic, Plus, Users } from "lucide-react";
 import { api, type AdminPiece, type StudioJob } from "../api";
 import { statusLabel } from "../studio/gateInfo";
 import StatusTag from "./StatusTag";
@@ -85,6 +85,18 @@ export default function CommandPalette({
           <CommandItem value="nav-collections-works" keywords={["works", "compositions", "catalogue", "merge"]} onSelect={() => go("/collections?tab=works")}>
             <ListMusic />
             Collections · Works
+          </CommandItem>
+          <CommandItem value="nav-ops-logs" keywords={["ops", "logs", "observability", "requests", "traffic"]} onSelect={() => go("/ops?view=logs")}>
+            <Activity />
+            Ops · Logs
+          </CommandItem>
+          <CommandItem value="nav-ops-errors" keywords={["ops", "errors", "failures", "alerts"]} onSelect={() => go("/ops?view=errors&severity=error&range=24h")}>
+            <AlertTriangle />
+            Ops · Errors
+          </CommandItem>
+          <CommandItem value="nav-ops-queue" keywords={["ops", "queue", "dlq", "dead letter", "jobs", "service bus"]} onSelect={() => go("/ops?view=queue")}>
+            <Inbox />
+            Ops · Queue
           </CommandItem>
           <CommandItem value="nav-users" keywords={["users", "accounts"]} onSelect={() => go("/users")}>
             <Users />

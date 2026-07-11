@@ -4,6 +4,8 @@ import { createBlobCatalogStore, createBlobStudioStore } from "./storage";
 import { createServiceBusQueue } from "./queue";
 import { verifierFromConfig } from "./auth";
 import { createServer } from "./server";
+import { createLogAnalyticsOpsStore } from "./opslogs";
+import { createServiceBusOpsStore } from "./opsqueue";
 
 function main(): void {
   const config = loadConfig();
@@ -21,6 +23,12 @@ function main(): void {
     ? createServiceBusQueue(config.serviceBus.connectionString, "pieces-jobs", "pieces-preflight")
     : undefined;
   const auth = config.auth ? verifierFromConfig(config.auth) : undefined;
+  const opsLogs = config.logAnalyticsWorkspaceId
+    ? createLogAnalyticsOpsStore(config.logAnalyticsWorkspaceId)
+    : undefined;
+  const opsQueue = config.serviceBus
+    ? createServiceBusOpsStore(config.serviceBus.connectionString, ["pieces-jobs", "pieces-preflight"])
+    : undefined;
 
   const app = createServer({
     db,
@@ -29,6 +37,8 @@ function main(): void {
     piecesQueue,
     auth,
     corsOrigins: config.adminOrigins,
+    opsLogs,
+    opsQueue,
   });
 
   app.listen(config.port, () => {

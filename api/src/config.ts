@@ -7,6 +7,7 @@ export interface Config {
   serviceBus: { connectionString: string } | null;
   auth: { tenantId: string; tenantName: string; audience: string } | null;
   adminOrigins: string[];
+  logAnalyticsWorkspaceId: string | null;
 }
 
 const envSchema = z.object({
@@ -18,6 +19,7 @@ const envSchema = z.object({
   AUTH_AUDIENCE: z.string().min(1).optional(),
   ADMIN_ORIGINS: z.string().optional(),
   SERVICEBUS_CONNECTION_STRING: z.string().min(1).optional(),
+  LOG_ANALYTICS_WORKSPACE_ID: z.string().uuid().optional(),
 });
 
 export function parseConfig(env: NodeJS.ProcessEnv = process.env):
@@ -74,6 +76,7 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env):
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean),
+      logAnalyticsWorkspaceId: e.LOG_ANALYTICS_WORKSPACE_ID ?? null,
     },
   };
 }

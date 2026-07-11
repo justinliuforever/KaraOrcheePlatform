@@ -3,6 +3,8 @@ import type { Db } from "./db/client";
 import type { CatalogStore, StudioStore } from "./storage";
 import type { AuthVerifier } from "./auth";
 import type { JobQueue } from "./queue";
+import type { OpsLogsStore } from "./opslogs";
+import type { OpsQueueStore } from "./opsqueue";
 
 export interface Deps {
   db?: Db;
@@ -11,6 +13,8 @@ export interface Deps {
   piecesQueue?: JobQueue;
   auth?: AuthVerifier;
   corsOrigins?: string[];
+  opsLogs?: OpsLogsStore;
+  opsQueue?: OpsQueueStore;
 }
 
 type AsyncHandler = (

@@ -419,3 +419,160 @@ export function mergeWork(
     body: JSON.stringify({ targetWorkId, ...(confirmMovementClash ? { confirmMovementClash } : {}) }),
   });
 }
+
+// ---- Ops (logs / request timeline / queue) ----
+
+export type OpsSeverity = "error" | "warn" | "info";
+
+export interface OpsLogRow {
+  t: string;
+  source: "api" | "worker";
+  kind: "http" | "worker" | "raw";
+  severity: OpsSeverity;
+  reqId: string | null;
+  method: string | null;
+  route: string | null;
+  status: number | null;
+  ms: number | null;
+  oid: string | null;
+  admin: string | null;
+  job: string | null;
+  event: string | null;
+  msg: string;
+}
+
+// Every value is a plain string; severity alone accepts a comma-list ("error,warn").
+export interface OpsFilters {
+  from?: string;
+  to?: string;
+  kind?: string;
+  source?: string;
+  severity?: string;
+  statusClass?: string;
+  route?: string;
+  method?: string;
+  reqId?: string;
+  oid?: string;
+  admin?: string;
+  job?: string;
+  event?: string;
+  text?: string;
+}
+
+export interface OpsLogsResponse {
+  rows: OpsLogRow[];
+  truncated: boolean;
+}
+
+export interface OpsHistogramBucket {
+  t: string;
+  error: number;
+  warn: number;
+  info: number;
+}
+
+export interface OpsHistogramResponse {
+  buckets: OpsHistogramBucket[];
+  binMinutes: number;
+}
+
+export interface OpsFacetValue {
+  value: string;
+  count: number;
+  /** Present on admin entries: the operator's email. */
+  label?: string;
+}
+
+export type OpsFacetKey = "severity" | "source" | "statusClass" | "route" | "event" | "admin";
+
+export interface OpsFacetsResponse {
+  facets: Record<OpsFacetKey, OpsFacetValue[]>;
+}
+
+export interface OpsTimelineEvent {
+  t: string;
+  lane: "api" | "worker" | "audit";
+  severity?: OpsSeverity;
+  msg: string;
+  method?: string;
+  route?: string;
+  status?: number;
+  ms?: number;
+  job?: string;
+  event?: string;
+  action?: string;
+  actorEmail?: string | null;
+  detail?: Record<string, unknown>;
+}
+
+export interface OpsRequestResponse {
+  events: OpsTimelineEvent[];
+}
+
+export interface OpsQueueCard {
+  name: string;
+  active: number;
+  deadLettered: number;
+  scheduled: number;
+}
+
+export interface OpsDlqMessage {
+  queue: string;
+  sequenceNumber: number;
+  enqueuedAt: string;
+  reason: string | null;
+  jobId: string | null;
+  body?: Record<string, unknown>;
+}
+
+export interface OpsRecentJob {
+  id: string;
+  pieceId: string;
+  status: string;
+  checkStatus: string;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OpsQueueResponse {
+  queues: OpsQueueCard[];
+  dlq: OpsDlqMessage[];
+  recentJobs: OpsRecentJob[];
+}
+
+/** Shared serializer for the three filtered ops GETs — skips empty values. */
+export function opsQueryString(
+  filters: OpsFilters,
+  extra?: Record<string, string | number>,
+): string {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) if (v) p.set(k, v);
+  if (extra) for (const [k, v] of Object.entries(extra)) p.set(k, String(v));
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+export function getOpsLogs(
+  filters: OpsFilters,
+  opts: { limit?: number; order?: "asc" | "desc"; signal?: AbortSignal } = {},
+): Promise<OpsLogsResponse> {
+  const qs = opsQueryString(filters, { limit: opts.limit ?? 500, order: opts.order ?? "desc" });
+  return api(`/admin/ops/logs${qs}`, { signal: opts.signal });
+}
+
+export function getOpsHistogram(filters: OpsFilters, signal?: AbortSignal): Promise<OpsHistogramResponse> {
+  return api(`/admin/ops/histogram${opsQueryString(filters)}`, { signal });
+}
+
+export function getOpsFacets(filters: OpsFilters, signal?: AbortSignal): Promise<OpsFacetsResponse> {
+  return api(`/admin/ops/facets${opsQueryString(filters)}`, { signal });
+}
+
+export function getOpsRequest(reqId: string, signal?: AbortSignal): Promise<OpsRequestResponse> {
+  return api(`/admin/ops/request/${encodeURIComponent(reqId)}`, { signal });
+}
+
+export function getOpsQueue(signal?: AbortSignal): Promise<OpsQueueResponse> {
+  return api("/admin/ops/queue", { signal });
+}

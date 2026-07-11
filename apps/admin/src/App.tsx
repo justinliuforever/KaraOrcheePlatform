@@ -19,6 +19,7 @@ import {
 import UsersPage from "./pages/UsersPage";
 import PiecesPage from "./pages/PiecesPage";
 import CollectionsPage from "./pages/CollectionsPage";
+import OpsPage from "./pages/OpsPage";
 import PieceDetailPage from "./pages/PieceDetailPage";
 import StudioPage from "./pages/StudioPage";
 import StudioWizardPage from "./pages/StudioWizardPage";
@@ -91,6 +92,7 @@ function Shell() {
     { to: "/studio", label: "Pieces Studio" },
     { to: "/pieces", label: "Pieces Library" },
     { to: "/collections", label: "Collections" },
+    { to: "/ops", label: "Ops" },
     { to: "/users", label: "Users" },
   ];
 
@@ -168,6 +170,7 @@ function Shell() {
           <Route path="/pieces" element={<PiecesPage />} />
           <Route path="/pieces/:id" element={<PieceDetailPage />} />
           <Route path="/collections" element={<CollectionsPage />} />
+          <Route path="/ops" element={<OpsPage />} />
           <Route path="/users" element={<UsersPage />} />
         </Routes>
       </main>
