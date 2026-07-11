@@ -19,6 +19,7 @@ from pipeline.vrv import make_toolkit
 from pipeline.staff import build_staff_assets
 from pipeline.cursor_gate import run_gate
 from pipeline.parts import reduce_xml_to_part, split_midi_notes
+from pipeline.tempo_norm import normalize_tempo
 from pipeline.preview import render_preview
 from pipeline.audio_gate import check_reference_audio, AudioGateError
 
@@ -69,12 +70,13 @@ def gate_sanity(xml_path: Path, midi_path: Path | None, solo_part: str | None) -
 
 
 def _effective_paths(xml_path: Path, out_dir: Path, meta: dict, solo_used: str | None) -> Path:
-    """Reduce a multi-part score to the solo part; single-part passes through."""
+    """Reduce a multi-part score to the solo part (single-part passes through), then
+    normalize metronome marks (verovio's dotted-unit conversion is wrong)."""
     if meta["n_parts"] <= 1 or solo_used is None:
-        return xml_path
+        return normalize_tempo(xml_path, out_dir)
     reduced = out_dir / "_solo.musicxml"
     reduce_xml_to_part(xml_path, reduced, solo_used)
-    return reduced
+    return normalize_tempo(reduced, out_dir)
 
 
 def gate_alignment(xml_path: Path, midi_path: Path | None, out_dir: Path,

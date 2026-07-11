@@ -871,6 +871,9 @@ function BookSection({
   const [newAuthor, setNewAuthor] = useState("");
   const [cover, setCover] = useState<File | null>(null);
   const [coverErr, setCoverErr] = useState<string | null>(null);
+  // The number can be typed while the book is still being created — it attaches the
+  // moment the book exists (a dead/disabled input here read as "can't type numbers").
+  const [pendingIndex, setPendingIndex] = useState("");
 
   const selected = meta.book ? books.find((b) => b.id === meta.book!.id) : undefined;
 
@@ -888,7 +891,8 @@ function BookSection({
       setNewAuthor("");
       setCover(null);
       onBooksChanged();
-      onChange({ id: book.id, index: meta.book?.index ?? null });
+      onChange({ id: book.id, index: pendingIndex !== "" ? Number(pendingIndex) : (meta.book?.index ?? null) });
+      setPendingIndex("");
     },
   });
 
@@ -906,7 +910,9 @@ function BookSection({
                 setCreating(true);
               } else {
                 setCreating(false);
-                onChange(e.target.value ? { id: e.target.value, index: meta.book?.index ?? null } : null);
+                const idx = meta.book?.index ?? (pendingIndex !== "" ? Number(pendingIndex) : null);
+                setPendingIndex("");
+                onChange(e.target.value ? { id: e.target.value, index: idx } : null);
               }
             }}
           >
@@ -925,15 +931,20 @@ function BookSection({
           <input
             className={inputCls}
             type="number"
-            placeholder={creating && !meta.book ? "create the book first" : "41"}
-            value={meta.book?.index ?? ""}
-            disabled={!meta.book}
+            placeholder="41"
+            value={meta.book ? (meta.book.index ?? "") : pendingIndex}
+            disabled={!meta.book && !creating}
             onChange={(e) => {
               if (meta.book) {
-                onChange({ ...meta.book, index: e.target.value ? Number(e.target.value) : null });
+                onChange({ ...meta.book, index: e.target.value !== "" ? Number(e.target.value) : null });
+              } else {
+                setPendingIndex(e.target.value);
               }
             }}
           />
+          {creating && !meta.book && pendingIndex !== "" && (
+            <p className="text-[11px] text-ink-faint mt-1">Will attach as No. {pendingIndex} once the book is created.</p>
+          )}
         </div>
       </div>
 
