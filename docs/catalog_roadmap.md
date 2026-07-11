@@ -145,7 +145,7 @@ piano-only** (AMT is piano-trained; expected, gated in UI by instrumentation).
   - **Tier 1 (beta)**: audio PRODUCED AT the notated score tempo (studio renders from
     MIDI/DAW are exactly this) → linear time map → tap-to-seek, cursor sync, and seek-from-
     measure all work unchanged. A lightweight gate verifies tempo conformity at upload.
-  - **Tier 2 (post-beta)**: human performance recordings with rubato → offline audio↔score
+  - **Tier 2 (SHIPPED 2026-07-11, ahead of schedule)**: human performance recordings with rubato → offline audio↔score
     alignment computed AND VERIFIED in the pipeline as a gate artifact (history lesson:
     hand-made alignment.json shipped broken once — never trust, always verify). The only
     path for voice content.
