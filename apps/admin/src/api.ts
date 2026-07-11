@@ -227,7 +227,11 @@ export interface AdminWork {
   composer: string;
   catalogue: string | null;
   workType: string;
+  parentWorkId: string | null;
   sortIndex: number | null;
+  display: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
   pieceCount?: number;
 }
 
@@ -261,7 +265,16 @@ export interface AdminBook {
   id: string;
   title: string;
   author: string | null;
+  publisher: string | null;
+  edition: string | null;
+  coverPath: string | null;
   rights: string;
+  rightsNote: string | null;
+  sortIndex: number | null;
+  status: string;
+  display: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
   pieceCount: number;
   coverUrl: string | null;
   coverThumbUrl: string | null;
@@ -280,4 +293,129 @@ export async function apiForm<T>(path: string, form: FormData, method = "POST"):
     throw new ApiError(res.status, body.error ?? `http_${res.status}`, body.message);
   }
   return res.json();
+}
+
+export type Rights = "public_domain" | "licensed" | "unknown" | "blocked";
+
+export const WORK_TYPES = [
+  "sonata",
+  "suite",
+  "etude_set",
+  "prelude_fugue",
+  "variations",
+  "cycle",
+  "concerto",
+  "collection",
+  "other",
+] as const;
+export type WorkType = (typeof WORK_TYPES)[number];
+
+export interface BookPieceRow {
+  id: string;
+  title: string;
+  subtitle: string;
+  composer: string;
+  bookIndex: number | null;
+  status: string;
+  publishedVersion: number | null;
+  difficulty: number | null;
+  instrumentation: { solo: string; parts: string[] } | null;
+  updatedAt: string;
+}
+
+export interface WorkPieceRow extends Omit<BookPieceRow, "bookIndex"> {
+  workIndex: number | null;
+}
+
+// Detail responses carry the member pieces instead of a pieceCount.
+export interface AdminBookDetail extends Omit<AdminBook, "pieceCount"> {
+  pieces: BookPieceRow[];
+  recentAudit: AuditEntry[];
+}
+
+export interface AdminWorkDetail extends Omit<AdminWork, "pieceCount"> {
+  pieces: WorkPieceRow[];
+  children: AdminWork[];
+  recentAudit: AuditEntry[];
+}
+
+export type BookEdit = Partial<{
+  title: string;
+  author: string | null;
+  publisher: string | null;
+  edition: string | null;
+  rights: Rights;
+  rightsNote: string | null;
+  sortIndex: number | null;
+}>;
+
+export type WorkEdit = Partial<{
+  title: string;
+  composer: string;
+  catalogue: string | null;
+  workType: WorkType;
+  sortIndex: number | null;
+}>;
+
+export function getBook(id: string): Promise<AdminBookDetail> {
+  return api(`/admin/books/${id}`);
+}
+
+export function patchBook(id: string, patch: BookEdit): Promise<Omit<AdminBook, "pieceCount">> {
+  return api(`/admin/books/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+}
+
+export function deleteBook(id: string): Promise<{ ok: boolean }> {
+  return api(`/admin/books/${id}`, { method: "DELETE" });
+}
+
+export function putBookNumbering(
+  id: string,
+  entries: { pieceId: string; bookIndex: number | null }[],
+): Promise<{ ok: boolean; changed: number }> {
+  return api(`/admin/books/${id}/numbering`, { method: "PUT", body: JSON.stringify({ entries }) });
+}
+
+export function putBookCover(id: string, cover: File): Promise<Omit<AdminBook, "pieceCount">> {
+  const form = new FormData();
+  form.set("cover", cover);
+  return apiForm(`/admin/books/${id}/cover`, form, "PUT");
+}
+
+export function createBook(
+  fields: { title: string; author?: string },
+  cover: File,
+): Promise<Omit<AdminBook, "pieceCount">> {
+  const form = new FormData();
+  form.set("title", fields.title);
+  if (fields.author) form.set("author", fields.author);
+  form.set("cover", cover);
+  return apiForm("/admin/books", form);
+}
+
+export function searchWorks(q: string): Promise<{ items: AdminWork[] }> {
+  return api(`/admin/works${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+}
+
+export function getWork(id: string): Promise<AdminWorkDetail> {
+  return api(`/admin/works/${id}`);
+}
+
+export function patchWork(id: string, patch: WorkEdit): Promise<AdminWork> {
+  return api(`/admin/works/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+}
+
+export function deleteWork(id: string): Promise<{ ok: boolean }> {
+  return api(`/admin/works/${id}`, { method: "DELETE" });
+}
+
+export function mergeWork(
+  id: string,
+  targetWorkId: string,
+  confirmMovementClash?: boolean,
+): Promise<{ ok: boolean; moved: number }> {
+  return api(`/admin/works/${id}/merge`, {
+    method: "POST",
+    body: JSON.stringify({ targetWorkId, ...(confirmMovementClash ? { confirmMovementClash } : {}) }),
+  });
 }

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { AuditEntry } from "../api";
 
 export const inputCls =
   "w-full rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none focus:border-brand focus-visible:ring-[3px] focus-visible:ring-ring/30";
@@ -50,5 +51,45 @@ export function ErrorNote({ message }: { message: string }) {
     <div className="rounded-lg border border-red-200 bg-red-50 text-bad text-sm px-4 py-3">
       {message}
     </div>
+  );
+}
+
+/** Collapsible slide-over section — same treatment as PiecePanel's sections. */
+export function PanelSection({
+  title,
+  defaultOpen = false,
+  badge,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  badge?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <details className="rounded-xl border border-line bg-card mb-3 overflow-hidden" open={defaultOpen}>
+      <summary className="px-4 py-3 cursor-pointer select-none flex items-center justify-between text-sm font-semibold">
+        {title}
+        {badge != null && <span className="text-xs text-ink-faint font-normal">{badge}</span>}
+      </summary>
+      <div className="px-4 pb-4 border-t border-line pt-3">{children}</div>
+    </details>
+  );
+}
+
+export function AuditTrail({ events }: { events: AuditEntry[] }) {
+  return (
+    <>
+      {events.length === 0 && <p className="text-xs text-ink-faint">No admin actions recorded yet.</p>}
+      {events.map((e) => (
+        <div key={e.id} className="py-1.5 border-b border-line/50 last:border-0">
+          <p className="text-xs font-medium">{e.action}</p>
+          <p className="text-[11px] text-ink-faint">
+            <span className="tabular-nums">{new Date(e.createdAt).toLocaleString()}</span>
+            {e.detail && Object.keys(e.detail).length > 0 && ` · ${JSON.stringify(e.detail).slice(0, 120)}`}
+          </p>
+        </div>
+      ))}
+    </>
   );
 }

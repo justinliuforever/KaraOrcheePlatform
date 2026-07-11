@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Hammer, Library, Plus, Users } from "lucide-react";
+import { BookCopy, Hammer, Library, ListMusic, Plus, Users } from "lucide-react";
 import { api, type AdminPiece, type StudioJob } from "../api";
 import { statusLabel } from "../studio/gateInfo";
 import StatusTag from "./StatusTag";
@@ -77,6 +77,14 @@ export default function CommandPalette({
           <CommandItem value="nav-pieces-studio" keywords={["studio", "builds", "board"]} onSelect={() => go("/studio")}>
             <Hammer />
             Pieces Studio
+          </CommandItem>
+          <CommandItem value="nav-collections" keywords={["collections", "books", "bookshelf", "covers"]} onSelect={() => go("/collections")}>
+            <BookCopy />
+            Collections
+          </CommandItem>
+          <CommandItem value="nav-collections-works" keywords={["works", "compositions", "catalogue", "merge"]} onSelect={() => go("/collections?tab=works")}>
+            <ListMusic />
+            Collections · Works
           </CommandItem>
           <CommandItem value="nav-users" keywords={["users", "accounts"]} onSelect={() => go("/users")}>
             <Users />

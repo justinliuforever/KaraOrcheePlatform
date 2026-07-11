@@ -18,6 +18,7 @@ import {
 } from "@/components/ui-kit/tooltip";
 import UsersPage from "./pages/UsersPage";
 import PiecesPage from "./pages/PiecesPage";
+import CollectionsPage from "./pages/CollectionsPage";
 import PieceDetailPage from "./pages/PieceDetailPage";
 import StudioPage from "./pages/StudioPage";
 import StudioWizardPage from "./pages/StudioWizardPage";
@@ -89,6 +90,7 @@ function Shell() {
   const nav = [
     { to: "/studio", label: "Pieces Studio" },
     { to: "/pieces", label: "Pieces Library" },
+    { to: "/collections", label: "Collections" },
     { to: "/users", label: "Users" },
   ];
 
@@ -165,6 +167,7 @@ function Shell() {
           <Route path="/studio/:id" element={<StudioJobPage />} />
           <Route path="/pieces" element={<PiecesPage />} />
           <Route path="/pieces/:id" element={<PieceDetailPage />} />
+          <Route path="/collections" element={<CollectionsPage />} />
           <Route path="/users" element={<UsersPage />} />
         </Routes>
       </main>

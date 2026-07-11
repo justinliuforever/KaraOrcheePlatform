@@ -45,6 +45,8 @@ export interface StudioStore {
   listSources(prefix: string): Promise<{ path: string; bytes: number }[]>;
   // Optional (fakes may omit): current ETag of a bundle blob, null when absent.
   getBundleEtag?(path: string): Promise<string | null>;
+  // Optional (fakes may omit): remove a bundle blob; a missing blob is a no-op.
+  deleteBundleBlob?(path: string): Promise<void>;
 }
 
 function parseConnectionString(cs: string): { accountName: string; accountKey: string } {
@@ -187,6 +189,9 @@ export function createBlobStudioStore(connectionString: string): StudioStore {
         if (err instanceof RestError && err.statusCode === 404) return null;
         throw err;
       }
+    },
+    async deleteBundleBlob(path) {
+      await bundles.getBlockBlobClient(path).deleteIfExists();
     },
   };
 }

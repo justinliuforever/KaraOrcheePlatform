@@ -11,7 +11,7 @@ import {
 import { createServer } from "../src/server";
 import { createJoseVerifier, type AuthVerifier } from "../src/auth";
 import { createTestDb } from "./testdb";
-import { users, books, pieces, pieceVersions } from "../src/db/schema";
+import { users, books, pieces, pieceVersions, works } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 
 const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
@@ -351,5 +351,165 @@ describe("cors", () => {
       .get("/healthz")
       .set("Origin", "https://evil.example.com");
     expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+});
+
+describe("books & works management", () => {
+  beforeAll(async () => {
+    await db.orm.insert(books).values({
+      id: "beyer_op101",
+      title: "Vorschule im Klavierspiel, Op. 101",
+      author: "Ferdinand Beyer",
+    });
+    await db.orm.insert(works).values([
+      { id: "mozart_k330", title: "Piano Sonata No. 10", composer: "Wolfgang Amadeus Mozart", catalogue: "K. 330", workType: "sonata" },
+      { id: "mozart_k330_dup", title: "Sonate K330 (dup)", composer: "Wolfgang Amadeus Mozart", workType: "sonata" },
+      { id: "parent_set", title: "Das Wohltemperierte Klavier", composer: "Johann Sebastian Bach", workType: "collection" },
+      { id: "nested_child", title: "Book I", composer: "Johann Sebastian Bach", workType: "collection", parentWorkId: "parent_set" },
+    ]);
+    await db.orm.insert(pieces).values([
+      { id: "beyer_101_8", title: "Beyer No. 8", composer: "Ferdinand Beyer", bookId: "beyer_op101", bookIndex: 8, rights: "public_domain", rightsNote: "PD", status: "published", publishedVersion: 1 },
+      { id: "beyer_101_9", title: "Beyer No. 9", composer: "Ferdinand Beyer", bookId: "beyer_op101", bookIndex: 9, rights: "public_domain", rightsNote: "PD", status: "draft" },
+      { id: "k330_mv1", title: "Piano Sonata No. 10", subtitle: "I. Allegro moderato", composer: "Wolfgang Amadeus Mozart", workId: "mozart_k330", workIndex: 1, rights: "public_domain", rightsNote: "PD", status: "published", publishedVersion: 1 },
+      { id: "k330_dup_mv1", title: "Sonate K330", subtitle: "1. Satz", composer: "Wolfgang Amadeus Mozart", workId: "mozart_k330_dup", workIndex: 1, rights: "public_domain", rightsNote: "PD", status: "draft" },
+    ]);
+  });
+
+  it("returns a book's table of contents in bookIndex order", async () => {
+    const res = await request(app())
+      .get("/admin/books/beyer_op101")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.pieces.map((p: { id: string }) => p.id)).toEqual(["beyer_101_8", "beyer_101_9"]);
+    expect(res.body.title).toBe("Vorschule im Klavierspiel, Op. 101");
+  });
+
+  it("patches book fields and audits", async () => {
+    const res = await request(app())
+      .patch("/admin/books/beyer_op101")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ author: "F. Beyer", rights: "public_domain", rightsNote: "PD print, 1850" });
+    expect(res.status).toBe(200);
+    expect(res.body.author).toBe("F. Beyer");
+    expect(res.body.rights).toBe("public_domain");
+  });
+
+  it("rejects an empty book patch and a missing book", async () => {
+    const empty = await request(app())
+      .patch("/admin/books/beyer_op101")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({});
+    expect(empty.status).toBe(400);
+    const missing = await request(app())
+      .patch("/admin/books/no_such_book")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ title: "X" });
+    expect(missing.status).toBe(404);
+  });
+
+  it("bulk-renumbers a swap that a per-piece guard would reject", async () => {
+    const res = await request(app())
+      .put("/admin/books/beyer_op101/numbering")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ entries: [{ pieceId: "beyer_101_8", bookIndex: 9 }, { pieceId: "beyer_101_9", bookIndex: 8 }] });
+    expect(res.status).toBe(200);
+    expect(res.body.changed).toBe(2);
+    const rows = await db.orm.select().from(pieces).where(eq(pieces.bookId, "beyer_op101"));
+    expect(rows.find((r) => r.id === "beyer_101_8")!.bookIndex).toBe(9);
+    expect(rows.find((r) => r.id === "beyer_101_9")!.bookIndex).toBe(8);
+  });
+
+  it("rejects a numbering that collides with an untouched piece", async () => {
+    const res = await request(app())
+      .put("/admin/books/beyer_op101/numbering")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ entries: [{ pieceId: "beyer_101_9", bookIndex: 9 }] });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("book_index_taken");
+  });
+
+  it("rejects numbering a piece outside the book", async () => {
+    const res = await request(app())
+      .put("/admin/books/beyer_op101/numbering")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ entries: [{ pieceId: "czerny_599_41", bookIndex: 1 }] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("not_in_book");
+  });
+
+  it("refuses to delete a book that still has pieces, deletes an unused one", async () => {
+    const blocked = await request(app())
+      .delete("/admin/books/beyer_op101")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error).toBe("book_has_pieces");
+
+    await db.orm.insert(books).values({ id: "junk_book", title: "Junk" });
+    const ok = await request(app())
+      .delete("/admin/books/junk_book")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(ok.status).toBe(200);
+    const rows = await db.orm.select().from(books).where(eq(books.id, "junk_book"));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("returns work detail with movements in order", async () => {
+    const res = await request(app())
+      .get("/admin/works/mozart_k330")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.pieces.map((p: { id: string }) => p.id)).toEqual(["k330_mv1"]);
+  });
+
+  it("lists children on the parent work and blocks merging a work that has children", async () => {
+    const detail = await request(app())
+      .get("/admin/works/parent_set")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(detail.body.children.map((c: { id: string }) => c.id)).toEqual(["nested_child"]);
+
+    const res = await request(app())
+      .post("/admin/works/parent_set/merge")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ targetWorkId: "mozart_k330" });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("work_has_children");
+  });
+
+  it("blocks a merge colliding on movement+instrument without confirmation", async () => {
+    const res = await request(app())
+      .post("/admin/works/mozart_k330_dup/merge")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ targetWorkId: "mozart_k330" });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("movement_taken");
+  });
+
+  it("rejects merge into self and into a missing target", async () => {
+    const self = await request(app())
+      .post("/admin/works/mozart_k330_dup/merge")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ targetWorkId: "mozart_k330_dup" });
+    expect(self.status).toBe(400);
+    expect(self.body.error).toBe("merge_self");
+    const missing = await request(app())
+      .post("/admin/works/mozart_k330_dup/merge")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ targetWorkId: "no_such_work" });
+    expect(missing.status).toBe(400);
+    expect(missing.body.error).toBe("target_missing");
+  });
+
+  it("merges with confirmation: pieces move, duplicate is deleted, audit written", async () => {
+    const res = await request(app())
+      .post("/admin/works/mozart_k330_dup/merge")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ targetWorkId: "mozart_k330", confirmMovementClash: true });
+    expect(res.status).toBe(200);
+    expect(res.body.moved).toBe(1);
+    const [movedPiece] = await db.orm.select().from(pieces).where(eq(pieces.id, "k330_dup_mv1"));
+    expect(movedPiece!.workId).toBe("mozart_k330");
+    expect(movedPiece!.workIndex).toBe(1);
+    const gone = await db.orm.select().from(works).where(eq(works.id, "mozart_k330_dup"));
+    expect(gone).toHaveLength(0);
   });
 });

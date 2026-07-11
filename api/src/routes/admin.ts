@@ -55,6 +55,39 @@ const pieceEditSchema = z
   })
   .refine((v) => Object.values(v).some((x) => x !== undefined), { message: "no fields given" });
 
+// Post-creation edits: display/catalog fields only. The id is permanent — it names
+// the cover blobs and every piece reference; the cover has its own endpoint.
+const bookEditSchema = z
+  .object({
+    title: z.string().min(1).max(200).optional(),
+    author: z.string().max(120).nullable().optional(),
+    publisher: z.string().max(120).nullable().optional(),
+    edition: z.string().max(120).nullable().optional(),
+    rights: z.enum(["public_domain", "licensed", "unknown", "blocked"]).optional(),
+    rightsNote: z.string().max(2000).nullable().optional(),
+    sortIndex: z.number().int().nullable().optional(),
+  })
+  .refine((v) => Object.values(v).some((x) => x !== undefined), { message: "no fields given" });
+
+const numberingSchema = z.object({
+  entries: z
+    .array(
+      z.object({
+        pieceId: z.string().min(1),
+        bookIndex: z.number().int().min(0).nullable(),
+      }),
+    )
+    .min(1)
+    .max(500),
+});
+
+const mergeSchema = z.object({
+  targetWorkId: z.string().min(1),
+  // Same escape hatch as the piece editor: colliding movement numbers are usually
+  // a duplicate, but arrangements legitimately share them.
+  confirmMovementClash: z.boolean().optional(),
+});
+
 const coverUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024, files: 1 },
@@ -333,6 +366,126 @@ export function adminRouter(deps: Deps): Router {
     }),
   );
 
+  const soloOf = (instrumentation: unknown): string =>
+    (instrumentation as { solo?: string } | null)?.solo ?? "piano";
+
+  router.get(
+    "/admin/works/:id",
+    wrap(async (req, res) => {
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [work] = await db.select().from(works).where(eq(works.id, id)).limit(1);
+      if (!work) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const items = await db
+        .select({
+          id: pieces.id,
+          title: pieces.title,
+          subtitle: pieces.subtitle,
+          composer: pieces.composer,
+          workIndex: pieces.workIndex,
+          status: pieces.status,
+          publishedVersion: pieces.publishedVersion,
+          difficulty: pieces.difficulty,
+          instrumentation: pieces.instrumentation,
+          updatedAt: pieces.updatedAt,
+        })
+        .from(pieces)
+        .where(eq(pieces.workId, id))
+        .orderBy(asc(pieces.workIndex), asc(pieces.id));
+      const children = await db.select().from(works).where(eq(works.parentWorkId, id));
+      const recentAudit = await db
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.subjectType, "work"), eq(auditEvents.subjectId, id)))
+        .orderBy(desc(auditEvents.createdAt))
+        .limit(20);
+      res.json({ ...work, pieces: items, children, recentAudit });
+    }),
+  );
+
+  // Absorb a duplicate work into the canonical one: every piece moves over with its
+  // movement number unchanged, then the emptied duplicate is deleted — one atomic
+  // operation instead of N per-piece re-attaches plus a manual delete.
+  router.post(
+    "/admin/works/:id/merge",
+    wrap(async (req, res) => {
+      const parsed = mergeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "invalid_merge", detail: parsed.error.issues });
+        return;
+      }
+      const db = deps.db!.orm;
+      const sourceId = String(req.params.id);
+      const targetId = parsed.data.targetWorkId;
+      if (sourceId === targetId) {
+        res.status(400).json({ error: "merge_self", message: "A work cannot be merged into itself." });
+        return;
+      }
+      const [source] = await db.select().from(works).where(eq(works.id, sourceId)).limit(1);
+      if (!source) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const [target] = await db.select().from(works).where(eq(works.id, targetId)).limit(1);
+      if (!target) {
+        res.status(400).json({ error: "target_missing", message: "That target work no longer exists — refresh and pick again." });
+        return;
+      }
+      const [child] = await db
+        .select({ id: works.id, title: works.title })
+        .from(works)
+        .where(eq(works.parentWorkId, sourceId))
+        .limit(1);
+      if (child) {
+        res.status(409).json({
+          error: "work_has_children",
+          message: `"${child.title}" is nested under this work — re-point its parent before merging.`,
+        });
+        return;
+      }
+      const moved = await db
+        .select({ id: pieces.id, title: pieces.title, subtitle: pieces.subtitle, workIndex: pieces.workIndex, instrumentation: pieces.instrumentation })
+        .from(pieces)
+        .where(eq(pieces.workId, sourceId));
+      if (!parsed.data.confirmMovementClash) {
+        const existing = await db
+          .select({ title: pieces.title, workIndex: pieces.workIndex, instrumentation: pieces.instrumentation })
+          .from(pieces)
+          .where(eq(pieces.workId, targetId));
+        const clash = moved.find(
+          (m) =>
+            m.workIndex != null &&
+            existing.some((e) => e.workIndex === m.workIndex && soloOf(e.instrumentation) === soloOf(m.instrumentation)),
+        );
+        if (clash) {
+          res.status(409).json({
+            error: "movement_taken",
+            message: `Both works have a No. ${clash.workIndex} on the same instrument ("${clash.title}") — that usually means these aren't duplicates. Confirm to merge anyway (arrangements can legitimately share numbers).`,
+            clashPieceId: clash.id,
+          });
+          return;
+        }
+      }
+      await db.transaction(async (tx) => {
+        await tx
+          .update(pieces)
+          .set({ workId: targetId, updatedAt: sql`now()` })
+          .where(eq(pieces.workId, sourceId));
+        await tx.delete(works).where(eq(works.id, sourceId));
+      });
+      if (deps.studio) await rebuildCatalog(db, deps.studio);
+      await audit(deps, req.adminUser!, "work.merge", { type: "work", id: targetId }, {
+        absorbed: sourceId,
+        absorbedTitle: source.title,
+        movedPieces: moved.map((m) => m.id),
+      });
+      res.json({ ok: true, moved: moved.length });
+    }),
+  );
+
   router.get(
     "/admin/books",
     wrap(async (_req, res) => {
@@ -350,6 +503,167 @@ export function adminRouter(deps: Deps): Router {
           ...signCover(b.coverPath),
         })),
       });
+    }),
+  );
+
+  router.get(
+    "/admin/books/:id",
+    wrap(async (req, res) => {
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
+      if (!book) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      // The book's table of contents, ordered the way the app's bookshelf renders
+      // it (numbered first, unnumbered trailing).
+      const items = await db
+        .select({
+          id: pieces.id,
+          title: pieces.title,
+          subtitle: pieces.subtitle,
+          composer: pieces.composer,
+          bookIndex: pieces.bookIndex,
+          status: pieces.status,
+          publishedVersion: pieces.publishedVersion,
+          difficulty: pieces.difficulty,
+          instrumentation: pieces.instrumentation,
+          updatedAt: pieces.updatedAt,
+        })
+        .from(pieces)
+        .where(eq(pieces.bookId, id))
+        .orderBy(asc(pieces.bookIndex), asc(pieces.title));
+      const recentAudit = await db
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.subjectType, "book"), eq(auditEvents.subjectId, id)))
+        .orderBy(desc(auditEvents.createdAt))
+        .limit(20);
+      res.json({ ...book, ...signCover(book.coverPath), pieces: items, recentAudit });
+    }),
+  );
+
+  router.patch(
+    "/admin/books/:id",
+    wrap(async (req, res) => {
+      const parsed = bookEditSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "invalid_book", detail: parsed.error.issues });
+        return;
+      }
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [existing] = await db.select().from(books).where(eq(books.id, id)).limit(1);
+      if (!existing) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const [row] = await db
+        .update(books)
+        .set({ ...parsed.data, updatedAt: sql`now()` })
+        .where(eq(books.id, id))
+        .returning();
+      // Title/author/sort feed the app's bookshelf — edits rebuild like work edits do.
+      if (deps.studio) await rebuildCatalog(db, deps.studio);
+      await audit(deps, req.adminUser!, "book.update", { type: "book", id }, { changes: parsed.data });
+      res.json({ ...row!, ...signCover(row!.coverPath) });
+    }),
+  );
+
+  router.delete(
+    "/admin/books/:id",
+    wrap(async (req, res) => {
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
+      if (!book) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const [attached] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(pieces)
+        .where(eq(pieces.bookId, id));
+      // RESTRICT, same as works: a shelf must never be able to take content down.
+      if ((attached?.count ?? 0) > 0) {
+        res.status(409).json({ error: "book_has_pieces", count: attached!.count });
+        return;
+      }
+      await db.delete(books).where(eq(books.id, id));
+      if (book.coverPath && deps.studio?.deleteBundleBlob) {
+        await deps.studio.deleteBundleBlob(book.coverPath);
+        await deps.studio.deleteBundleBlob(book.coverPath.replace(/cover\.webp$/, "cover_thumb.webp"));
+      }
+      await audit(deps, req.adminUser!, "book.delete", { type: "book", id }, { title: book.title });
+      res.json({ ok: true });
+    }),
+  );
+
+  // Bulk renumber: the FINAL state of the whole book is validated before anything
+  // is written, so swaps (3↔7) can't trip a per-piece clash guard halfway through.
+  router.put(
+    "/admin/books/:id/numbering",
+    wrap(async (req, res) => {
+      const parsed = numberingSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "invalid_numbering", detail: parsed.error.issues });
+        return;
+      }
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
+      if (!book) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const members = await db
+        .select({ id: pieces.id, bookIndex: pieces.bookIndex, status: pieces.status })
+        .from(pieces)
+        .where(eq(pieces.bookId, id));
+      const memberIds = new Set(members.map((m) => m.id));
+      const seen = new Set<string>();
+      for (const e of parsed.data.entries) {
+        if (!memberIds.has(e.pieceId)) {
+          res.status(400).json({ error: "not_in_book", pieceId: e.pieceId });
+          return;
+        }
+        if (seen.has(e.pieceId)) {
+          res.status(400).json({ error: "invalid_numbering", message: `"${e.pieceId}" appears twice.` });
+          return;
+        }
+        seen.add(e.pieceId);
+      }
+      const final = new Map(members.map((m) => [m.id, m.bookIndex]));
+      for (const e of parsed.data.entries) final.set(e.pieceId, e.bookIndex);
+      const used = new Map<number, string>();
+      for (const [pieceId, idx] of final) {
+        if (idx == null) continue;
+        if (used.has(idx)) {
+          res.status(409).json({
+            error: "book_index_taken",
+            message: `No. ${idx} would be assigned to both "${used.get(idx)}" and "${pieceId}".`,
+          });
+          return;
+        }
+        used.set(idx, pieceId);
+      }
+      const changes = parsed.data.entries.filter(
+        (e) => members.find((m) => m.id === e.pieceId)!.bookIndex !== e.bookIndex,
+      );
+      await db.transaction(async (tx) => {
+        for (const e of changes) {
+          await tx
+            .update(pieces)
+            .set({ bookIndex: e.bookIndex, updatedAt: sql`now()` })
+            .where(eq(pieces.id, e.pieceId));
+        }
+      });
+      if (changes.length > 0 && members.some((m) => m.status === "published") && deps.studio) {
+        await rebuildCatalog(db, deps.studio);
+      }
+      await audit(deps, req.adminUser!, "book.renumber", { type: "book", id }, { changes });
+      res.json({ ok: true, changed: changes.length });
     }),
   );
 
@@ -446,6 +760,10 @@ export function adminRouter(deps: Deps): Router {
         .set({ coverPath, updatedAt: sql`now()` })
         .where(eq(books.id, id))
         .returning();
+      // A previously coverless book (created implicitly at publish) just became
+      // presentable — its catalog entry gains cover_url. Same-path replacements
+      // need no rebuild: the emitted URL is unchanged and signed per request.
+      if (!book.coverPath && deps.studio) await rebuildCatalog(db, deps.studio);
       await audit(deps, req.adminUser!, "book.set_cover", { type: "book", id });
       res.json({ ...row, ...signCover(coverPath) });
     }),
