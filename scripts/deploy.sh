@@ -26,7 +26,7 @@ case "$COMPONENT" in
     echo "verify: wait until the OLD revision is fully gone before trusting queue behavior (draining replicas steal Service Bus messages)"
     ;;
   admin)
-    (cd apps/admin && npm run build)
+    (cd apps/admin && BUILD_SHA="$TAG" npm run build)
     npx -y @azure/static-web-apps-cli@latest deploy apps/admin/dist \
       --deployment-token "$(az staticwebapp secrets list -g "$RG" -n "swa-karaorchee-admin-${ENV}" --query properties.apiKey -o tsv)" \
       --env production

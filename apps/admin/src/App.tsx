@@ -116,6 +116,9 @@ function Shell() {
             Sign out
           </Button>
         </div>
+        <p className="px-1 pt-3 text-[10px] text-ink-faint tabular-nums select-all">
+          v{__APP_VERSION__} · {__BUILD_SHA__}
+        </p>
       </aside>
       <main className="flex-1 min-w-0 px-8 py-6">
         <Routes>
