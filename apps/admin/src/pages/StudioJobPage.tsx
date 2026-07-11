@@ -1,14 +1,24 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { toast } from "sonner";
 import { api, type StudioJob } from "../api";
-import { Badge, Card, ErrorNote, PageHeader, Spinner, rightsTone } from "../components/ui";
+import { Badge, ErrorNote, PageHeader, Spinner, rightsTone } from "../components/ui";
+import { Button } from "@/components/ui-kit/button";
+import { Card } from "@/components/ui-kit/card";
 import { ALL_GATES, failureHint, jobTone, statusLabel } from "../studio/gateInfo";
 import Diagnosis, { diagnosisOf } from "../studio/Diagnosis";
 import { PipelineStepper } from "../studio/Stepper";
 
 function fmtKB(n: number): string {
   return n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -24,12 +34,17 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 function PreviewCard({ variant, url }: { variant: string; url: string }) {
   const [expanded, setExpanded] = useState(false);
   return (
-    <Card className="mb-3">
+    <Card className="mb-3 gap-0 p-0 overflow-hidden">
       <div className="px-4 py-2 border-b border-line bg-paper/50 flex items-center justify-between">
         <span className="text-xs font-medium text-ink-soft">{variant}</span>
-        <button className="text-xs text-brand font-medium" onClick={() => setExpanded(!expanded)}>
+        <Button
+          variant="link"
+          size="sm"
+          className="h-auto p-0 text-xs"
+          onClick={() => setExpanded(!expanded)}
+        >
           {expanded ? "Collapse" : "Expand"}
-        </button>
+        </Button>
       </div>
       <div className={`relative bg-white ${expanded ? "max-h-160 overflow-y-auto" : "max-h-52 overflow-hidden"}`}>
         <img src={url} alt={`${variant} engraving`} className="w-full" />
@@ -75,10 +90,24 @@ export default function StudioJobPage() {
       qc.invalidateQueries({ queryKey: ["pieces"] });
       setConfirmPublish(false);
       if (action === "reopen") nav(`/studio/${id}/edit`);
+      if (action === "cancel") toast("Build discarded");
       // Publish lands on the piece's registry page — the published state's real home.
-      if (action === "publish") nav(`/pieces?sel=${res.pieceId}`);
+      if (action === "publish") {
+        toast.success(`Published v${res.publishedVersion} — live in the app catalog`);
+        nav(`/pieces?sel=${res.pieceId}`);
+      }
     },
   });
+
+  // Live elapsed clock for the queued/running banner — ticks every ~5s while in flight.
+  const liveStatus = query.data?.status;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (liveStatus !== "queued" && liveStatus !== "running") return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, [liveStatus]);
 
   if (query.isPending) return <Spinner />;
   if (query.isError) return <ErrorNote message={query.error.message} />;
@@ -123,7 +152,7 @@ export default function StudioJobPage() {
 
       {/* ——— action bar by state ——— */}
       {job.status === "ready_for_review" && (
-        <Card className="p-4 mb-5 flex items-center justify-between gap-4">
+        <Card className="p-4 mb-5 flex flex-row items-center justify-between gap-4">
           <div>
             <p className="text-sm font-semibold">All checks passed — review below, then publish.</p>
             <p className="text-xs text-ink-soft mt-0.5">
@@ -133,50 +162,46 @@ export default function StudioJobPage() {
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              className="text-xs text-ink-faint hover:text-bad px-2 py-2"
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-ink-faint hover:text-destructive"
               disabled={act.isPending}
               onClick={() => act.mutate("cancel")}
               title="Discards this build (can be reopened later)"
             >
               Discard
-            </button>
-            <button
-              className="rounded-lg border border-line text-sm font-medium px-3.5 py-2 hover:bg-paper disabled:opacity-40"
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               disabled={act.isPending}
               onClick={() => act.mutate("reopen")}
               title="Back to the form with everything prefilled; submit re-verifies"
             >
               Edit details
-            </button>
-            <button
-              className="rounded-lg border border-line text-sm font-medium px-3.5 py-2 hover:bg-paper disabled:opacity-40"
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               disabled={act.isPending}
               onClick={() => act.mutate("retry")}
               title="Runs every gate again from the uploaded files"
             >
               Re-run all checks
-            </button>
+            </Button>
             {!confirmPublish ? (
-              <button
-                className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2 hover:opacity-90 disabled:opacity-40"
-                disabled={!publishable}
-                onClick={() => setConfirmPublish(true)}
-              >
+              <Button size="sm" disabled={!publishable} onClick={() => setConfirmPublish(true)}>
                 Publish…
-              </button>
+              </Button>
             ) : (
               <>
-                <button className="text-sm text-ink-soft" onClick={() => setConfirmPublish(false)}>
+                <Button variant="ghost" size="sm" onClick={() => setConfirmPublish(false)}>
                   Cancel
-                </button>
-                <button
-                  className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2 hover:opacity-90 disabled:opacity-40"
-                  disabled={act.isPending}
-                  onClick={() => act.mutate("publish")}
-                >
+                </Button>
+                <Button size="sm" disabled={act.isPending} onClick={() => act.mutate("publish")}>
                   {act.isPending ? "Publishing…" : "Confirm publish"}
-                </button>
+                </Button>
               </>
             )}
           </div>
@@ -184,7 +209,7 @@ export default function StudioJobPage() {
       )}
 
       {job.status === "failed" && (
-        <Card className="p-4 mb-5">
+        <Card className="p-4 mb-5 gap-0">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-bad">Verification failed{job.stage ? ` at “${ALL_GATES.find((g) => g.key === job.stage)?.label ?? job.stage}”` : ""}.</p>
@@ -202,50 +227,46 @@ export default function StudioJobPage() {
               )}
             </div>
             <div className="flex flex-col gap-2 shrink-0">
-              <button
-                className="rounded-lg bg-brand text-white text-sm font-medium px-4 py-2 hover:opacity-90 disabled:opacity-40"
-                disabled={act.isPending}
-                onClick={() => act.mutate("reopen")}
-              >
+              <Button size="sm" disabled={act.isPending} onClick={() => act.mutate("reopen")}>
                 Edit & fix files
-              </button>
-              <button
-                className="rounded-lg border border-line text-sm font-medium px-4 py-2 hover:bg-paper disabled:opacity-40"
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 disabled={act.isPending}
                 onClick={() => act.mutate("retry")}
                 title="For transient failures — runs again with the same files"
               >
                 Retry as-is
-              </button>
+              </Button>
             </div>
           </div>
         </Card>
       )}
 
       {(job.status === "queued" || job.status === "running") && (
-        <Card className="p-4 mb-5 flex items-center gap-3">
+        <Card className="p-4 mb-5 flex flex-row items-center gap-3">
           <div className="size-4 rounded-full border-2 border-line border-t-brand animate-spin" />
           <p className="text-sm text-ink-soft">
-            Running full verification{job.stage ? ` — ${ALL_GATES.find((g) => g.key === job.stage)?.label.toLowerCase() ?? job.stage}` : ""}…
+            Running full verification
+            {job.stage ? ` — ${ALL_GATES.find((g) => g.key === job.stage)?.label.toLowerCase() ?? job.stage}` : ""}
+            {Number.isFinite(Date.parse(job.updatedAt)) ? ` · ${formatElapsed(now - Date.parse(job.updatedAt))}` : ""}…
             you can leave this page; the board updates on its own.
           </p>
         </Card>
       )}
 
       {job.status === "canceled" && (
-        <Card className="p-4 mb-5 flex items-center justify-between">
+        <Card className="p-4 mb-5 flex flex-row items-center justify-between">
           <p className="text-sm text-ink-soft">This build was canceled.</p>
-          <button
-            className="rounded-lg border border-line text-sm font-medium px-4 py-2 hover:bg-paper"
-            onClick={() => act.mutate("reopen")}
-          >
+          <Button variant="outline" size="sm" onClick={() => act.mutate("reopen")}>
             Reopen as draft
-          </button>
+          </Button>
         </Card>
       )}
 
       {job.status === "published" && (
-        <Card className="p-4 mb-5 flex items-center justify-between">
+        <Card className="p-4 mb-5 flex flex-row items-center justify-between">
           <p className="text-sm">
             This build published <span className="font-semibold tabular-nums">v{job.publishedVersion}</span>
             {job.piece?.status === "archived" ? (
@@ -273,7 +294,7 @@ export default function StudioJobPage() {
 
       {/* ——— two columns: submission | gates ——— */}
       <div className="grid grid-cols-[1fr_1fr] gap-5 items-start mb-6">
-        <Card className="p-5">
+        <Card className="p-5 gap-0">
           <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-3">Submission</p>
           <Row label="Title" value={<span className="font-medium">{m.title ?? "—"}</span>} />
           <Row label="Composer" value={m.composer ?? "—"} />
@@ -300,7 +321,7 @@ export default function StudioJobPage() {
           </div>
         </Card>
 
-        <Card className="p-5">
+        <Card className="p-5 gap-0">
           <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-3">Verification</p>
           <div className="space-y-2.5">
             {ALL_GATES.map((g) => {
@@ -350,7 +371,7 @@ export default function StudioJobPage() {
       </div>
 
       {(previewAudio || referenceAudio) && (
-        <Card className="p-4 mb-5">
+        <Card className="p-4 mb-5 gap-0">
           <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-3">
             Listen before publishing
           </p>

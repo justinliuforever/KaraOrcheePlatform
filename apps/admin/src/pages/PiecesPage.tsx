@@ -4,6 +4,9 @@ import { useSearchParams } from "react-router-dom";
 import { api, type AdminBook, type AdminPiece, type AdminWork } from "../api";
 import { Badge, Card, ErrorNote, PageHeader, Spinner, Td, Th, rightsTone, statusTone } from "../components/ui";
 import PiecePanel from "../components/PiecePanel";
+import { Input } from "@/components/ui-kit/input";
+import { Button } from "@/components/ui-kit/button";
+import { Table } from "@/components/ui-kit/table";
 import { timeAgo } from "../studio/gateInfo";
 
 type SortKey = "title" | "composer" | "difficulty" | "publishedVersion" | "updatedAt";
@@ -70,7 +73,13 @@ export default function PiecesPage() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
+      if (
+        e.key === "/" &&
+        document.activeElement?.tagName !== "INPUT" &&
+        document.activeElement?.tagName !== "TEXTAREA" &&
+        // Don't steal '/' while the slide-over panel (or any Radix overlay) is open.
+        !document.querySelector('[data-state="open"]')
+      ) {
         e.preventDefault();
         searchRef.current?.focus();
       }
@@ -127,12 +136,9 @@ export default function PiecesPage() {
         title="Pieces Library"
         subtitle={query.data ? `${query.data.items.length} pieces in the registry · ${query.data.items.filter((p) => p.status === "published").length} live in the app` : undefined}
         right={
-          <button
-            className="rounded-lg border border-line text-sm font-medium px-3.5 py-2 hover:bg-paper"
-            onClick={() => exportCsv(items)}
-          >
+          <Button variant="outline" onClick={() => exportCsv(items)}>
             Export CSV
-          </button>
+          </Button>
         }
       />
 
@@ -142,9 +148,9 @@ export default function PiecesPage() {
         const dirty = filters !== NO_FILTERS && JSON.stringify(filters) !== JSON.stringify(NO_FILTERS);
         return (
           <div className="flex items-center gap-2 mb-4 rounded-xl border border-line bg-card px-3 py-2.5 flex-wrap">
-            <input
+            <Input
               ref={searchRef}
-              className="flex-1 min-w-52 rounded-lg bg-paper/60 border border-transparent focus:border-brand px-3 py-2 text-sm outline-none"
+              className="flex-1 w-auto min-w-52 rounded-lg bg-paper/60 border-transparent text-sm"
               placeholder="Search title, composer, id…  ( / )"
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -210,7 +216,7 @@ export default function PiecesPage() {
       )}
       {items.length > 0 && (
         <Card>
-          <table className="w-full">
+          <Table>
             <thead>
               <tr>
                 {sortHeader("title", "Piece")}
@@ -282,7 +288,7 @@ export default function PiecesPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </Table>
         </Card>
       )}
 

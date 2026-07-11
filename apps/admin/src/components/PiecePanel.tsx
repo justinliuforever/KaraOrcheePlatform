@@ -11,6 +11,15 @@ import {
 } from "../api";
 import { Badge, ErrorNote, Spinner, inputCls, rightsTone, statusTone } from "./ui";
 import SlideOver from "./SlideOver";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui-kit/alert-dialog";
 import { keyLabel, timeAgo } from "../studio/gateInfo";
 
 // What each published bundle file is FOR — reviewers shouldn't need to know role slugs.
@@ -108,6 +117,10 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
   const [confirmAction, setConfirmAction] = useState<"archive" | "takedown" | "restore" | null>(null);
   const [takedownNote, setTakedownNote] = useState("");
   const [movementClash, setMovementClash] = useState<string | null>(null);
+  // Discard-edits confirmation, replacing window.confirm. Drives an AlertDialog that
+  // serves both the close guard ({kind:"close"}) and the sibling-navigation guard
+  // ({kind:"nav"}). Same wording, same veto semantics as the old confirm().
+  const [discard, setDiscard] = useState<{ kind: "close" } | { kind: "nav"; to: string } | null>(null);
 
   useEffect(() => {
     if (detail.data && seededFor !== detail.data.id) {
@@ -214,9 +227,11 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
   return (
     <SlideOver
       onClose={onClose}
-      onBeforeClose={() =>
-        !dirty || window.confirm("You have unapplied edits — discard them?")
-      }
+      onBeforeClose={() => {
+        if (!dirty) return true;
+        setDiscard({ kind: "close" });
+        return false;
+      }}
       header={
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
@@ -534,7 +549,10 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
                       <button
                         className="text-xs font-medium text-brand hover:underline truncate block text-left w-full"
                         onClick={() => {
-                          if (dirty && !window.confirm("You have unapplied edits — discard them?")) return;
+                          if (dirty) {
+                            setDiscard({ kind: "nav", to: s.id });
+                            return;
+                          }
                           nav(`/pieces?sel=${s.id}`);
                         }}
                       >
@@ -812,6 +830,27 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
           </div>
         ))}
       </Section>
+
+      <AlertDialog open={discard !== null} onOpenChange={(open) => { if (!open) setDiscard(null); }}>
+        <AlertDialogContent aria-describedby={undefined}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>You have unapplied edits — discard them?</AlertDialogTitle>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const d = discard;
+                setDiscard(null);
+                if (d?.kind === "close") onClose();
+                else if (d?.kind === "nav") nav(`/pieces?sel=${d.to}`);
+              }}
+            >
+              Discard
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </SlideOver>
   );
 }

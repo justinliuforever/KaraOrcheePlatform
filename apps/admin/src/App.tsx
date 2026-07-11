@@ -4,6 +4,9 @@ import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { API_SCOPE } from "./auth";
 import { api, ApiError, type AdminUser } from "./api";
 import { Spinner } from "./components/ui";
+import { Button } from "@/components/ui-kit/button";
+import { Separator } from "@/components/ui-kit/separator";
+import { Toaster } from "@/components/ui-kit/sonner";
 import UsersPage from "./pages/UsersPage";
 import PiecesPage from "./pages/PiecesPage";
 import PieceDetailPage from "./pages/PieceDetailPage";
@@ -13,7 +16,12 @@ import StudioJobPage from "./pages/StudioJobPage";
 
 export default function App() {
   const authed = useIsAuthenticated();
-  return authed ? <Shell /> : <SignIn />;
+  return (
+    <>
+      {authed ? <Shell /> : <SignIn />}
+      <Toaster position="bottom-right" />
+    </>
+  );
 }
 
 function SignIn() {
@@ -26,12 +34,9 @@ function SignIn() {
         </div>
         <h1 className="text-lg font-semibold">KaraOrchee Admin</h1>
         <p className="text-sm text-ink-soft mt-1 mb-6">Internal console. Admin accounts only.</p>
-        <button
-          className="w-full rounded-lg bg-brand text-white text-sm font-medium py-2.5 hover:opacity-90"
-          onClick={() => instance.loginRedirect({ scopes: [API_SCOPE] })}
-        >
+        <Button className="w-full" onClick={() => instance.loginRedirect({ scopes: [API_SCOPE] })}>
           Sign in
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -63,12 +68,9 @@ function Shell() {
               ? `${account?.username ?? "This account"} is signed in but has no admin access.`
               : me.error.message}
           </p>
-          <button
-            className="text-sm text-brand font-medium"
-            onClick={() => instance.logoutRedirect()}
-          >
+          <Button variant="link" className="h-auto p-0" onClick={() => instance.logoutRedirect()}>
             Sign out
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -83,10 +85,11 @@ function Shell() {
   return (
     <div className="min-h-screen flex">
       <aside className="w-52 shrink-0 border-r border-line bg-card flex flex-col">
-        <div className="px-4 py-4 flex items-center gap-2 border-b border-line">
+        <div className="px-4 py-4 flex items-center gap-2">
           <div className="size-7 rounded-lg bg-brand-soft text-brand grid place-items-center text-sm font-bold">K</div>
           <span className="font-semibold text-sm">KaraOrchee Admin</span>
         </div>
+        <Separator />
         <nav className="p-2 flex-1">
           {nav.map((n) => (
             <NavLink
@@ -102,11 +105,16 @@ function Shell() {
             </NavLink>
           ))}
         </nav>
-        <div className="p-3 border-t border-line">
+        <Separator />
+        <div className="p-3">
           <p className="text-xs text-ink-faint truncate mb-1.5">{me.data.email ?? account?.username}</p>
-          <button className="text-xs text-ink-soft hover:text-ink font-medium" onClick={() => instance.logoutRedirect()}>
+          <Button
+            variant="link"
+            className="h-auto p-0 text-xs text-ink-soft hover:text-ink"
+            onClick={() => instance.logoutRedirect()}
+          >
             Sign out
-          </button>
+          </Button>
         </div>
       </aside>
       <main className="flex-1 min-w-0 px-8 py-6">

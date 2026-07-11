@@ -1,10 +1,34 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { api, type AdminUser, type AdminUserDetail, type RolePatch } from "../api";
-import { Badge, ErrorNote, Spinner, statusTone } from "./ui";
+import { ErrorNote, Spinner, statusTone } from "./ui";
+import { Badge } from "@/components/ui-kit/badge";
+import { Button } from "@/components/ui-kit/button";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui-kit/sheet";
 
 // The panel is deliberately sectioned: Notes-phase sections (subscription/entitlements,
 // lessons, teacher-student links) slot in as new <Section>s without reshaping this file.
+
+// Tone MAPPING (statusTone) is unchanged — only rendering swaps to a ui-kit Badge.
+const TONE_VARIANT: Record<
+  string,
+  { variant: "default" | "secondary" | "destructive" | "outline"; className?: string }
+> = {
+  brand: { variant: "default" },
+  bad: { variant: "destructive" },
+  muted: { variant: "secondary" },
+  ok: { variant: "outline", className: "border-emerald-200 bg-emerald-50 text-ok" },
+  warn: { variant: "outline", className: "border-amber-200 bg-amber-50 text-warn" },
+};
+
+function ToneBadge({ tone, children }: { tone: string; children: ReactNode }) {
+  const t = TONE_VARIANT[tone] ?? TONE_VARIANT.muted;
+  return (
+    <Badge variant={t.variant} className={t.className}>
+      {children}
+    </Badge>
+  );
+}
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -82,21 +106,32 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
   const isSelf = me?.id === userId;
 
   return (
-    <>
-      <div className="fixed inset-0 bg-black/20 z-40" onClick={onClose} />
-      <aside className="fixed inset-y-0 right-0 w-105 max-w-full bg-card border-l border-line z-50 overflow-y-auto shadow-2xl">
-        <div className="px-5 py-4 border-b border-line flex items-center justify-between sticky top-0 bg-card">
+    <Sheet
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <SheetContent
+        side="right"
+        showCloseButton={false}
+        aria-describedby={undefined}
+        className="w-105 max-w-full gap-0 overflow-y-auto bg-card p-0 sm:max-w-full"
+      >
+        <div className="px-5 py-4 border-b border-line flex items-center justify-between sticky top-0 bg-card z-10">
           <div className="min-w-0">
-            <p className="text-sm font-semibold truncate">{u?.email ?? "User"}</p>
+            <SheetTitle className="text-sm font-semibold truncate">{u?.email ?? "User"}</SheetTitle>
             {u?.displayName && <p className="text-xs text-ink-faint truncate">{u.displayName}</p>}
           </div>
-          <button
-            className="text-ink-faint hover:text-ink text-xl leading-none px-1"
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-ink-faint hover:text-ink text-xl leading-none"
             onClick={onClose}
             aria-label="Close"
           >
             ×
-          </button>
+          </Button>
         </div>
 
         {detail.isPending && <Spinner />}
@@ -135,7 +170,7 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
 
             <Section title="Account">
               <Row label="Status">
-                <Badge tone={statusTone(u.status)}>{u.status}</Badge>
+                <ToneBadge tone={statusTone(u.status)}>{u.status}</ToneBadge>
               </Row>
               <Row label="Joined">{new Date(u.createdAt).toLocaleString()}</Row>
               <Row label="Updated">{new Date(u.updatedAt).toLocaleString()}</Row>
@@ -177,7 +212,7 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
             </Section>
           </>
         )}
-      </aside>
-    </>
+      </SheetContent>
+    </Sheet>
   );
 }
