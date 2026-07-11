@@ -129,6 +129,36 @@ karaorchee.com sender), `acrkaraorchee` (images), CIAM tenant (below).
   API errors carry their human explanation end-to-end (ApiError.message = server's
   `message` field), so every guard shows its reason in the UI.
 
+### Observability & activity logging (三层法, decided 2026-07-11)
+
+Decision rule — where a "who did what" record belongs:
+1. **`audit_events` (Postgres, append-only, keep forever)** — business-meaningful state
+   changes an operator may need to reconstruct years later (all /admin mutations today;
+   future: entitlement grants, account deletion). Identity = user row FK; no PII payloads.
+2. **Structured request logs (stdout JSON → ContainerAppConsoleLogs_CL, 31d free
+   retention)** — EVERY api request: `{kind:"http", reqId, method, route, status, ms,
+   oid, admin, ua}` via `api/src/reqlog.ts`. Auth forensics: 401s appear here with
+   oid=null; successful sign-ins also live in Entra CIAM's own sign-in log. Privacy
+   rules: oid only (never email/display name), no bodies, no query strings, no client
+   IPs (ACA ingress logs hold the IP chain if ever needed — treat as PII).
+3. **App Insights (provisioned, NOT yet wired — pre-beta task)** — add
+   `@azure/monitor-opentelemetry` (API) + `azure-monitor-opentelemetry` (worker) when we
+   want distributed traces + live metrics; workspace-billed per GB, so dual-emitting
+   overlapping data is paying twice — keep stdout as the base layer and sample traces.
+
+Worker: one JSON line per event (`jlog()` in `worker/pieces/main.py` — lane_up/start/
+gate/done/skip) carrying `job` and the originating API `reqId` (propagated through the
+Service Bus message body) — KQL can join a wizard click to its worker run end-to-end.
+
+⚠️ ACA does NOT columnize JSON stdout by default (behavior change Oct 2023): the
+environment must have `--logs-dynamic-json-columns true` (enabled on dev 2026-07-11;
+remember for prod). Without it everything lands as a string in `Log_s`.
+
+Cost: ~100k req/day ≈ 2-4 GB/month ≈ within the 5 GB/month free ingestion allowance.
+Piece downloads are unauthenticated by design (browse-before-login) so they appear in
+request logs without identity; when licensed-gating lands, downloads become
+attributable and should then also be audited in-table.
+
 ### Dead-letter runbook
 
 Alert `alert-sb-deadletter` (action group `ag-karaorchee-ops` → founder email) fires when

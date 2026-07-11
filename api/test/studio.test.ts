@@ -176,7 +176,7 @@ describe("draft creation", () => {
     expect(res.body.checkStatus).toBe("pending");
     expect(res.body.pieceId).toMatch(/^draft_/);
     expect(studio.uploads).toHaveLength(2);
-    expect(queue.preflights).toEqual([{ jobId: res.body.id }]);
+    expect(queue.preflights).toMatchObject([{ jobId: res.body.id }]);
     expect(queue.sent).toHaveLength(0);
   });
 });
@@ -327,7 +327,7 @@ describe("submit", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("queued");
     expect(res.body.pieceId).toBe("clementi_sonatina_op_36_no_1_i_allegro");
-    expect(queue.sent).toEqual([{ jobId: id, pieceId: "clementi_sonatina_op_36_no_1_i_allegro" }]);
+    expect(queue.sent).toMatchObject([{ jobId: id, pieceId: "clementi_sonatina_op_36_no_1_i_allegro" }]);
   });
 });
 
@@ -381,7 +381,7 @@ describe("files replacement + reopen", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("draft");
     expect(res.body.checkStatus).toBe("pending");
-    expect(queue.preflights).toEqual([{ jobId: job.id }]);
+    expect(queue.preflights).toMatchObject([{ jobId: job.id }]);
   });
 });
 

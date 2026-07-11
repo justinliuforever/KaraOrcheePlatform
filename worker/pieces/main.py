@@ -38,6 +38,12 @@ CONTENT_TYPES = {".json": "application/json", ".svg": "image/svg+xml", ".mei": "
 _SF2_CACHE = Path("/tmp/sf2cache")
 
 
+def jlog(**fields) -> None:
+    """One JSON line per event → ContainerAppConsoleLogs_CL (KQL-queryable columns
+    once the environment has --logs-dynamic-json-columns true)."""
+    print(json.dumps({"kind": "worker", **fields}), flush=True)
+
+
 def env(name: str) -> str:
     v = os.environ.get(name)
     if not v:
@@ -109,21 +115,22 @@ def stage_artifacts(blob: BlobServiceClient, job_id: str, piece: str, out_dir: P
     return artifacts
 
 
-def process(conn, blob: BlobServiceClient, job_id: str, mode: str) -> None:
+def process(conn, blob: BlobServiceClient, job_id: str, mode: str, req_id: str | None = None) -> None:
+    jlog(job=job_id, mode=mode, event="start", reqId=req_id)
     row = fetch_job(conn, job_id)
     if row is None:
-        print(f"{job_id}: no such job, dropping")
+        jlog(job=job_id, event="drop", reason="no such job")
         return
     _, piece, status, check_status, sources, metadata = row
     metadata = metadata or {}
     if mode == "preflight":
         if status != "draft":
-            print(f"{job_id}: preflight skipped (status={status})")
+            jlog(job=job_id, event="skip", mode="preflight", status=status)
             return
         update_job(conn, job_id, check_status="running", stage=None, error=None)
     else:
         if status not in ("queued", "running"):
-            print(f"{job_id}: full run skipped (status={status}, idempotent)")
+            jlog(job=job_id, event="skip", mode="full", status=status)
             return
         update_job(conn, job_id, status="running", stage="sanity", error=None)
 
@@ -166,7 +173,8 @@ def process(conn, blob: BlobServiceClient, job_id: str, mode: str) -> None:
             if error:
                 entry["error"] = error
             merge_gate(conn, job_id, stage, entry)
-            print(f"{job_id}[{mode}]: {stage} -> {gstatus} {json.dumps(metrics)[:200]}")
+            jlog(job=job_id, mode=mode, event="gate", stage=stage, status=gstatus,
+                 metrics=json.dumps(metrics)[:400])
 
         sf2_path, program = get_soundfont(blob, metadata.get("instrument"))
         try:
@@ -188,11 +196,11 @@ def process(conn, blob: BlobServiceClient, job_id: str, mode: str) -> None:
             # run after submit re-verifies and re-stages everything.
             update_job(conn, job_id, check_status="pass", stage=None,
                        artifacts=json.dumps(artifacts))
-            print(f"{job_id}: preflight pass ({len(artifacts)} artifacts staged)")
+            jlog(job=job_id, mode="preflight", event="done", status="pass", artifacts=len(artifacts))
         else:
             update_job(conn, job_id, status="ready_for_review", stage=None,
                        artifacts=json.dumps(artifacts))
-            print(f"{job_id}: ready_for_review ({len(artifacts)} artifacts)")
+            jlog(job=job_id, mode="full", event="done", status="ready_for_review", artifacts=len(artifacts))
 
 
 def run_receiver(db_url: str, storage_cs: str, sb_cs: str, queue: str, mode: str) -> None:
@@ -201,7 +209,7 @@ def run_receiver(db_url: str, storage_cs: str, sb_cs: str, queue: str, mode: str
     # (battle scar: a 54-min movement's preview outlived the 60s default lock, the
     # complete() threw MessageLockLostError, and a PASSED job got marked failed).
     renewer = AutoLockRenewer(max_lock_renewal_duration=1800)
-    print(f"{mode} lane up on {queue}")
+    jlog(event="lane_up", mode=mode, queue=queue)
     with ServiceBusClient.from_connection_string(sb_cs) as sb:
         receiver = sb.get_queue_receiver(queue, max_wait_time=None, auto_lock_renewer=renewer)
         with receiver:
@@ -212,10 +220,11 @@ def run_receiver(db_url: str, storage_cs: str, sb_cs: str, queue: str, mode: str
                     body = json.loads(b"".join(msg.body).decode()
                                       if not isinstance(msg.body, (bytes, str)) else msg.body)
                     job_id = body["jobId"]
+                    req_id = body.get("reqId")
                     # Fresh connection per job: gates can run minutes; idle-killed
                     # connections must not poison the next job.
                     with psycopg.connect(db_url) as conn:
-                        process(conn, blob, job_id, mode)
+                        process(conn, blob, job_id, mode, req_id)
                     processed = True
                     receiver.complete_message(msg)
                 except Exception:

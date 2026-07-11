@@ -12,6 +12,7 @@ import { adminRouter } from "./routes/admin";
 import { studioRouter } from "./routes/studio";
 import { rateLimit } from "./ratelimit";
 import { cors } from "./cors";
+import { requestLog } from "./reqlog";
 import compression from "compression";
 import multer from "multer";
 
@@ -22,6 +23,7 @@ export function createServer(deps: Deps = {}): Express {
   // X-Forwarded-For value — client-controlled — letting callers spoof req.ip and
   // rotate past the rate limiter.
   app.set("trust proxy", 1);
+  app.use(requestLog());
   app.use(compression()); // catalog payloads gzip ~10x
   app.use(express.json());
   app.use(cors(deps.corsOrigins ?? []));

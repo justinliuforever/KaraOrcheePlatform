@@ -267,7 +267,7 @@ export function studioRouter(deps: Deps): Router {
         })
         .returning();
 
-      await deps.piecesQueue.sendPreflight({ jobId });
+      await deps.piecesQueue.sendPreflight({ jobId, reqId: req.reqId });
       await audit(deps, req.adminUser!, "studio.draft.create", { type: "studio_job", id: jobId }, {
         ...(pin ? { newVersionOf: pin } : {}),
       });
@@ -327,7 +327,7 @@ export function studioRouter(deps: Deps): Router {
         res.status(409).json({ error: "status_changed", message: "The job changed state under you — reload the page." });
         return;
       }
-      await deps.piecesQueue.sendPreflight({ jobId: id });
+      await deps.piecesQueue.sendPreflight({ jobId: id, reqId: req.reqId });
       await audit(deps, req.adminUser!, "studio.job.reopen", { type: "studio_job", id });
       res.json(updated);
     }),
@@ -378,7 +378,7 @@ export function studioRouter(deps: Deps): Router {
         })
         .where(eq(studioJobs.id, id))
         .returning();
-      await deps.piecesQueue.sendPreflight({ jobId: id });
+      await deps.piecesQueue.sendPreflight({ jobId: id, reqId: req.reqId });
       res.json(updated);
     }),
   );
@@ -440,7 +440,7 @@ export function studioRouter(deps: Deps): Router {
         .where(eq(studioJobs.id, id))
         .returning();
       if (invalidated && deps.piecesQueue) {
-        await deps.piecesQueue.sendPreflight({ jobId: id });
+        await deps.piecesQueue.sendPreflight({ jobId: id, reqId: req.reqId });
       }
       res.json(updated);
     }),
@@ -660,7 +660,7 @@ export function studioRouter(deps: Deps): Router {
         return;
       }
       try {
-        await deps.piecesQueue.send({ jobId: id, pieceId });
+        await deps.piecesQueue.send({ jobId: id, pieceId, reqId: req.reqId });
       } catch (err) {
         // Never leave the row wedged in 'queued' with no message in flight — no
         // route accepts 'queued', so roll back and let the admin retry.
@@ -770,7 +770,7 @@ export function studioRouter(deps: Deps): Router {
         return;
       }
       try {
-        await deps.piecesQueue.send({ jobId: id, pieceId: job.pieceId });
+        await deps.piecesQueue.send({ jobId: id, pieceId: job.pieceId, reqId: req.reqId });
       } catch (err) {
         await db
           .update(studioJobs)
