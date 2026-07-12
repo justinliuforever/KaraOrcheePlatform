@@ -22,6 +22,10 @@ import librosa
 import numpy as np
 
 from pipeline.audio_gate import check_reference_audio, AudioGateError
+from pipeline.note_evidence import (
+    NoteEvidenceUnavailable, evidence_rates, note_hits, score_notes_from_events,
+    transcribe_notes,
+)
 
 FEATURE_RATE = 50
 FS = 22050
@@ -139,9 +143,12 @@ def _tier2_map(audio_path: Path, deadpan_path: Path) -> tuple[np.ndarray, np.nda
 
 
 def build_time_map(audio_path: Path, score_events_path: Path, out_dir: Path,
-                   sf2_path: Path | None, program: int) -> dict:
+                   sf2_path: Path | None, program: int,
+                   transcriber=None) -> dict:
     """Verify the reference audio and write audio_map.json. Returns gate metrics.
-    Raises AudioGateError when neither tier can vouch for the recording."""
+    Raises AudioGateError when neither tier can vouch for the recording.
+    transcriber: audio_path -> {pitch: sorted onset sec} (tests inject a fake;
+    None = the real transcription engine)."""
     # Tier 1: the strict linear gate (cheap, and most uploads are studio renders).
     try:
         metrics = check_reference_audio(audio_path, score_events_path)
@@ -195,17 +202,61 @@ def build_time_map(audio_path: Path, score_events_path: Path, out_dir: Path,
             f"{sim_mean:.0%}) — this recording does not appear to be this piece. Check "
             "that the right audio file was uploaded.",
             metrics)
-    if agree < PASS_RATE or worst < WINDOW_MIN_RATE:
-        raise AudioGateError(
-            f"Even allowing expressive timing, only {agree:.0%} of score notes line up with the "
-            f"audio (worst 5s stretch: {worst:.0%}). The recording's structure likely differs "
-            "from the score (missing/extra repeats, added material) — make the recording follow "
-            "the score's structure exactly and re-upload.",
-            metrics)
+
+    # Note-level verdict: pitch-aware evidence (a note is confirmed only by an onset
+    # OF ITS PITCH at its mapped time). The pitch-blind onset agreement above stays as
+    # telemetry only. If the engine cannot run here, the old verdict path applies.
+    events = json.loads(score_events_path.read_text())["events"]
+    notes = score_notes_from_events(events)
+    try:
+        by_pitch = (transcriber or transcribe_notes)(audio_path)
+        note_sec = np.array([s for s, _ in notes])
+        hits = note_hits(notes, np.interp(note_sec, map_score, map_audio), by_pitch, ONSET_TOL_SEC)
+        ev_rate, ev_worst = evidence_rates(hits, note_sec)
+        metrics.update({
+            "map_note_evidence": round(ev_rate, 3),
+            "map_note_worst_window": round(ev_worst, 3),
+            "n_score_notes": len(notes),
+            "evidence_engine": "transcription-v1",
+        })
+        if ev_rate < PASS_RATE or ev_worst < WINDOW_MIN_RATE:
+            raise AudioGateError(
+                _evidence_failure_message(ev_rate, ev_worst, sim_mean,
+                                          metrics.get("duration_ratio")),
+                metrics)
+    except NoteEvidenceUnavailable as err:
+        metrics["evidence_engine"] = f"onset-fallback ({err})"
+        if agree < PASS_RATE or worst < WINDOW_MIN_RATE:
+            raise AudioGateError(
+                f"Even allowing expressive timing, only {agree:.0%} of score notes line up "
+                f"with the audio (worst 5s stretch: {worst:.0%}). The audio doesn't follow "
+                "the score timeline closely enough for tap-to-seek and cursor sync.",
+                metrics) from None
     xs, ys = _simplify(map_score, map_audio)
     _write_map(out_dir, xs, ys, tier=2)
     metrics["map_breakpoints"] = len(xs)
     return metrics
+
+
+def _evidence_failure_message(ev_rate: float, ev_worst: float, sim_mean: float,
+                              ratio: float | None) -> str:
+    """Attribution honesty: a structure claim needs structure evidence (here: the
+    duration ratio); otherwise the verified facts point at recording conditions,
+    and telling the uploader to fix structure would send them chasing a ghost."""
+    if ratio is not None and abs(ratio - 1.0) > 0.10:
+        return (
+            f"Only {ev_rate:.0%} of score notes are confirmed in the recording "
+            f"(worst 5s stretch: {ev_worst:.0%}), and the recording is "
+            f"{(ratio - 1) * 100:+.0f}% the score's length — the recording's "
+            "structure likely differs from the score (missing/extra repeats, cuts, "
+            "added material). Make the recording follow the score's structure and re-upload.")
+    return (
+        f"The recording is verified as this piece (pitch identity {sim_mean:.0%}) "
+        f"and matches its length, but only {ev_rate:.0%} of notes show clear "
+        f"evidence at their expected times (worst 5s stretch: {ev_worst:.0%}); "
+        f"the bar is {PASS_RATE:.0%}. Common causes: heavy sustain pedal, distant "
+        "microphone, strong reverb, or background noise. A drier, closer recording "
+        "of the same performance will usually pass.")
 
 
 def _write_map(out_dir: Path, score_sec: list[float], audio_sec: list[float], tier: int) -> None:

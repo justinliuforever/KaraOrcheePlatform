@@ -9,3 +9,7 @@ librosa>=0.10
 soundfile>=0.12
 numpy<3
 synctoolbox>=1.3
+# note-evidence engine (audio gate): transcription model runs on CPU torch.
+# torch itself is installed from the pytorch CPU index in the Dockerfile/CI (the
+# default PyPI wheel drags CUDA); it is deliberately absent from the lock.
+piano-transcription-inference>=0.0.6

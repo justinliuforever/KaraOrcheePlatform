@@ -39,3 +39,4 @@ creating rg-karaorchee-app-prod (decision: right before beta launch).
 ## Content
 - [ ] Licensed-piece exposure fix lands BEFORE public beta (login-gated download
       manifests — founder-deferred from 2026-07)
+- **ACA environment**: create the prod Container Apps environment WITH workload profiles enabled (dev env cae-karaorchee-app-dev is Consumption-only, hard-capped at 2 vCPU/4Gi per app; dedicated profiles unlock 4-16 vCPU for long-recording transcription). Dev worker runs 2 vCPU/4Gi since 2026-07-12.

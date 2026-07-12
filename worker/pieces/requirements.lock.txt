@@ -74,3 +74,10 @@ urllib3==2.7.0
 verovio==6.2.1
 wcwidth==0.8.2
 webcolors==25.10.0
+# --- note-evidence engine (added 2026-07-12, audio-gate pitch-aware evidence) ---
+# torch==2.13.0+cpu is installed from https://download.pytorch.org/whl/cpu in the
+# Dockerfile BEFORE this lock (the default PyPI torch wheel pulls CUDA); it is
+# intentionally not pinned here so `pip install -r requirements.lock.txt` stays
+# CUDA-free on any index. Model checkpoint: soundfont container, see note_evidence.py.
+piano-transcription-inference==0.0.6
+torchlibrosa==0.1.0

@@ -52,6 +52,8 @@ jobs:
           cache-dependency-path: worker/pieces/requirements.lock.txt
       # Tests exercise the pipeline math/XML paths — no fluidsynth/browsers needed.
       # pytest rides alongside the lock: the lock mirrors the PRODUCTION image,
-      # which never ships test tooling.
+      # which never ships test tooling. torch comes from the CPU index first,
+      # mirroring the Dockerfile (default PyPI torch drags CUDA).
+      - run: pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -r requirements.lock.txt pytest
       - run: python -m pytest tests/ -q
