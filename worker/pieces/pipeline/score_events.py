@@ -10,6 +10,7 @@ Two routes:
 """
 from __future__ import annotations
 import json
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 import pretty_midi
@@ -102,12 +103,15 @@ def from_xml_timemap(xml_path: Path) -> dict:
     pitches = _mei_pitches(mei)
     tm = tk.renderToTimemap({"includeMeasures": False, "includeRests": False})
 
+    rend = re.compile(r"-rend\d+$")
     on_sec: dict[str, float] = {}
     off_sec: dict[str, float] = {}
     onsets: list[tuple[float, list[str]]] = []
     for e in tm:
         t = e.get("tstamp", 0) / 1000.0
         if e.get("on"):
+            # expansion copies (-rendN) resolve to their written note's pitch, but
+            # keep the SUFFIXED id for on/off pairing — each pass has its own off.
             onsets.append((t, list(e["on"])))
             for nid in e["on"]:
                 on_sec[nid] = t
@@ -120,7 +124,7 @@ def from_xml_timemap(xml_path: Path) -> dict:
     for t, ids in onsets:
         rows = []
         for nid in ids:
-            p = pitches.get(nid)
+            p = pitches.get(rend.sub("", nid))
             if p is None:
                 unresolved += 1
                 continue
