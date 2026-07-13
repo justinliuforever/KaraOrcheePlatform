@@ -170,3 +170,20 @@ def test_playback_map_spans_and_passes():
     assert [o["pass"] for o in occ2] == [1, 2]
     assert pm["endings"] == [{"numbers": [1], "written_start": 3, "written_end": 3},
                              {"numbers": [2], "written_start": 4, "written_end": 4}]
+
+
+def test_unpaired_trailing_forward_is_decorative():
+    # Innocence Op.100/5 shape: A repeated with voltas, then a ||: that never closes
+    ms = [measure(1, ATTRS)] + [measure(i) for i in range(2, 8)]
+    ms += [measure(8, estart("1"), estop("1")), measure(9, estart("2"), estop("2", repeat=False))]
+    ms += [measure(10, FWD)] + [measure(i) for i in range(11, 18)]
+    seq = seq_of(score(*ms))
+    assert seq == list(range(1, 9)) + list(range(1, 8)) + [9] + list(range(10, 18))
+    assert len(seq) == 24
+
+
+def test_forward_only_score_is_linear():
+    p = score(measure(1, ATTRS, FWD), measure(2), measure(3))
+    st = classify_structure(p)
+    assert st.kind == "linear"
+    assert seq_of(p) == [1, 2, 3]

@@ -80,7 +80,11 @@ def classify_structure(xml_path: Path) -> Structure:
 
     _reject_jumps(parts[0])
 
-    if not marks["forward"] and not marks["backward"] and not marks["endings"]:
+    # An unpaired forward repeat is decorative: every mainstream player (and the
+    # engraving engine) plays through it, so a score with forwards but no backward
+    # is linear. The 3-way expansion verify stays the backstop if an engine ever
+    # disagrees.
+    if not marks["backward"] and not marks["endings"]:
         return Structure(kind="linear", n_measures=n_measures)
 
     blocks = _pair_blocks(marks, n_measures)
@@ -185,8 +189,8 @@ def _pair_blocks(marks: dict, n_measures: int) -> list[RepeatBlock]:
         prev_block_end = b_at
         if cands:
             fw_iter.remove(cands[0])
-    if fw_iter and any(f > backwards[-1][0] for f in fw_iter):
-        raise StructureError("forward repeat after the last backward repeat never closes")
+    # Forwards left after the last backward are unpaired == decorative (see above);
+    # they change nothing about the playing order and are deliberately ignored.
 
     # attach voltas: volta-1 must END at the backward repeat; later voltas follow it
     for block in blocks:
