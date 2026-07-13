@@ -191,6 +191,11 @@ export default function StudioJobPage() {
             >
               Re-run all checks
             </Button>
+            {(job.gates?.structure?.metrics as { kind?: string } | undefined)?.kind === "repeats" && (
+              <span className="text-[11px] text-ink-faint self-center">
+                Repeat piece — publishing unlocks with the app-side repeat update
+              </span>
+            )}
             {!confirmPublish ? (
               <Button size="sm" disabled={!publishable} onClick={() => setConfirmPublish(true)}>
                 Publish…
