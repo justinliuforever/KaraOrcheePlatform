@@ -11,6 +11,8 @@ Verovio is an OFFLINE BUILD TOOL ONLY (never shipped/linked — sidesteps LGPLv3
 """
 from __future__ import annotations
 import json, re, hashlib, bisect
+
+_REND = re.compile(r'-rend\d+$')
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -79,11 +81,15 @@ def build_variant(mei: str, vopts: dict):
     tk.loadData(mei)
     npages = tk.getPageCount()
     tm = tk.renderToTimemap({"includeMeasures": True, "includeRests": False})
+    # data-measure-index is the WRITTEN index: expansion copies (-rendN) collapse to
+    # their written measure; first appearance in played order == document order.
     mid2idx = {}
     for e in tm:
         mon = e.get("measureOn")
-        if mon and mon not in mid2idx:
-            mid2idx[mon] = len(mid2idx) + 1
+        if mon:
+            base = _REND.sub("", mon)
+            if base not in mid2idx:
+                mid2idx[base] = len(mid2idx) + 1
 
     p1 = tk.renderToSVG(1)
     VBW = int(re.search(r'class="definition-scale"[^>]*viewBox="0 0 (\d+) (\d+)"', p1).group(1))
@@ -163,7 +169,7 @@ def build_variant(mei: str, vopts: dict):
     return stitched, tm, page, geo_measures, systems, note_xy, note_sys
 
 
-def build_identity(tm: list, num_map: dict):
+def build_identity(tm: list, num_map: dict, playback: dict | None = None):
     meas, onsets = [], []
     for e in tm:
         if e.get("measureOn"):
@@ -173,29 +179,63 @@ def build_identity(tm: list, num_map: dict):
     end_sec = max([o[0] for o in onsets], default=0.0)
     end_q = max([o[1] for o in onsets], default=0.0)
     identity = []
-    for i, (mid, q, sec) in enumerate(meas):
-        q_end = meas[i + 1][1] if i + 1 < len(meas) else end_q
-        s_end = meas[i + 1][2] if i + 1 < len(meas) else end_sec
+    if playback is None:
+        for i, (mid, q, sec) in enumerate(meas):
+            q_end = meas[i + 1][1] if i + 1 < len(meas) else end_q
+            s_end = meas[i + 1][2] if i + 1 < len(meas) else end_sec
+            ids_in = [nid for (osec, oq, ids) in onsets if q <= oq < q_end for nid in ids]
+            identity.append({"measure_index": i + 1, "measure_number": num_map.get(mid), "measure_id": mid,
+                             "qstamp_start": round(q, 4), "qstamp_end": round(q_end, 4),
+                             "score_sec_start": round(sec, 4), "score_sec_end": round(s_end, 4),
+                             "first_note_id": ids_in[0] if ids_in else None,
+                             "last_note_id": ids_in[-1] if ids_in else None})
+        return identity, onsets
+    # Repeats: ONE ROW PER WRITTEN MEASURE, ranges = pass-1 occurrence. The timemap
+    # is expanded, so played measure k realizes occurrences[k]; identity keeps linear
+    # semantics for the app (sec->measure lookups go through the playback block).
+    occs = playback["occurrences"]
+    assert len(occs) == len(meas)
+    by_written: dict[int, int] = {}
+    for k, occ in enumerate(occs):
+        if occ["pass"] == 1:
+            by_written[occ["measure_index"]] = k
+    for wm in sorted(by_written):
+        k = by_written[wm]
+        mid, q, sec = meas[k]
+        occ = occs[k]
+        q_end, s_end = occ["expanded_q_end"], occ["expanded_sec_end"]
         ids_in = [nid for (osec, oq, ids) in onsets if q <= oq < q_end for nid in ids]
-        identity.append({"measure_index": i + 1, "measure_number": num_map.get(mid), "measure_id": mid,
+        base = _REND.sub("", mid)
+        passes = sum(1 for o in occs if o["measure_index"] == wm)
+        identity.append({"measure_index": wm, "measure_number": num_map.get(base), "measure_id": base,
                          "qstamp_start": round(q, 4), "qstamp_end": round(q_end, 4),
                          "score_sec_start": round(sec, 4), "score_sec_end": round(s_end, 4),
                          "first_note_id": ids_in[0] if ids_in else None,
-                         "last_note_id": ids_in[-1] if ids_in else None})
+                         "last_note_id": ids_in[-1] if ids_in else None,
+                         "passes": passes})
     return identity, onsets
 
 
-def cursor_anchors(onsets, note_xy, note_sys):
+def cursor_anchors(onsets, note_xy, note_sys, span_starts=()):
     anchors = []
     for sec, q, ids in onsets:
-        xs = [i for i in ids if i in note_xy]
+        xs = [_REND.sub("", i) for i in ids]
+        xs = [i for i in xs if i in note_xy]
         if not xs:
             continue
         lead = min(xs, key=lambda i: note_xy[i][0])
         x, y = note_xy[lead]
         anchors.append([round(sec, 4), x, y, note_sys.get(lead, 0)])
-    last = {}                                   # cummax x PER system (kills grace/voice backward jogs)
+    # cummax x PER system kills grace/voice backward jogs — but a repeat pass
+    # legitimately restarts earlier on the same system, so the running max resets
+    # at every span boundary.
+    last = {}
+    bounds = sorted(span_starts)
+    k = 0
     for a in anchors:
+        while k < len(bounds) and a[0] >= bounds[k] - 1e-6:
+            last = {}
+            k += 1
         a[1] = max(a[1], last.get(a[3], a[1])); last[a[3]] = a[1]
     return anchors
 
@@ -224,7 +264,8 @@ def timeline_residual_ms(score_events_path: Path, anchor_secs: list):
 
 
 def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_dir: Path,
-                       variant_overrides: dict | None = None) -> dict:
+                       variant_overrides: dict | None = None,
+                       playback: dict | None = None) -> dict:
     """Build all staff assets for one piece into out_dir; returns the bundle dict."""
     ver = verovio_version()
     sha = hashlib.sha256(xml_path.read_bytes()).hexdigest()[:16]
@@ -233,16 +274,25 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{piece}.mei").write_text(mei)
 
-    bundle = {"schema": 1, "piece_id": piece, "verovio_version": ver, "source_musicxml_sha256": sha,
-              "xml_id_checksum": True, "anchor_rule": "musical-coordinate {measure_index, qstamp}; xml:id is a hint only",
-              "paper": "#FBFAF6", "ink": "#111111", "identity": {"measures": []}, "variants": {}}
+    if playback is None:
+        bundle = {"schema": 1, "piece_id": piece, "verovio_version": ver, "source_musicxml_sha256": sha,
+                  "xml_id_checksum": True, "anchor_rule": "musical-coordinate {measure_index, qstamp}; xml:id is a hint only",
+                  "paper": "#FBFAF6", "ink": "#111111", "identity": {"measures": []}, "variants": {}}
+    else:
+        bundle = {"schema": 2, "piece_id": piece, "verovio_version": ver, "source_musicxml_sha256": sha,
+                  "xml_id_checksum": True,
+                  "anchor_rule": "musical-coordinate {measure_index, pass, qstamp}; pass=1 when no repeats; xml:id is a hint only",
+                  "paper": "#FBFAF6", "ink": "#111111", "identity": {"measures": []},
+                  "playback": playback, "variants": {}}
     id_ref = None
     for vname, vopts in VARIANTS.items():
         vopts = {**vopts, **(variant_overrides or {}).get(vname, {})}
         svg, tm, page, gmeas, systems, note_xy, note_sys = build_variant(mei, vopts)
         (out_dir / f"{piece}.{vname}.svg").write_text(svg)
-        identity, onsets = build_identity(tm, num_map)
-        anchors = cursor_anchors(onsets, note_xy, note_sys)
+        identity, onsets = build_identity(tm, num_map, playback)
+        span_starts = ([sp["expanded_sec_start"] for sp in playback["spans"][1:]]
+                       if playback else ())
+        anchors = cursor_anchors(onsets, note_xy, note_sys, span_starts)
         gmap = {m["measure_id"]: m for m in gmeas}
         geo = [{"measure_index": im["measure_index"], "measure_id": im["measure_id"],
                 "system_index": gmap.get(im["measure_id"], {}).get("system_index"),

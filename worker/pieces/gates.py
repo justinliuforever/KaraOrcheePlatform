@@ -169,6 +169,38 @@ def gate_structure(xml_path: Path, out_dir: Path, meta: dict, solo_used: str | N
     return metrics
 
 
+def _events_playback_block(events: list[dict], playback: dict) -> dict:
+    """Span event-index ranges + twin groups for the follower (design 1b). Twin key =
+    (written measure, local offset quantized 50ms, pitch tuple); conservative: events
+    that fit no span or sit within the divergence guard of a span end get NO twins."""
+    GUARD_SEC = 0.25
+    spans = playback["spans"]
+    out_spans, twin_key = [], {}
+    si = 0
+    for k, e in enumerate(events):
+        t = float(e["onset_sec"])
+        while si + 1 < len(spans) and t >= spans[si + 1]["expanded_sec_start"] - 0.050:
+            si += 1
+        sp = spans[si]
+        if not out_spans or out_spans[-1]["span_index"] != sp["span_index"]:
+            out_spans.append({"span_index": sp["span_index"], "pass": sp["pass"],
+                              "written_start": sp["written_start"], "written_end": sp["written_end"],
+                              "jump_in": sp["jump_in"], "first_event_idx": k, "last_event_idx": k})
+        else:
+            out_spans[-1]["last_event_idx"] = k
+        cands = [o for o in playback["occurrences"]
+                 if o["span_index"] == sp["span_index"]
+                 and o["expanded_sec_start"] - 0.050 <= t < o["expanded_sec_end"] + 0.050]
+        # boundary events belong to the measure they START (start-biased pick)
+        occ = max(cands, key=lambda o: o["expanded_sec_start"], default=None)
+        if occ is None or t > occ["expanded_sec_end"] - GUARD_SEC:
+            continue
+        local = round((t - occ["expanded_sec_start"]) / 0.050) * 0.050
+        twin_key.setdefault((occ["measure_index"], round(local, 3), tuple(e["pitches"])), []).append(k)
+    twin_groups = [v for v in twin_key.values() if len(v) >= 2]
+    return {"spans": out_spans, "twin_groups": twin_groups}
+
+
 # Floors anchored on real pairs (2026-07-13): correct repeat pairs score their true
 # structure 0.972-0.984 (arabesque, la_candeur) while the WRONG timeline scores
 # 0.402-0.553; a deliberately linear MIDI against repeat XML scores linear=1.000 /
@@ -229,6 +261,9 @@ def gate_alignment(xml_path: Path, midi_path: Path | None, out_dir: Path,
     else:
         payload = se.from_xml_timemap(effective_xml)
         route = "xml_timemap"
+    playback = (state or {}).get("playback")
+    if playback is not None:
+        payload["playback"] = _events_playback_block(payload["events"], playback)
     se.write_score_events(payload, out_dir / "score_events.json")
 
     duration = max((e["onset_sec"] + max(e["durations"]) for e in payload["events"]), default=0.0)
@@ -241,9 +276,10 @@ def gate_alignment(xml_path: Path, midi_path: Path | None, out_dir: Path,
 
 
 def gate_geometry(piece: str, xml_path: Path, out_dir: Path,
-                  meta: dict, solo_used: str | None) -> dict:
+                  meta: dict, solo_used: str | None, state: dict | None = None) -> dict:
     effective_xml = _effective_paths(xml_path, out_dir, meta, solo_used)
-    bundle = build_staff_assets(piece, effective_xml, out_dir / "score_events.json", out_dir)
+    bundle = build_staff_assets(piece, effective_xml, out_dir / "score_events.json", out_dir,
+                                playback=(state or {}).get("playback"))
     ph = bundle["variants"]["phone"]
     metrics = {
         "engine_sha": f"verovio-{bundle['verovio_version']}",
@@ -329,7 +365,7 @@ def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out
         ("sanity", sanity),
         ("structure", lambda: gate_structure(xml_path, out_dir, state["meta"], state["solo"], state)),
         ("alignment", lambda: gate_alignment(xml_path, midi_path, out_dir, state["meta"], state["solo"], state)),
-        ("geometry", lambda: gate_geometry(piece, xml_path, out_dir, state["meta"], state["solo"])),
+        ("geometry", lambda: gate_geometry(piece, xml_path, out_dir, state["meta"], state["solo"], state)),
         ("preview", lambda: gate_preview(out_dir, sf2_path, program)),
     ]
     if audio_path is not None:
