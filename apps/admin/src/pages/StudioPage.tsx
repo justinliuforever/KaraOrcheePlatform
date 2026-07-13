@@ -41,9 +41,10 @@ type Stage = "all" | "draft" | "verifying" | "review" | "published" | "failed" |
 
 // The board filter IS the pipeline: Draft → Verifying → Review → Published, with
 // Failed and Canceled as off-ramp chips. The buckets are a strict PARTITION (a
-// check-failed draft counts as Failed, not Draft) so counts never double-count;
-// All = the union including canceled.
-function inStage(j: StudioJob, stage: Stage): boolean {
+// check-failed draft counts as Failed, not Draft) so counts never double-count.
+// All EXCLUDES discarded builds by default — they are dead ends, not work in
+// progress; the "Show discarded" checkbox (or the Canceled chip) brings them back.
+function inStage(j: StudioJob, stage: Stage, showDiscarded = false): boolean {
   switch (stage) {
     case "draft":
       return j.status === "draft" && j.checkStatus !== "fail";
@@ -58,7 +59,7 @@ function inStage(j: StudioJob, stage: Stage): boolean {
     case "canceled":
       return j.status === "canceled";
     case "all":
-      return true;
+      return showDiscarded || j.status !== "canceled";
   }
 }
 
@@ -66,12 +67,16 @@ function PipelineFilter({
   items,
   stage,
   onStage,
+  showDiscarded,
+  onShowDiscarded,
 }: {
   items: StudioJob[];
   stage: Stage;
   onStage: (s: Stage) => void;
+  showDiscarded: boolean;
+  onShowDiscarded: (v: boolean) => void;
 }) {
-  const count = (s: Stage) => items.filter((j) => inStage(j, s)).length;
+  const count = (s: Stage) => items.filter((j) => inStage(j, s, showDiscarded)).length;
   const stages: { key: Stage; label: string }[] = [
     { key: "draft", label: "Draft" },
     { key: "verifying", label: "Verifying" },
@@ -120,6 +125,17 @@ function PipelineFilter({
       )}
       {canceledCount > 0 &&
         chip("canceled", "Canceled", "opacity-60")}
+      {canceledCount > 0 && (
+        <label className="flex items-center gap-1.5 ml-2 text-xs text-ink-faint cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={showDiscarded}
+            onChange={(e) => onShowDiscarded(e.target.checked)}
+            className="size-3.5 accent-current"
+          />
+          Show discarded in All
+        </label>
+      )}
     </div>
   );
 }
@@ -127,6 +143,7 @@ function PipelineFilter({
 export default function StudioPage() {
   const nav = useNavigate();
   const [stage, setStage] = useState<Stage>("all");
+  const [showDiscarded, setShowDiscarded] = useState(false);
   const [q, setQ] = useState("");
 
   const query = useQuery<{ items: StudioJob[] }, Error>({
@@ -147,7 +164,7 @@ export default function StudioPage() {
     const all = query.data?.items ?? [];
     const needle = q.trim().toLowerCase();
     return all
-      .filter((j) => inStage(j, stage))
+      .filter((j) => inStage(j, stage, showDiscarded))
       .filter(
         (j) =>
           !needle ||
@@ -170,7 +187,8 @@ export default function StudioPage() {
       />
 
       <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-        <PipelineFilter items={query.data?.items ?? []} stage={stage} onStage={setStage} />
+        <PipelineFilter items={query.data?.items ?? []} stage={stage} onStage={setStage}
+                        showDiscarded={showDiscarded} onShowDiscarded={setShowDiscarded} />
         <Input
           className="w-56"
           placeholder="Search title, composer, id…"
