@@ -83,6 +83,9 @@ export const pieces = pgTable("pieces", {
   // Auto-extracted musical facts: { key: {fifths, mode}, time: "3/4", measures,
   // tempo_bpm, tempo_text, tempo_source: "xml"|"default", duration_sec, solo_part }.
   facts: jsonb("facts").notNull().default({}),
+  // NULL = follows fine (catalog serializes it as true); publish sets false for
+  // repeat pieces, whose written measure order the shipped follower cannot track.
+  followReady: boolean("follow_ready"),
   rights: text("rights").notNull().default("unknown"), // public_domain | licensed | unknown | blocked
   rightsNote: text("rights_note"),
   status: text("status").notNull().default("draft"), // draft | published | archived

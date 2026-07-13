@@ -84,6 +84,7 @@ async function buildCatalogDoc(db: Orm, studio: StudioStore): Promise<unknown> {
       tier: p.tracking === "validated" ? "core" : "experimental",
       tracking: p.tracking,
       difficulty: p.difficulty,
+      follow_ready: p.followReady ?? true,
       bundle_version: p.publishedVersion,
       engine_sha: v.engineSha,
       files,

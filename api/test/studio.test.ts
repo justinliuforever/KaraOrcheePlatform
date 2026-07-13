@@ -543,7 +543,8 @@ describe("retry + publish", () => {
     expect(blockedStudio.copies).toHaveLength(0);
 
     const allowedJob = await mk("repeat_allowed");
-    const allowed = await request(makeApp({ appSupportsRepeats: true }))
+    const allowedStudio = fakeStudio();
+    const allowed = await request(makeApp({ studio: allowedStudio, appSupportsRepeats: true }))
       .post(`/admin/studio/jobs/${allowedJob.id}/publish`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(allowed.status).toBe(200);
@@ -553,9 +554,15 @@ describe("retry + publish", () => {
       type: "repeats", written_measures: 33, played_measures: 55, max_passes: 2,
       n_spans: 5, expanded_duration_sec: 52.4, expansion_source: "verovio-inferred",
     });
+    // Old app binaries must never treat a repeat piece as followable.
+    expect(piece!.followReady).toBe(false);
+    const cat = allowedStudio.jsons.find((j) => j.path === "catalog.json")!.body as {
+      pieces: { id: string; follow_ready: boolean }[];
+    };
+    expect(cat.pieces.find((p) => p.id === "repeat_allowed")!.follow_ready).toBe(false);
   });
 
-  it("linear publish keeps facts free of structure", async () => {
+  it("linear publish keeps facts free of structure and follow_ready NULL (catalog emits true)", async () => {
     const [job] = await db.orm
       .insert(studioJobs)
       .values({
@@ -571,12 +578,18 @@ describe("retry + publish", () => {
         },
       })
       .returning();
-    const res = await request(makeApp())
+    const studio = fakeStudio();
+    const res = await request(makeApp({ studio }))
       .post(`/admin/studio/jobs/${job!.id}/publish`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
     const [piece] = await db.orm.select().from(pieces).where(eq(pieces.id, "linear_facts"));
     expect((piece!.facts as Record<string, unknown>).structure).toBeUndefined();
+    expect(piece!.followReady).toBeNull();
+    const cat = studio.jsons.find((j) => j.path === "catalog.json")!.body as {
+      pieces: { id: string; follow_ready: boolean }[];
+    };
+    expect(cat.pieces.find((p) => p.id === "linear_facts")!.follow_ready).toBe(true);
   });
 
   it("blocks publish when rights are unknown", async () => {

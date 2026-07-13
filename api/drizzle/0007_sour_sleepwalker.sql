@@ -1,0 +1,1 @@
+ALTER TABLE "pieces" ADD COLUMN "follow_ready" boolean;

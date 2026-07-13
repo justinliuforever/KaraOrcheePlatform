@@ -50,6 +50,13 @@
       "when": 1783556348430,
       "tag": "0006_jittery_snowbird",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783944098057,
+      "tag": "0007_sour_sleepwalker",
+      "breakpoints": true
     }
   ]
 }

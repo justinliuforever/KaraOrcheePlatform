@@ -140,3 +140,83 @@ describe("top-level url signing", () => {
     expect(caps.body.books).toHaveLength(2);
   });
 });
+
+describe("repeats capability gate", () => {
+  const repeatsStore = () =>
+    fakeStore({
+      async readCatalog() {
+        return {
+          pieces: [
+            { id: "linear_piece", book_id: "pb", work_id: "pw", files: [] },
+            {
+              id: "repeat_piece",
+              facts: { structure: { type: "repeats", written_measures: 33, played_measures: 55 } },
+              book_id: "rb",
+              work_id: "rw",
+              files: [],
+            },
+            {
+              id: "violin_piece",
+              instrumentation: { solo: "violin", parts: ["violin"] },
+              book_id: "vb",
+              work_id: "vw",
+              files: [],
+            },
+          ],
+          works: [{ id: "pw" }, { id: "rw" }, { id: "vw" }],
+          books: [{ id: "pb" }, { id: "rb" }, { id: "vb" }],
+        };
+      },
+    });
+
+  it("hides repeat pieces from a no-caps client, shows them with ?caps=repeats", async () => {
+    const app = createServer({ catalog: repeatsStore() });
+    const plain = await request(app).get("/v1/catalog");
+    expect(plain.status).toBe(200);
+    expect(plain.body.pieces.map((p: { id: string }) => p.id)).toEqual(["linear_piece"]);
+    const caps = await request(app).get("/v1/catalog?caps=repeats");
+    expect(caps.body.pieces.map((p: { id: string }) => p.id)).toEqual([
+      "linear_piece",
+      "repeat_piece",
+    ]);
+  });
+
+  it("composes with the instruments filter and trims works/books to the combined survivors", async () => {
+    const app = createServer({ catalog: repeatsStore() });
+    const plain = await request(app).get("/v1/catalog");
+    expect(plain.body.works.map((w: { id: string }) => w.id)).toEqual(["pw"]);
+    expect(plain.body.books.map((b: { id: string }) => b.id)).toEqual(["pb"]);
+
+    const repeatsOnly = await request(app).get("/v1/catalog?caps=repeats");
+    expect(repeatsOnly.body.works.map((w: { id: string }) => w.id)).toEqual(["pw", "rw"]);
+    expect(repeatsOnly.body.books.map((b: { id: string }) => b.id)).toEqual(["pb", "rb"]);
+
+    const instrumentsOnly = await request(app).get("/v1/catalog?caps=instruments");
+    expect(instrumentsOnly.body.pieces.map((p: { id: string }) => p.id)).toEqual([
+      "linear_piece",
+      "violin_piece",
+    ]);
+    expect(instrumentsOnly.body.works.map((w: { id: string }) => w.id)).toEqual(["pw", "vw"]);
+
+    const both = await request(app).get("/v1/catalog?caps=instruments,repeats");
+    expect(both.body.pieces).toHaveLength(3);
+    expect(both.body.works).toHaveLength(3);
+    expect(both.body.books).toHaveLength(3);
+  });
+
+  it("blocks download of a repeat piece without caps=repeats, allows with it", async () => {
+    const app = createServer({ catalog: repeatsStore() });
+    const blocked = await request(app).get("/v1/pieces/repeat_piece/download");
+    expect(blocked.status).toBe(403);
+    expect(blocked.body).toEqual({
+      error: "capability_required",
+      piece: "repeat_piece",
+      requires: "repeats",
+    });
+    const allowed = await request(app).get("/v1/pieces/repeat_piece/download?caps=repeats");
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.id).toBe("repeat_piece");
+    const linear = await request(app).get("/v1/pieces/linear_piece/download");
+    expect(linear.status).toBe(200);
+  });
+});

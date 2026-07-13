@@ -982,6 +982,9 @@ export function studioRouter(deps: Deps): Router {
           workIndex: meta.work?.index ?? null,
           instrumentation,
           facts,
+          // null (serialized as true) rather than omitted: a re-publish whose new
+          // build has no repeats must clear a stale false on the existing row.
+          followReady: structureMetrics?.kind === "repeats" ? false : null,
           rights: meta.rights,
           rightsNote: meta.rightsNote || null,
           status: "published",
