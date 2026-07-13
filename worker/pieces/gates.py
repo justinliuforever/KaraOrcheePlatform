@@ -201,12 +201,14 @@ def _events_playback_block(events: list[dict], playback: dict) -> dict:
     return {"spans": out_spans, "twin_groups": twin_groups}
 
 
-# Floors anchored on real pairs (2026-07-13): correct repeat pairs score their true
-# structure 0.972-0.984 (arabesque, la_candeur) while the WRONG timeline scores
-# 0.402-0.553; a deliberately linear MIDI against repeat XML scores linear=1.000 /
-# expanded=0.553. Winner >=0.80 with >=0.20 margin sits far from both tails.
+# Anchored on real pairs (2026-07-13). Winner-take-all with a floor: a fixed margin
+# is WRONG because the gap between the two readings scales with the repeat fraction —
+# haydn 48/2 repeats only 12% of the piece, so its correct expanded MIDI scores
+# 0.96 vs linear 0.87 (gap 0.09), while short pieces gap 0.4-0.6. Observed: correct
+# reading 0.92-0.98 everywhere; wrong reading capped by content coverage; a truly
+# foreign pair scores under the floor on both. Tie-guard 0.02 << smallest real gap 0.06.
 STRUCTURE_WIN_FLOOR = 0.80
-STRUCTURE_WIN_MARGIN = 0.20
+STRUCTURE_TIE_GUARD = 0.02
 
 
 def gate_alignment(xml_path: Path, midi_path: Path | None, out_dir: Path,
@@ -228,9 +230,11 @@ def gate_alignment(xml_path: Path, midi_path: Path | None, out_dir: Path,
         s_lin = structure_match_score(lin_events, midi_events)
         struct_metrics = {"structure_match_expanded": round(s_exp, 3),
                           "structure_match_linear": round(s_lin, 3)}
-        if s_exp >= max(STRUCTURE_WIN_FLOOR, s_lin + STRUCTURE_WIN_MARGIN):
+        best = max(s_exp, s_lin)
+        decided = best >= STRUCTURE_WIN_FLOOR and abs(s_exp - s_lin) > STRUCTURE_TIE_GUARD
+        if decided and s_exp > s_lin:
             struct_metrics["structure_match"] = "expanded"
-        elif s_lin >= max(STRUCTURE_WIN_FLOOR, s_exp + STRUCTURE_WIN_MARGIN):
+        elif decided and s_lin > s_exp:
             pb = (state or {}).get("playback") or {}
             counts = pb.get("counts", {})
             raise GateError(
