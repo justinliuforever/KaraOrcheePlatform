@@ -39,6 +39,7 @@ function main(): void {
     corsOrigins: config.adminOrigins,
     opsLogs,
     opsQueue,
+    appSupportsRepeats: config.appSupportsRepeats,
   });
 
   app.listen(config.port, () => {

@@ -99,13 +99,14 @@ const FULL_META = {
   rightsNote: "Re-engraved from an 1890s Peters print.",
 };
 
-function makeApp(overrides: { studio?: StudioStore; queue?: JobQueue } = {}) {
+function makeApp(overrides: { studio?: StudioStore; queue?: JobQueue; appSupportsRepeats?: boolean } = {}) {
   return createServer({
     db,
     auth: verifier,
     studio: overrides.studio ?? fakeStudio(),
     piecesQueue: overrides.queue ?? fakeQueue(),
     catalog: fakeCatalog,
+    appSupportsRepeats: overrides.appSupportsRepeats,
   });
 }
 
@@ -507,6 +508,72 @@ describe("retry + publish", () => {
 
     const trail = await db.orm.select().from(auditEvents);
     expect(trail.some((e) => e.action === "piece.publish")).toBe(true);
+  });
+
+  it("blocks publish for repeat pieces until the app capability flag flips", async () => {
+    const structureGates = {
+      geometry: { status: "pass", metrics: { engine_sha: "verovio-6.2.1" } },
+      structure: { status: "pass", metrics: { kind: "repeats", written_measures: 33, played_measures: 55, max_passes: 2, n_spans: 5, expanded_duration_sec: 52.4, expansion_source: "verovio-inferred" } },
+    };
+    const mk = async (pieceId: string) => {
+      const [job] = await db.orm
+        .insert(studioJobs)
+        .values({
+          pieceId,
+          status: "ready_for_review",
+          checkStatus: "pass",
+          metadata: FULL_META,
+          sources: [],
+          artifacts: [{ role: "score_events", path: `staging/${pieceId}/score_events.json`, bytes: 1, sha256: "z" }],
+          gates: structureGates,
+        })
+        .returning();
+      return job!;
+    };
+
+    const blockedJob = await mk("repeat_blocked");
+    const blocked = await request(makeApp())
+      .post(`/admin/studio/jobs/${blockedJob.id}/publish`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error).toBe("repeats_not_supported_yet");
+    expect(blocked.body.message).toContain("33 written / 55 played");
+
+    const allowedJob = await mk("repeat_allowed");
+    const allowed = await request(makeApp({ appSupportsRepeats: true }))
+      .post(`/admin/studio/jobs/${allowedJob.id}/publish`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(allowed.status).toBe(200);
+    const [piece] = await db.orm.select().from(pieces).where(eq(pieces.id, "repeat_allowed"));
+    const facts = piece!.facts as { structure?: { type: string; played_measures: number } };
+    expect(facts.structure).toEqual({
+      type: "repeats", written_measures: 33, played_measures: 55, max_passes: 2,
+      n_spans: 5, expanded_duration_sec: 52.4, expansion_source: "verovio-inferred",
+    });
+  });
+
+  it("linear publish keeps facts free of structure", async () => {
+    const [job] = await db.orm
+      .insert(studioJobs)
+      .values({
+        pieceId: "linear_facts",
+        status: "ready_for_review",
+        checkStatus: "pass",
+        metadata: FULL_META,
+        sources: [],
+        artifacts: [{ role: "score_events", path: "staging/lf/score_events.json", bytes: 1, sha256: "z" }],
+        gates: {
+          geometry: { status: "pass", metrics: { engine_sha: "verovio-6.2.1" } },
+          structure: { status: "pass", metrics: { kind: "linear", written_measures: 4 } },
+        },
+      })
+      .returning();
+    const res = await request(makeApp())
+      .post(`/admin/studio/jobs/${job!.id}/publish`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    const [piece] = await db.orm.select().from(pieces).where(eq(pieces.id, "linear_facts"));
+    expect((piece!.facts as Record<string, unknown>).structure).toBeUndefined();
   });
 
   it("blocks publish when rights are unknown", async () => {

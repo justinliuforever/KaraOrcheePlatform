@@ -8,6 +8,10 @@ export interface Config {
   auth: { tenantId: string; tenantName: string; audience: string } | null;
   adminOrigins: string[];
   logAnalyticsWorkspaceId: string | null;
+  // Repeat-structure pieces build and review fine, but the shipped app still assumes
+  // one measure = one playback time; publishing them stays blocked until the app-side
+  // repeat capability lands and this flag flips.
+  appSupportsRepeats: boolean;
 }
 
 const envSchema = z.object({
@@ -20,6 +24,7 @@ const envSchema = z.object({
   ADMIN_ORIGINS: z.string().optional(),
   SERVICEBUS_CONNECTION_STRING: z.string().min(1).optional(),
   LOG_ANALYTICS_WORKSPACE_ID: z.string().uuid().optional(),
+  APP_SUPPORTS_REPEATS: z.enum(["true", "false"]).optional(),
 });
 
 export function parseConfig(env: NodeJS.ProcessEnv = process.env):
@@ -77,6 +82,7 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env):
         .map((s) => s.trim())
         .filter(Boolean),
       logAnalyticsWorkspaceId: e.LOG_ANALYTICS_WORKSPACE_ID ?? null,
+      appSupportsRepeats: e.APP_SUPPORTS_REPEATS === "true",
     },
   };
 }

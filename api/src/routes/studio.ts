@@ -896,6 +896,25 @@ export function studioRouter(deps: Deps): Router {
       }
 
       const gates = job.gates as Record<string, { metrics?: Record<string, unknown> }>;
+      // Hard server-side block: repeat pieces build and review fine, but the shipped
+      // app assumes one measure = one playback time (its FOLLOW mode treats the
+      // exact repeat twins as tracker poison). Publishing waits for the app-side
+      // repeat capability; a wizard warning is not enforcement.
+      const structureMetrics = gates?.structure?.metrics as
+        | { kind?: string; written_measures?: number; played_measures?: number;
+            max_passes?: number; n_spans?: number; expanded_duration_sec?: number;
+            expansion_source?: string }
+        | undefined;
+      if (structureMetrics?.kind === "repeats" && !deps.appSupportsRepeats) {
+        res.status(409).json({
+          error: "repeats_not_supported_yet",
+          message: "This piece plays repeats (" + String(structureMetrics.written_measures) +
+            " written / " + String(structureMetrics.played_measures) + " played measures). " +
+            "It builds and previews correctly, but the app cannot follow repeat structures yet — " +
+            "publishing unlocks with the app-side repeat update.",
+        });
+        return;
+      }
       const engineSha = (gates?.geometry?.metrics?.engine_sha as string | undefined) ?? null;
       // Assemble facts from gate metrics: XML ground truth + computed duration + the
       // part choice this bundle was built from.
@@ -910,6 +929,21 @@ export function studioRouter(deps: Deps): Router {
         duration_sec: gates?.alignment?.metrics?.duration_sec ?? null,
         solo_part: gates?.sanity?.metrics?.solo_part ?? null,
         parts: ((xm.parts as { name?: string | null }[] | undefined) ?? []).map((p) => p.name).filter(Boolean),
+        // Structure facts only for repeat pieces — linear pieces keep their exact
+        // pre-repeat facts shape.
+        ...(structureMetrics?.kind === "repeats"
+          ? {
+              structure: {
+                type: "repeats",
+                written_measures: structureMetrics.written_measures ?? null,
+                played_measures: structureMetrics.played_measures ?? null,
+                max_passes: structureMetrics.max_passes ?? null,
+                n_spans: structureMetrics.n_spans ?? null,
+                expanded_duration_sec: structureMetrics.expanded_duration_sec ?? null,
+                expansion_source: structureMetrics.expansion_source ?? null,
+              },
+            }
+          : {}),
       };
       const instrumentation = {
         solo: meta.instrument,

@@ -15,6 +15,7 @@ export interface Deps {
   corsOrigins?: string[];
   opsLogs?: OpsLogsStore;
   opsQueue?: OpsQueueStore;
+  appSupportsRepeats?: boolean;
 }
 
 type AsyncHandler = (
