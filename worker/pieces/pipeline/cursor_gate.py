@@ -123,8 +123,27 @@ def verify_piece(page, assets_dir: Path, pid: str, variant: str) -> list:
     page.set_viewport_size({"width": PHONE_W, "height": VIEW_H})
     page.set_content(html_for(svg))
     page.wait_for_timeout(60)
+    # Repeat pieces: stratify sampling so every playback span's first and last
+    # anchors are exercised — consecutive samples then walk each span boundary
+    # (incl. the backward jump), which even sampling can skip entirely. Linear
+    # pieces keep the original spread. The shim itself is untouched.
+    pb = bundle.get("playback")
+    if pb:
+        import bisect as _bisect
+        asecs = [a[0] for a in anchors]
+        idxs = set(sample_indices(len(anchors), SAMPLES))
+        for sp in pb["spans"]:
+            lo = _bisect.bisect_left(asecs, sp["expanded_sec_start"] - 1e-6)
+            hi = _bisect.bisect_right(asecs, sp["expanded_sec_end"] - 1e-6) - 1
+            if lo < len(anchors):
+                idxs.add(lo)
+            if hi >= 0:
+                idxs.add(hi)
+        sample = sorted(idxs)
+    else:
+        sample = sample_indices(len(anchors), SAMPLES)
     fails = []
-    for idx in sample_indices(len(anchors), SAMPLES):
+    for idx in sample:
         sec, x, y, sysi = anchors[idx]
         sysi = int(sysi)
         bb = bands.get(sysi)
@@ -160,7 +179,7 @@ def verify_piece(page, assets_dir: Path, pid: str, variant: str) -> list:
     page.evaluate("() => setRM(false)")
     if want == -9999 or abs(got - want) > 2:
         fails.append((pid, variant, "FAIL", f"RM turn not instant: offset {got:.0f} vs target {want:.0f}"))
-    staff_res = fails or [(pid, variant, "ok", f"{min(len(anchors), SAMPLES)} samples on staff · rm-turn instant")]
+    staff_res = fails or [(pid, variant, "ok", f"{len(sample)} samples on staff · rm-turn instant")]
     return staff_res + verify_tap(page, pid, variant, v)
 
 
