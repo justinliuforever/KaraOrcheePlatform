@@ -532,12 +532,15 @@ describe("retry + publish", () => {
     };
 
     const blockedJob = await mk("repeat_blocked");
-    const blocked = await request(makeApp())
+    const blockedStudio = fakeStudio();
+    const blocked = await request(makeApp({ studio: blockedStudio }))
       .post(`/admin/studio/jobs/${blockedJob.id}/publish`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(blocked.status).toBe(409);
     expect(blocked.body.error).toBe("repeats_not_supported_yet");
     expect(blocked.body.message).toContain("33 written / 55 played");
+    // the block must fire BEFORE any side effect — no version blobs copied
+    expect(blockedStudio.copies).toHaveLength(0);
 
     const allowedJob = await mk("repeat_allowed");
     const allowed = await request(makeApp({ appSupportsRepeats: true }))

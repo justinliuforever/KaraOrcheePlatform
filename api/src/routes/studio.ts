@@ -879,6 +879,27 @@ export function studioRouter(deps: Deps): Router {
       }
       const pieceId = job.pieceId;
 
+      const gates = job.gates as Record<string, { metrics?: Record<string, unknown> }>;
+      // Hard server-side block BEFORE any side effect (blob copies included): repeat
+      // pieces build and review fine, but the shipped app assumes one measure = one
+      // playback time (its FOLLOW mode treats the exact repeat twins as tracker
+      // poison). Publishing waits for the app-side repeat capability.
+      const structureMetrics = gates?.structure?.metrics as
+        | { kind?: string; written_measures?: number; played_measures?: number;
+            max_passes?: number; n_spans?: number; expanded_duration_sec?: number;
+            expansion_source?: string }
+        | undefined;
+      if (structureMetrics?.kind === "repeats" && !deps.appSupportsRepeats) {
+        res.status(409).json({
+          error: "repeats_not_supported_yet",
+          message: "This piece plays repeats (" + String(structureMetrics.written_measures) +
+            " written / " + String(structureMetrics.played_measures) + " played measures). " +
+            "It builds and previews correctly, but the app cannot follow repeat structures yet — " +
+            "publishing unlocks with the app-side repeat update.",
+        });
+        return;
+      }
+
       const [maxRow] = await db
         .select({ maxVersion: sql<number | null>`max(${pieceVersions.version})::int` })
         .from(pieceVersions)
@@ -895,26 +916,6 @@ export function studioRouter(deps: Deps): Router {
         versionFiles.push({ ...a, path: toPath });
       }
 
-      const gates = job.gates as Record<string, { metrics?: Record<string, unknown> }>;
-      // Hard server-side block: repeat pieces build and review fine, but the shipped
-      // app assumes one measure = one playback time (its FOLLOW mode treats the
-      // exact repeat twins as tracker poison). Publishing waits for the app-side
-      // repeat capability; a wizard warning is not enforcement.
-      const structureMetrics = gates?.structure?.metrics as
-        | { kind?: string; written_measures?: number; played_measures?: number;
-            max_passes?: number; n_spans?: number; expanded_duration_sec?: number;
-            expansion_source?: string }
-        | undefined;
-      if (structureMetrics?.kind === "repeats" && !deps.appSupportsRepeats) {
-        res.status(409).json({
-          error: "repeats_not_supported_yet",
-          message: "This piece plays repeats (" + String(structureMetrics.written_measures) +
-            " written / " + String(structureMetrics.played_measures) + " played measures). " +
-            "It builds and previews correctly, but the app cannot follow repeat structures yet — " +
-            "publishing unlocks with the app-side repeat update.",
-        });
-        return;
-      }
       const engineSha = (gates?.geometry?.metrics?.engine_sha as string | undefined) ?? null;
       // Assemble facts from gate metrics: XML ground truth + computed duration + the
       // part choice this bundle was built from.
