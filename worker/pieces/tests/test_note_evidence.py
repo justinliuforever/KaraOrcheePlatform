@@ -64,3 +64,26 @@ def test_failure_message_blames_structure_only_with_duration_evidence():
     assert "pedal" in quality and "verified as this piece" in quality
     no_ratio = _evidence_failure_message(0.76, 0.54, 0.83, ratio=None)
     assert "structure" not in no_ratio
+
+
+def test_span_duration_check_flags_crammed_pass():
+    import numpy as np
+    from pipeline.audio_map import _span_duration_check
+    playback = {
+        "counts": {"expanded_duration_sec": 20.0},
+        "spans": [
+            {"span_index": 0, "pass": 1, "written_start": 1, "written_end": 5,
+             "expanded_sec_start": 0.0, "expanded_sec_end": 10.0},
+            {"span_index": 1, "pass": 2, "written_start": 1, "written_end": 5,
+             "expanded_sec_start": 10.0, "expanded_sec_end": 20.0},
+        ],
+    }
+    # map crams the second span: 10s of score -> 1s of audio
+    ms = np.array([0.0, 10.0, 20.0])
+    ma = np.array([0.0, 10.0, 11.0])
+    ratio, span = _span_duration_check(playback, ms, ma)
+    assert span["pass"] == 2 and ratio < 0.4
+
+    # healthy map: proportional throughout
+    ratio, _ = _span_duration_check(playback, ms, np.array([0.0, 10.0, 20.0]))
+    assert ratio > 0.95

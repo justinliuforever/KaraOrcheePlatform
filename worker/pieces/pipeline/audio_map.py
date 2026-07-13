@@ -144,7 +144,7 @@ def _tier2_map(audio_path: Path, deadpan_path: Path) -> tuple[np.ndarray, np.nda
 
 def build_time_map(audio_path: Path, score_events_path: Path, out_dir: Path,
                    sf2_path: Path | None, program: int,
-                   transcriber=None) -> dict:
+                   transcriber=None, playback: dict | None = None) -> dict:
     """Verify the reference audio and write audio_map.json. Returns gate metrics.
     Raises AudioGateError when neither tier can vouch for the recording.
     transcriber: audio_path -> {pitch: sorted onset sec} (tests inject a fake;
@@ -170,9 +170,17 @@ def build_time_map(audio_path: Path, score_events_path: Path, out_dir: Path,
     score_onsets, notated_end = _score_onsets(score_events_path)
     ratio = tier1_metrics.get("duration_ratio")
     if ratio is not None and not (RATIO_MIN <= ratio <= RATIO_MAX):
+        hint = ""
+        if playback is not None and ratio < 1.0:
+            lin = sum(o["expanded_sec_end"] - o["expanded_sec_start"]
+                      for o in playback["occurrences"] if o["pass"] == 1)
+            total = playback["counts"]["expanded_duration_sec"] or 1.0
+            if abs(ratio - lin / total) < 0.12:
+                hint = (" The length matches a performance that SKIPS the repeats — this "
+                        "score plays its repeats; record with all repeats taken.")
         raise AudioGateError(
             f"The audio is {ratio:.2f}x the notated length — too far from the score to be "
-            "an interpretation of it. Check that this recording belongs to this piece.",
+            "an interpretation of it." + hint,
             tier1_metrics)
     try:
         map_score, map_audio, sim_mean, sim_p10 = _tier2_map(
@@ -202,6 +210,18 @@ def build_time_map(audio_path: Path, score_events_path: Path, out_dir: Path,
             f"{sim_mean:.0%}) — this recording does not appear to be this piece. Check "
             "that the right audio file was uploaded.",
             metrics)
+
+    if playback is not None:
+        worst_span = _span_duration_check(playback, map_score, map_audio)
+        metrics["map_worst_span_ratio"] = round(worst_span[0], 3)
+        if worst_span[0] < SPAN_RATIO_MIN:
+            sp = worst_span[1]
+            raise AudioGateError(
+                f"The recording gives measures {sp['written_start']}-{sp['written_end']} "
+                f"(pass {sp['pass']}) only {worst_span[0]:.0%} of their proportional time — "
+                "a repeat pass appears to be skipped or cut. This score plays its repeats; "
+                "record the full structure and re-upload.",
+                metrics)
 
     # Note-level verdict: pitch-aware evidence (a note is confirmed only by an onset
     # OF ITS PITCH at its mapped time). The pitch-blind onset agreement above stays as
@@ -236,6 +256,32 @@ def build_time_map(audio_path: Path, score_events_path: Path, out_dir: Path,
     _write_map(out_dir, xs, ys, tier=2)
     metrics["map_breakpoints"] = len(xs)
     return metrics
+
+
+# Floor anchored 2026-07-13 on real data: the correct full-structure recording's worst
+# span is 0.993x proportional time; a recording with its repeat passes cut out measures
+# 0.508 (the DTW spreads the deficit rather than fully cramming one span). 0.75 sits
+# 0.24 from both anchors.
+SPAN_RATIO_MIN = 0.75
+
+
+def _span_duration_check(playback: dict, map_score, map_audio):
+    """(worst ratio, its span): per-span audio extent under the map vs the span's
+    proportional share — the DTW-cramming detector onset evidence cannot provide."""
+    total_score = playback["counts"]["expanded_duration_sec"] or 1.0
+    total_audio = float(np.interp(total_score, map_score, map_audio) - np.interp(0.0, map_score, map_audio)) or 1.0
+    worst = (float("inf"), None)
+    for sp in playback["spans"]:
+        dur = sp["expanded_sec_end"] - sp["expanded_sec_start"]
+        if dur < 1.0:
+            continue
+        a0 = float(np.interp(sp["expanded_sec_start"], map_score, map_audio))
+        a1 = float(np.interp(sp["expanded_sec_end"], map_score, map_audio))
+        expected = dur / total_score * total_audio
+        ratio = (a1 - a0) / expected if expected > 0 else 0.0
+        if ratio < worst[0]:
+            worst = (ratio, sp)
+    return worst if worst[1] is not None else (1.0, None)
 
 
 def _evidence_failure_message(ev_rate: float, ev_worst: float, sim_mean: float,

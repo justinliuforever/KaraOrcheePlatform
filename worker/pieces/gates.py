@@ -314,10 +314,11 @@ def gate_preview(out_dir: Path, sf2_path: Path | None, program: int) -> dict:
         return {"skipped": f"render failed: {str(err)[:120]}"}
 
 
-def gate_audio(audio_path: Path, out_dir: Path, sf2_path: Path | None, program: int) -> dict:
+def gate_audio(audio_path: Path, out_dir: Path, sf2_path: Path | None, program: int,
+               state: dict | None = None) -> dict:
     try:
         return build_time_map(audio_path, out_dir / "score_events.json", out_dir,
-                              sf2_path, program)
+                              sf2_path, program, playback=(state or {}).get("playback"))
     except AudioGateError as err:
         raise GateError(str(err), err.metrics) from err
 
@@ -371,7 +372,7 @@ def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out
     if audio_path is not None:
         # Stage the uploaded audio under the canonical name before checking it.
         shutil.copyfile(audio_path, out_dir / "reference.m4a")
-        stages.append(("audio", lambda: gate_audio(audio_path, out_dir, sf2_path, program)))
+        stages.append(("audio", lambda: gate_audio(audio_path, out_dir, sf2_path, program, state)))
     if include_render:
         stages.append(("render", lambda: gate_render(piece, out_dir)))
 
