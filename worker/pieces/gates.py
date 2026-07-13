@@ -23,6 +23,11 @@ from pipeline.tempo_norm import normalize_tempo
 from pipeline.preview import render_preview
 from pipeline.audio_gate import AudioGateError
 from pipeline.audio_map import build_time_map
+from pipeline.align import structure_match_score
+from pipeline.structure import (
+    StructureError, build_playback_map, classify_structure,
+    expected_playback_sequence, timemap_measure_sequence,
+)
 
 
 class GateError(Exception):
@@ -80,10 +85,135 @@ def _effective_paths(xml_path: Path, out_dir: Path, meta: dict, solo_used: str |
     return normalize_tempo(reduced, out_dir)
 
 
+def _timeline_events(xml_path: Path, expanded: bool) -> list[dict]:
+    """XML-timeline events [{'q', 'pitches'}] for structure scoring, from the same
+    engine the pipeline builds with. expanded=False forces the written (linear) order."""
+    import re as _re
+    from pipeline.score_events import _mei_pitches
+    tk = make_toolkit()
+    opts = {"xmlIdChecksum": True, "header": "none", "footer": "none"}
+    if not expanded:
+        opts["expandNever"] = True
+    tk.setOptions(opts)
+    if not tk.loadFile(str(xml_path)):
+        raise GateError("verovio could not load the effective MusicXML")
+    pitches = _mei_pitches(tk.getMEI())
+    rend = _re.compile(r"-rend\d+$")
+    events = []
+    for e in tk.renderToTimemap({"includeMeasures": False, "includeRests": False}):
+        if e.get("on"):
+            ps = frozenset(p for p in (pitches.get(rend.sub("", i)) for i in e["on"]) if p is not None)
+            if ps:
+                events.append({"q": float(e.get("qstamp", 0.0)), "pitches": ps})
+    return events
+
+
+def gate_structure(xml_path: Path, out_dir: Path, meta: dict, solo_used: str | None,
+                   state: dict) -> dict:
+    """4th preflight lane, between sanity and alignment: classify the repeat marks,
+    verify the engine's expansion EXACTLY matches our independent expander, and build
+    the canonical playback map. Linear pieces pass through untouched."""
+    effective_xml = _effective_paths(xml_path, out_dir, meta, solo_used)
+    try:
+        st = classify_structure(effective_xml)
+        if xml_path != effective_xml:
+            st_orig = classify_structure(xml_path)
+            if (st_orig.kind, expected_playback_sequence(st_orig) if st_orig.has_repeats else None) != \
+               (st.kind, expected_playback_sequence(st) if st.has_repeats else None):
+                raise StructureError(
+                    "solo reduction changed the repeat structure — the parts encode "
+                    "different structures; re-export with consistent barlines")
+    except StructureError as err:
+        where = f" (measure {err.measure})" if getattr(err, "measure", None) else ""
+        raise GateError(f"repeat structure: {err}{where}") from err
+
+    state["structure"] = st
+    metrics: dict = {"kind": st.kind, "written_measures": st.n_measures}
+    if not st.has_repeats:
+        state["playback"] = None
+        return metrics
+
+    expected = expected_playback_sequence(st)
+    tk = make_toolkit()
+    tk.setOptions({"xmlIdChecksum": True, "header": "none", "footer": "none"})
+    tk.loadFile(str(effective_xml))
+    import re as _re
+    written_ids = _re.findall(r'<measure[^>]*xml:id="([^"]+)"', tk.getMEI())
+    played_ids = timemap_measure_sequence(tk)
+    try:
+        verify_expansion_ok = True
+        from pipeline.structure import verify_expansion
+        verify_expansion(played_ids, written_ids, expected)
+    except StructureError as err:
+        raise GateError(f"repeat structure: {err}") from err
+
+    # per-played-measure boundaries from the expanded timemap
+    tm = tk.renderToTimemap({"includeMeasures": True, "includeRests": False})
+    marks = [(e["tstamp"] / 1000.0, float(e.get("qstamp", 0.0)))
+             for e in tm if e.get("measureOn")]
+    end_t = max((e["tstamp"] / 1000.0 for e in tm), default=0.0)
+    end_q = max((float(e.get("qstamp", 0.0)) for e in tm), default=0.0)
+    secs = [(marks[k][0], marks[k + 1][0] if k + 1 < len(marks) else end_t) for k in range(len(marks))]
+    qs = [(marks[k][1], marks[k + 1][1] if k + 1 < len(marks) else end_q) for k in range(len(marks))]
+    pm = build_playback_map(st, expected, secs, qs)
+    pm["counts"]["expansion_source"] = "verovio-inferred"
+    state["playback"] = pm
+    metrics.update({
+        "played_measures": pm["counts"]["played_measures"],
+        "max_passes": pm["counts"]["max_passes"],
+        "n_spans": len(pm["spans"]),
+        "expanded_duration_sec": pm["counts"]["expanded_duration_sec"],
+        "expansion_source": "verovio-inferred",
+        "expansion_verified": verify_expansion_ok,
+    })
+    return metrics
+
+
+# Floors anchored on real pairs (2026-07-13): correct repeat pairs score their true
+# structure 0.972-0.984 (arabesque, la_candeur) while the WRONG timeline scores
+# 0.402-0.553; a deliberately linear MIDI against repeat XML scores linear=1.000 /
+# expanded=0.553. Winner >=0.80 with >=0.20 margin sits far from both tails.
+STRUCTURE_WIN_FLOOR = 0.80
+STRUCTURE_WIN_MARGIN = 0.20
+
+
 def gate_alignment(xml_path: Path, midi_path: Path | None, out_dir: Path,
-                   meta: dict, solo_used: str | None) -> dict:
+                   meta: dict, solo_used: str | None, state: dict | None = None) -> dict:
     multi = meta["n_parts"] > 1 and solo_used is not None
     effective_xml = _effective_paths(xml_path, out_dir, meta, solo_used)
+
+    structure = (state or {}).get("structure")
+    struct_metrics: dict = {}
+    if midi_path is not None and structure is not None and structure.has_repeats:
+        # Which structure does the MIDI realize? Pitch-DP against BOTH timelines.
+        from pipeline.diagnose import _midi_side
+        solo_idx = ([p["id"] for p in meta["parts"]].index(solo_used)
+                    if multi else None)
+        midi_events = _midi_side(midi_path, solo_idx)["events"]
+        exp_events = _timeline_events(effective_xml, expanded=True)
+        lin_events = _timeline_events(effective_xml, expanded=False)
+        s_exp = structure_match_score(exp_events, midi_events)
+        s_lin = structure_match_score(lin_events, midi_events)
+        struct_metrics = {"structure_match_expanded": round(s_exp, 3),
+                          "structure_match_linear": round(s_lin, 3)}
+        if s_exp >= max(STRUCTURE_WIN_FLOOR, s_lin + STRUCTURE_WIN_MARGIN):
+            struct_metrics["structure_match"] = "expanded"
+        elif s_lin >= max(STRUCTURE_WIN_FLOOR, s_exp + STRUCTURE_WIN_MARGIN):
+            pb = (state or {}).get("playback") or {}
+            counts = pb.get("counts", {})
+            raise GateError(
+                f"the MIDI plays the score straight through ({len(midi_events)} events, "
+                f"~{len(lin_events)} expected linear) but the score's repeats expand to "
+                f"{counts.get('played_measures', '?')} played measures "
+                f"({len(exp_events)} events expected) — export the MIDI with repeats "
+                "taken (play repeats ON), or write the repeats out in both files",
+                struct_metrics)
+        else:
+            raise GateError(
+                f"the MIDI matches neither the written-through nor the repeat-expanded "
+                f"reading of this score (match {s_lin:.0%} linear / {s_exp:.0%} expanded) — "
+                "the files likely come from different edits; re-export both from the same "
+                "project", struct_metrics)
 
     if midi_path is not None:
         if multi:
@@ -106,7 +236,8 @@ def gate_alignment(xml_path: Path, midi_path: Path | None, out_dir: Path,
             "solo_part": solo_used if multi else None,
             "accompaniment": multi and (out_dir / "accompaniment_events.json").exists(),
             "duration_sec": round(duration, 1),
-            "initial_tempo_eps": round(payload["initial_tempo_eps"], 4)}
+            "initial_tempo_eps": round(payload["initial_tempo_eps"], 4),
+            **struct_metrics}
 
 
 def gate_geometry(piece: str, xml_path: Path, out_dir: Path,
@@ -196,7 +327,8 @@ def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out
 
     stages = [
         ("sanity", sanity),
-        ("alignment", lambda: gate_alignment(xml_path, midi_path, out_dir, state["meta"], state["solo"])),
+        ("structure", lambda: gate_structure(xml_path, out_dir, state["meta"], state["solo"], state)),
+        ("alignment", lambda: gate_alignment(xml_path, midi_path, out_dir, state["meta"], state["solo"], state)),
         ("geometry", lambda: gate_geometry(piece, xml_path, out_dir, state["meta"], state["solo"])),
         ("preview", lambda: gate_preview(out_dir, sf2_path, program)),
     ]
