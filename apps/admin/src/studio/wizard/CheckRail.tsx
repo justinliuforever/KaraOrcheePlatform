@@ -45,8 +45,21 @@ export default function CheckRail({ job }: { job: StudioJob }) {
             {g.key === "audio" && entry?.status === "pass" && (
               <p className="text-[11px] text-ok mt-1.5">
                 {(m.tier as number) === 2
-                  ? `expressive performance — aligned & verified (${Math.round(((m.map_onset_agreement as number) ?? 0) * 100)}% of notes locked)`
+                  ? `expressive performance — aligned & verified (${Math.round((((m.map_note_evidence ?? m.map_onset_agreement) as number) ?? 0) * 100)}% of notes confirmed)`
                   : "matches the notated tempo"}
+              </p>
+            )}
+            {g.key === "structure" && entry?.status === "pass" && (
+              <p className="text-[11px] text-ink-soft mt-1.5 tabular-nums">
+                {(m.kind as string) === "repeats"
+                  ? `plays repeats — ${String(m.written_measures)} written / ${String(m.played_measures)} played measures (verified)`
+                  : "no repeats — plays straight through"}
+              </p>
+            )}
+            {g.key === "audio" && entry?.status === "running" && (
+              <p className="text-[11px] text-ink-faint mt-1.5">
+                Expressive verification transcribes the recording note-by-note — allow roughly
+                twice the recording's length. Leaving this page won't stop it.
               </p>
             )}
             {g.key === "sanity" && entry?.status === "pass" && (

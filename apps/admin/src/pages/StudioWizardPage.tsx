@@ -297,7 +297,7 @@ function WizardBody({ jobId }: { jobId: string }) {
             )}
             {xmlMeta && (
               <div className="mt-3 space-y-3">
-                <FactsCard meta={xmlMeta} />
+                <FactsCard meta={xmlMeta} structure={job.gates?.structure?.metrics as import("../studio/wizard/FactsCard").StructureFacts | undefined} />
                 <PartPicker
                   meta={xmlMeta}
                   soloPart={meta.soloPart ?? stampedSolo ?? null}

@@ -630,6 +630,17 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
                   {facts.tempo_text ? ` · "${facts.tempo_text}"` : ""}
                 </dd>
               </div>
+              {facts.structure?.type === "repeats" && (
+                <div className="flex justify-between col-span-2">
+                  <dt className="text-ink-faint">Structure</dt>
+                  <dd className="tabular-nums">
+                    plays repeats — {facts.structure.written_measures ?? "?"} written /{" "}
+                    {facts.structure.played_measures ?? "?"} played measures
+                    {facts.structure.max_passes && facts.structure.max_passes > 2
+                      ? ` (up to ${facts.structure.max_passes} passes)` : ""}
+                  </dd>
+                </div>
+              )}
               <div className="flex justify-between col-span-2">
                 <dt className="text-ink-faint">Parts in the file</dt>
                 <dd className="text-right">

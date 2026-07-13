@@ -21,12 +21,24 @@ export const PREFLIGHT_GATES: GateInfo[] = [
     ],
   },
   {
+    key: "structure",
+    label: "Repeat structure",
+    blurb: "Reads repeat marks, verifies the playback order",
+    explain: [
+      "Repeat barlines, 1st/2nd endings and multi-time repeats are read from the score and expanded into the exact playing order.",
+      "The engraving engine's expansion is cross-checked measure-by-measure against an independent expansion of the same marks — any disagreement rejects the build rather than risking a wrong playback order.",
+      "D.C./D.S./Coda navigation isn't supported yet: write the form out in playing order and re-export.",
+      "Pieces without repeats pass straight through.",
+    ],
+  },
+  {
     key: "alignment",
     label: "Extracting the timeline",
     blurb: "Builds the note timeline the app follows",
     explain: [
       "Every note onset in the MIDI becomes a follow event — this is the timeline the score-following engine listens against.",
       "Notes within 30ms are grouped into one chord event, matching how the shipped pieces were built.",
+      "When the score has repeats, the MIDI must play them out (repeats taken): it is matched note-by-note against both the written-through and the repeat-expanded reading, and must fit the expanded one.",
     ],
   },
   {
@@ -48,8 +60,9 @@ export const AUDIO_GATE: GateInfo = {
   explain: [
     "Tap-to-seek, cursor sync, and start-anywhere all assume the audio matches the score timeline — an unverified recording would silently break them.",
     "A recording at the notated tempo passes directly (tier 1).",
-    "An expressive performance (rubato, ritardando) is aligned automatically against the score and the alignment itself is verified — onsets AND pitch content (tier 2).",
-    "The recording's structure must match the score exactly: same number of repeats, nothing added or cut.",
+    "An expressive performance (rubato, ritardando) is aligned automatically against the score and the alignment itself is verified — every note needs onset evidence OF ITS OWN PITCH at the expected time (tier 2).",
+    "The recording's structure must match the score exactly: same number of repeats, nothing added or cut — on repeat pieces every repeat pass is checked for its share of time.",
+    "Expressive verification transcribes the recording note-by-note; expect it to run for roughly TWICE the recording's length. A 10-minute recording can take ~20 minutes — the check keeps running if you leave the page.",
   ],
 };
 
@@ -88,9 +101,32 @@ export function failureHint(gateKey: string, error: string): string {
       return "Some notes couldn't be read from the score. Re-export the MusicXML, or upload a reference MIDI exported from the same project.";
     }
   }
+  if (gateKey === "structure") {
+    if (e.includes("d.c.") || e.includes("d.s.") || e.includes("coda") || e.includes("segno") || e.includes("not supported yet")) {
+      return "This score uses D.C./D.S./Coda navigation, which isn't supported yet. In your notation software, write the form out in playing order (copy the repeated section to where it plays), remove the navigation marks, and re-export both files.";
+    }
+    if (e.includes("nested") || e.includes("overlap")) {
+      return "Nested or overlapping repeats can't be expanded safely. Simplify the repeat structure (or write the passage out) and re-export.";
+    }
+    if (e.includes("expansion mismatch")) {
+      return "The engraving engine expanded the repeats differently than the marks say — this protects you from a wrong playback order. Flag it to engineering with this piece's files.";
+    }
+    return "The repeat marks couldn't be read safely. Check the barlines and ending brackets in your notation software, then re-export.";
+  }
+  if (gateKey === "alignment") {
+    if (e.includes("straight through") || e.includes("repeats taken")) {
+      return "The score plays repeats but this MIDI doesn't. Re-export the MIDI with repeat playback ON (the export follows playback), or use your software's Unroll/Expand-repeats before exporting BOTH files.";
+    }
+  }
   if (gateKey === "audio") {
+    if (e.includes("skipped or cut") || e.includes("proportional time")) {
+      return "The named repeat pass is missing or cut short in the recording. This score plays its repeats — record the full structure (all repeats taken) and re-upload.";
+    }
     if (e.includes("structure") || e.includes("repeats")) {
-      return "The recording and the score disagree structurally — most often a repeat played a different number of times, or extra/missing material. Make the recording follow the written score exactly (write out repeats in the score if needed) and re-upload.";
+      return "The recording and the score disagree structurally — most often a repeat played a different number of times, or extra/missing material. Make the recording follow the written score exactly and re-upload.";
+    }
+    if (e.includes("pedal") || e.includes("drier")) {
+      return "The recording is verified as this piece — the notes just can't be confirmed precisely enough (usually heavy pedal, distant mic, or reverb). A drier, closer recording of the same performance will usually pass.";
     }
     if (e.includes("does not appear to be this piece") || e.includes("pitch content")) {
       return "This looks like the wrong audio file for this piece — double-check which recording you attached.";

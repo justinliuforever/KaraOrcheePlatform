@@ -1,8 +1,17 @@
 import type { XmlMeta } from "../../api";
 import { keyLabel } from "../gateInfo";
 
+export interface StructureFacts {
+  kind?: string;
+  written_measures?: number;
+  played_measures?: number;
+  max_passes?: number;
+  n_spans?: number;
+  expanded_duration_sec?: number;
+}
+
 /** Read-only facts card: the MusicXML is ground truth — to change these, fix the file. */
-export default function FactsCard({ meta }: { meta: XmlMeta }) {
+export default function FactsCard({ meta, structure }: { meta: XmlMeta; structure?: StructureFacts }) {
   return (
     <div className="rounded-xl border border-line bg-card px-3.5 py-3">
       <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-2">
@@ -20,6 +29,15 @@ export default function FactsCard({ meta }: { meta: XmlMeta }) {
           <dt className="text-ink-faint">Parts</dt>
           <dd>{meta.parts.map((p, i) => p.name ?? `Part ${i + 1}`).join(" + ") || "—"}</dd>
         </div>
+        {structure?.kind === "repeats" && (
+          <div className="flex justify-between col-span-2">
+            <dt className="text-ink-faint">Structure</dt>
+            <dd className="tabular-nums">
+              plays repeats — {structure.written_measures} written / {structure.played_measures} played
+              {structure.expanded_duration_sec ? `, ${Math.round(structure.expanded_duration_sec)}s` : ""}
+            </dd>
+          </div>
+        )}
       </dl>
     </div>
   );

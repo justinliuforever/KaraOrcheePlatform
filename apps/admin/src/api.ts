@@ -140,6 +140,15 @@ export interface PieceFacts {
   n_parts?: number;
   parts?: { id: string; name: string | null }[];
   solo_part?: string | null;
+  structure?: {
+    type: "repeats";
+    written_measures: number | null;
+    played_measures: number | null;
+    max_passes: number | null;
+    n_spans: number | null;
+    expanded_duration_sec: number | null;
+    expansion_source: string | null;
+  };
 }
 
 export interface WorkSibling {
