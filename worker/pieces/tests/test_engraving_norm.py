@@ -108,3 +108,61 @@ def test_idempotent(tmp_path):
     once = normalize_engraving(src, tmp_path)
     twice = normalize_engraving(once, tmp_path)
     assert twice == once  # second pass finds nothing to fix
+
+
+# --- mis-anchored chord fingerings (Dolet x-proximity picks the wrong voice) ---
+
+def _two_voice_measure(fing_a='<fingering default-y="6">2</fingering>',
+                       fing_b='<fingering default-y="-22">5</fingering>',
+                       chord_extra="", chord_fing=""):
+    """Held LH double-stop (voice 1, div=2: dotted half=6) against an off-beat
+    single-note line (voice 2) whose first note carries the fingering stack."""
+    return f"""
+<note><pitch><step>F</step><octave>3</octave></pitch><duration>6</duration>
+  <voice>1</voice><staff>2</staff>{chord_fing}</note>
+<note><chord/><pitch><step>C</step><octave>4</octave></pitch><duration>6</duration>
+  <voice>1</voice><staff>2</staff></note>
+{chord_extra}
+<backup><duration>6</duration></backup>
+<note><rest/><duration>1</duration><voice>2</voice><staff>2</staff></note>
+<note><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration>
+  <voice>2</voice><staff>2</staff>
+  <notations><technical>{fing_b}{fing_a}</technical></notations></note>
+"""
+
+
+def test_misanchored_stack_moves_to_sounding_chord(tmp_path):
+    src = _build(tmp_path, m1_notes=_two_voice_measure())
+    out = normalize_engraving(src, tmp_path)
+    root = ET.parse(out).getroot()
+    by_pitch = {}
+    for note in root.iter("note"):
+        step = note.findtext("pitch/step")
+        if step:
+            by_pitch.setdefault(step, []).extend(
+                (f.text, f.get("placement")) for f in note.iter("fingering"))
+    # stack re-anchored to the chord principal, placed below, editor order (2 above 5)
+    assert by_pitch["F"] == [("2", "below"), ("5", "below")]
+    assert by_pitch["D"] == []
+
+
+def test_count_mismatch_stays_put(tmp_path):
+    third = ('<note><chord/><pitch><step>A</step><octave>3</octave></pitch>'
+             '<duration>6</duration><voice>1</voice><staff>2</staff></note>')
+    src = _build(tmp_path, m1_notes=_two_voice_measure(chord_extra=third))
+    out = normalize_engraving(src, tmp_path)
+    root = ET.parse(out).getroot()
+    d_note = [n for n in root.iter("note") if n.findtext("pitch/step") == "D"][0]
+    # 3-note chord vs 2 fingerings -> no move; placement still applied on the D
+    assert [(f.text, f.get("placement")) for f in d_note.iter("fingering")] == \
+        [("2", "below"), ("5", "below")]
+
+
+def test_horizontal_pair_not_treated_as_stack(tmp_path):
+    src = _build(tmp_path, m1_notes=_two_voice_measure(
+        fing_a='<fingering default-y="6">1</fingering>',
+        fing_b='<fingering default-y="6">2</fingering>'))
+    out = normalize_engraving(src, tmp_path)
+    root = ET.parse(out).getroot()
+    d_note = [n for n in root.iter("note") if n.findtext("pitch/step") == "D"][0]
+    assert len(list(d_note.iter("fingering"))) == 2  # substitution pair stays put
