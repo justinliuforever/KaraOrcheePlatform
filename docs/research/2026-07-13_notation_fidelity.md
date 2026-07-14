@@ -59,7 +59,34 @@ fingerings/expression detail in our rendering (example: La Pastorale, job 39729a
 4. Notation-class taxonomy (articulations/pedal/ottava/hairpins/grace/dynamics-between-staves)
    for Sibelius-direct→verovio — unanswered; needs a purpose-built test score per class.
 
-## Phase R design (proposed)
+## Outcome (2026-07-13/14 — all shipped, worker rev 0000019)
+
+The Dolet round-trip test settled the open questions faster than planned:
+- **Dolet 8.3 works on Sibelius 26.6** (file: `Sibelius 2026.6` + `Dolet 8.3`); all 70
+  fingerings exported as true `<technical><fingering>`; **"ADANTINO." survived** (the
+  tempo-word drop is a Direct-export bug that Dolet avoids — open Q1/Q2 closed).
+- Guide rule shipped: XML via Dolet plugin menu; MIDI/audio via normal export;
+  fingerings must use the Fingering text style.
+- **R2 shipped** (`1d2f858`): stitcher carries verovio's two `<style>` blocks
+  (scoped CSS + Leipzig @font-face) — metronome tofu fixed, dir text gets its
+  intended italics. R1 (digit-words converter) DEPRIORITIZED to defense-in-depth.
+- **engraving_norm shipped** (`5bfd397`, `21730f4` — worker `pipeline/engraving_norm.py`,
+  colleague round-2/3 feedback): (a) bottom-staff fingerings → placement="below" +
+  per-note stack reorder by default-y desc (verovio stacks below-placements in doc
+  order staff-outward → editor's visual order); (b) bare "N." words in measure 1
+  dropped (edition piece numbers); (c) **re-anchor pass**: Dolet's x-proximity
+  matching hung a chord's fingering stack on a lone note in the OTHER VOICE
+  (m11: 2/5 for the held F3+C4 double-stop landed on the off-beat D4 eighth; proof:
+  fingering default-y values = the chord notes' positions). Shape-detected (lone
+  note + ≥2 stacked fings + unique same-staff unfingered chord of matching count
+  SOUNDING at that onset — overlap window, not same-onset) and moved to the chord
+  principal. Tests 61.
+- Residual known gap (accepted for now): the source edition prints chord fingerings
+  BESIDE the noteheads; verovio ignores default-x/y on fingering, so we render below
+  the staff (modern-edition convention). True beside-notehead needs MEI @vo/@ho
+  post-processing — renderer-side work, NOT fixable by any exporter/plugin.
+
+## Phase R design (original proposal, superseded by the outcome above)
 - **R1 worker fingering converter** (MusicXML pre-verovio, port of MuseScore heuristic):
   digit-words → per-note `<technical><fingering>`; conservative gate (convert only on confident
   note match; ambiguous stays words = today's rendering); fixture corpus from colleague's real
