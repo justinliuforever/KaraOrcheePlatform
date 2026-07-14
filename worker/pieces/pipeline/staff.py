@@ -98,6 +98,13 @@ def build_variant(mei: str, vopts: dict):
     inner_open = re.search(r'<svg class="definition-scale"[^>]*>', p1).group(0)
     defs_m = re.search(r'<defs>.*?</defs>', p1, re.S)
     defs = defs_m.group(0) if defs_m else ""
+    # Verovio emits two <style> blocks per page: scoped CSS rules (bold tempo/fing, italic
+    # dir/dynam, stroke:currentColor — scoped to the outer id, which the stitched doc keeps)
+    # and an @font-face embedding the SMuFL text font (metronome beat-unit glyphs render as
+    # tofu without it). Both are identical across pages; carry page 1's copies.
+    p1_styles = re.findall(r'<style[^>]*>.*?</style>', p1, re.S)
+    rules_style = next((st for st in p1_styles if "@font-face" not in st), "")
+    font_style = next((st for st in p1_styles if "@font-face" in st), "")
 
     parts, geo_measures, systems, note_xy, note_sys = [], [], [], {}, {}
     sys_idx, yoff = -1, 0.0
@@ -159,10 +166,12 @@ def build_variant(mei: str, vopts: dict):
     svg_px_h = round(total_h * px_per_vb)
     inner = re.sub(r'viewBox="0 0 \d+ \d+"', f'viewBox="0 0 {VBW} {int(total_h)}"', inner_open)
     outer = re.sub(r'height="\d+px"', f'height="{svg_px_h}px"', outer_open)
-    # Verovio emits stafflines as <path stroke-width=...> with NO stroke colour -> invisible in
-    # spec renderers (WebKit). Force stroke=currentColor so the staff draws.
-    style = '<style>path[stroke-width]{stroke:currentColor}</style>'
-    stitched = f'{outer}{defs}{inner}{style}{"".join(parts)}{CURSOR_EL}</svg></svg>'
+    # Fallback when the rules block is absent: stafflines are <path stroke-width=...> with NO
+    # stroke colour -> invisible in spec renderers (WebKit) without stroke=currentColor.
+    if not rules_style:
+        rules_style = '<style>path[stroke-width]{stroke:currentColor}</style>'
+    stitched = (f'{outer}{defs}{rules_style}{inner}{"".join(parts)}{CURSOR_EL}</svg>'
+                f'{font_style}</svg>')
     page = {"viewbox_w": VBW, "viewbox_h": int(total_h), "svg_px_w": svg_px_w, "svg_px_h": svg_px_h,
             "px_per_vbunit": round(px_per_vb, 6), "content_h": round(total_h, 1), "margin": [0, 0],
             "src_pages": npages}
