@@ -20,6 +20,7 @@ from pipeline.staff import build_staff_assets
 from pipeline.cursor_gate import run_gate
 from pipeline.parts import reduce_xml_to_part, split_midi_notes
 from pipeline.tempo_norm import normalize_tempo
+from pipeline.engraving_norm import normalize_engraving
 from pipeline.preview import render_preview
 from pipeline.audio_gate import AudioGateError
 from pipeline.audio_map import build_time_map
@@ -77,12 +78,13 @@ def gate_sanity(xml_path: Path, midi_path: Path | None, solo_part: str | None) -
 
 def _effective_paths(xml_path: Path, out_dir: Path, meta: dict, solo_used: str | None) -> Path:
     """Reduce a multi-part score to the solo part (single-part passes through), then
-    normalize metronome marks (verovio's dotted-unit conversion is wrong)."""
+    normalize metronome marks (verovio's dotted-unit conversion is wrong) and
+    engraving placement (bottom-staff fingerings, edition piece numbers)."""
     if meta["n_parts"] <= 1 or solo_used is None:
-        return normalize_tempo(xml_path, out_dir)
+        return normalize_engraving(normalize_tempo(xml_path, out_dir), out_dir)
     reduced = out_dir / "_solo.musicxml"
     reduce_xml_to_part(xml_path, reduced, solo_used)
-    return normalize_tempo(reduced, out_dir)
+    return normalize_engraving(normalize_tempo(reduced, out_dir), out_dir)
 
 
 def _timeline_events(xml_path: Path, expanded: bool) -> list[dict]:
