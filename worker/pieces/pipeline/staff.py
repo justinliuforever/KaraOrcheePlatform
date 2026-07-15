@@ -23,7 +23,9 @@ ET.register_namespace('', 'http://www.w3.org/2000/svg')
 ET.register_namespace('xlink', 'http://www.w3.org/1999/xlink')
 
 COMMON = {"scale": 40, "pageHeight": 60000, "breaks": "auto", "xmlIdChecksum": True,
-          "header": "none", "footer": "none", "pageMarginLeft": 100, "pageMarginTop": 120, "pageMarginBottom": 140}
+          "header": "none", "footer": "none", "pageMarginLeft": 100, "pageMarginTop": 120, "pageMarginBottom": 140,
+          # house style: slurs/ties thinner than verovio defaults (0.6/0.5) — source editions
+          "slurMidpointThickness": 0.45, "tieMidpointThickness": 0.4}
 VARIANTS = {"phone":         {"pageWidth": 3000, "pageMarginRight": 100},
             "ipad":          {"pageWidth": 4500, "pageMarginRight": 120},
             "ipad_portrait": {"pageWidth": 3000, "pageMarginRight": 100}}
