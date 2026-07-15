@@ -23,8 +23,7 @@ ET.register_namespace('', 'http://www.w3.org/2000/svg')
 ET.register_namespace('xlink', 'http://www.w3.org/1999/xlink')
 
 COMMON = {"scale": 40, "pageHeight": 60000, "breaks": "auto", "xmlIdChecksum": True,
-          # left margin (verovio max 500) leaves room for the edition piece number beside system 1
-          "header": "none", "footer": "none", "pageMarginLeft": 500, "pageMarginTop": 120, "pageMarginBottom": 140,
+          "header": "none", "footer": "none", "pageMarginLeft": 100, "pageMarginTop": 120, "pageMarginBottom": 140,
           # house style: slurs/ties thinner than verovio defaults (0.6/0.5) — source editions
           "slurMidpointThickness": 0.45, "tieMidpointThickness": 0.4}
 VARIANTS = {"phone":         {"pageWidth": 3000, "pageMarginRight": 100},
@@ -192,11 +191,19 @@ def piece_number_from_xml(xml_path: Path) -> str | None:
     return m.group(1).strip() if m else None
 
 
+# option units are 1/10 of SVG viewBox units (pageWidth 3000 -> viewBox 30000)
+PIECE_NUMBER_MARGIN = 200      # widened pageMarginLeft (option units) when a number is present
+PIECE_NUMBER_CLEAR = 650       # number right edge sits this far left of system 1's stafflines
+                               # (clears the ~400-unit grand-staff brace plus an edition-like gap)
+
+
 def inject_piece_number(svg: str, number: str, sys1_bbox: list) -> str:
-    """Draw the edition piece number left of system 1, outside the brace,
-    vertically centered on the grand staff (the source editions' position)."""
+    """Draw the edition piece number immediately left of system 1's brace,
+    vertically centered on the grand staff (the source editions' position).
+    Anchored to the system's measured bbox, never to the page edge."""
+    x = sys1_bbox[0] - PIECE_NUMBER_CLEAR
     y = sys1_bbox[1] + sys1_bbox[3] / 2 + 150   # baseline ≈ optical center for 430px caps
-    el = (f'<g class="piece-number"><text x="430" y="{y:.0f}" text-anchor="end" '
+    el = (f'<g class="piece-number"><text x="{x:.0f}" y="{y:.0f}" text-anchor="end" '
           f'font-family="Times, serif" font-size="430px">{number}</text></g>')
     return svg.replace(CURSOR_EL, el + CURSOR_EL, 1)
 
@@ -320,6 +327,8 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
     id_ref = None
     for vname, vopts in VARIANTS.items():
         vopts = {**vopts, **(variant_overrides or {}).get(vname, {})}
+        if pnum:
+            vopts["pageMarginLeft"] = PIECE_NUMBER_MARGIN
         # fingering layout is per-variant (line breaks move the obstacles); the
         # canonical <piece>.mei stays unadjusted — position is pure presentation
         mei_v, fing_rep = adjust_fingering_mei(mei, {**COMMON, **vopts})
