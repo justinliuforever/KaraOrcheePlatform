@@ -151,3 +151,28 @@ def test_piece_number_rendered_beside_first_system(tmp_path):
     for vname in VARIANTS:
         svg = (tmp_path / f"numpiece.{vname}.svg").read_text()
         assert 'class="piece-number"' in svg and ">3.</text>" in svg
+
+
+def test_title_block_rendered_and_centered(tmp_path):
+    from pipeline.staff import build_staff_assets, VARIANTS
+    xml = _score(_note("G", 3) + _note("D", 3), _note("A", 3) + _note("C", 3)).replace(
+        "<part-list>",
+        "<movement-title>1. Test Piece\nSubtitle</movement-title><part-list>")
+    src = tmp_path / "t.musicxml"
+    src.write_text(xml)
+    bundle = build_staff_assets("titled", src, tmp_path / "no.json", tmp_path)
+    for vname in VARIANTS:
+        svg = (tmp_path / f"titled.{vname}.svg").read_text()
+        assert ">1. Test Piece</text>" in svg and ">Subtitle</text>" in svg
+        m = re.search(r'<g class="title-block"><text x="([-\d.]+)"', svg)
+        sys1 = bundle["variants"][vname]["systems"][0]["bbox"]
+        assert abs(float(m.group(1)) - (sys1[0] + sys1[2] / 2)) < 2   # centered on system 1
+
+
+def test_no_title_no_block(tmp_path):
+    from pipeline.staff import build_staff_assets
+    src = tmp_path / "n.musicxml"
+    src.write_text(_score(_note("G", 3), _note("C", 3)))
+    build_staff_assets("untitled", src, tmp_path / "no.json", tmp_path)
+    svg = (tmp_path / "untitled.phone.svg").read_text()
+    assert "title-block" not in svg

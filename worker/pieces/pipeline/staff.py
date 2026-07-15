@@ -183,6 +183,33 @@ def build_variant(mei: str, vopts: dict):
     return stitched, tm, page, geo_measures, systems, note_xy, note_sys
 
 
+def titles_from_xml(xml_path: Path) -> tuple[str | None, str | None]:
+    """(main title, subtitle) from movement-title (line 2 = subtitle, edition style),
+    falling back to work-title."""
+    raw = xml_path.read_bytes()
+    text = raw.decode('utf-16' if raw[:2] in (b'\xff\xfe', b'\xfe\xff') else 'utf-8', errors='replace')
+    m = re.search(r'<movement-title>([^<]+)</movement-title>', text) or \
+        re.search(r'<work-title>([^<]+)</work-title>', text)
+    if not m:
+        return None, None
+    lines = [ln.strip() for ln in m.group(1).splitlines() if ln.strip()]
+    return (lines[0] if lines else None), (lines[1] if len(lines) > 1 else None)
+
+
+def inject_titles(svg: str, main: str, subtitle: str | None, sys1_bbox: list) -> str:
+    """Edition-style centered title block above system 1, anchored to its measured bbox."""
+    from xml.sax.saxutils import escape
+    cx = sys1_bbox[0] + sys1_bbox[2] / 2
+    top = sys1_bbox[1]
+    parts = [f'<text x="{cx:.0f}" y="{top - 1900:.0f}" text-anchor="middle" '
+             f'font-family="Times, serif" font-size="620px">{escape(main)}</text>']
+    if subtitle:
+        parts.append(f'<text x="{cx:.0f}" y="{top - 1330:.0f}" text-anchor="middle" '
+                     f'font-family="Times, serif" font-size="420px">{escape(subtitle)}</text>')
+    el = '<g class="title-block">' + "".join(parts) + '</g>'
+    return svg.replace(CURSOR_EL, el + CURSOR_EL, 1)
+
+
 def piece_number_from_xml(xml_path: Path) -> str | None:
     """Edition piece number stashed by engraving_norm as identification metadata."""
     raw = xml_path.read_bytes()
@@ -195,6 +222,7 @@ def piece_number_from_xml(xml_path: Path) -> str | None:
 PIECE_NUMBER_MARGIN = 200      # widened pageMarginLeft (option units) when a number is present
 PIECE_NUMBER_CLEAR = 650       # number right edge sits this far left of system 1's stafflines
                                # (clears the ~400-unit grand-staff brace plus an edition-like gap)
+TITLE_MARGIN_TOP = 320         # widened pageMarginTop (option units) when a title is rendered
 
 
 def inject_piece_number(svg: str, number: str, sys1_bbox: list) -> str:
@@ -309,6 +337,7 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
     ver = verovio_version()
     sha = hashlib.sha256(xml_path.read_bytes()).hexdigest()[:16]
     pnum = piece_number_from_xml(xml_path)
+    title_main, title_sub = titles_from_xml(xml_path)
     mei = freeze_mei(xml_path)
     num_map = mei_measure_numbers(mei)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -329,12 +358,16 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
         vopts = {**vopts, **(variant_overrides or {}).get(vname, {})}
         if pnum:
             vopts["pageMarginLeft"] = PIECE_NUMBER_MARGIN
+        if title_main:
+            vopts["pageMarginTop"] = TITLE_MARGIN_TOP
         # fingering layout is per-variant (line breaks move the obstacles); the
         # canonical <piece>.mei stays unadjusted — position is pure presentation
         mei_v, fing_rep = adjust_fingering_mei(mei, {**COMMON, **vopts})
         svg, tm, page, gmeas, systems, note_xy, note_sys = build_variant(mei_v, vopts)
         if pnum and systems:
             svg = inject_piece_number(svg, pnum, systems[0]["bbox"])
+        if title_main and systems:
+            svg = inject_titles(svg, title_main, title_sub, systems[0]["bbox"])
         (out_dir / f"{piece}.{vname}.svg").write_text(svg)
         identity, onsets = build_identity(tm, num_map, playback)
         span_starts = ([sp["expanded_sec_start"] for sp in playback["spans"][1:]]
