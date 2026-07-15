@@ -165,17 +165,40 @@ def _fix_fingering_placement(part) -> bool:
     return changed
 
 
-def _drop_piece_number_words(part) -> bool:
+def _drop_piece_number_words(part) -> str | None:
+    """Remove the edition piece number ("3.") from measure 1 and return it so it
+    can be preserved as metadata — the staff builder re-places it at the edition
+    position (left of system 1, outside the brace), where MusicXML cannot put it."""
     m1 = part.find("measure")
     if m1 is None:
-        return False
-    changed = False
+        return None
+    captured = None
     for d in list(m1.findall("direction")):
         words = d.findall(".//words")
         if len(words) == 1 and words[0].text and _PIECE_NUMBER.fullmatch(words[0].text.strip()):
+            captured = words[0].text.strip()
             m1.remove(d)
-            changed = True
-    return changed
+    return captured
+
+
+def _store_piece_number(root, number: str) -> bool:
+    for f in root.iter("miscellaneous-field"):
+        if f.get("name") == "piece-number":
+            return False
+    ident = root.find("identification")
+    if ident is None:
+        idx = 0
+        for i, child in enumerate(list(root)):
+            if child.tag in ("work", "movement-number", "movement-title"):
+                idx = i + 1
+        ident = ET.Element("identification")
+        root.insert(idx, ident)
+    misc = ident.find("miscellaneous")
+    if misc is None:
+        misc = ET.SubElement(ident, "miscellaneous")
+    field = ET.SubElement(misc, "miscellaneous-field", {"name": "piece-number"})
+    field.text = number
+    return True
 
 
 def _pad_tempo_metronome_gap(part) -> bool:
@@ -205,11 +228,15 @@ def normalize_engraving(xml_path: Path, out_dir: Path) -> Path:
         tree = ET.parse(xml_path)
     except ET.ParseError:
         return xml_path
+    root = tree.getroot()
     changed = False
-    for part in tree.getroot().iter("part"):
+    for part in root.iter("part"):
         changed |= _reanchor_chord_fingerings(part)
         changed |= _fix_fingering_placement(part)
-        changed |= _drop_piece_number_words(part)
+        number = _drop_piece_number_words(part)
+        if number:
+            changed = True
+            _store_piece_number(root, number)
         changed |= _pad_tempo_metronome_gap(part)
     if not changed:
         return xml_path

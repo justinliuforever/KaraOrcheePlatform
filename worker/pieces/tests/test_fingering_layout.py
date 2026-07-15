@@ -134,3 +134,20 @@ def test_bundle_carries_layout_report(frozen, tmp_path):
     for vname in VARIANTS:
         rep = bundle["variants"][vname]["fingering_layout"]
         assert rep["stacks"] == 1 and rep["beside"] + rep["fallback"] == 1
+
+
+def test_piece_number_rendered_beside_first_system(tmp_path):
+    from pipeline.engraving_norm import normalize_engraving
+    from pipeline.staff import build_staff_assets, VARIANTS
+    xml = _score(
+        '<direction placement="above"><direction-type><words>3.</words></direction-type>'
+        "</direction>" + _note("G", 3) + _note("D", 3),
+        _note("A", 3) + _note("C", 3),
+    )
+    src = tmp_path / "n.musicxml"
+    src.write_text(xml)
+    eff = normalize_engraving(src, tmp_path)
+    bundle = build_staff_assets("numpiece", eff, tmp_path / "no.json", tmp_path)
+    for vname in VARIANTS:
+        svg = (tmp_path / f"numpiece.{vname}.svg").read_text()
+        assert 'class="piece-number"' in svg and ">3.</text>" in svg

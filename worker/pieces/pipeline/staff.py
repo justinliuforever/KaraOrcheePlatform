@@ -23,7 +23,8 @@ ET.register_namespace('', 'http://www.w3.org/2000/svg')
 ET.register_namespace('xlink', 'http://www.w3.org/1999/xlink')
 
 COMMON = {"scale": 40, "pageHeight": 60000, "breaks": "auto", "xmlIdChecksum": True,
-          "header": "none", "footer": "none", "pageMarginLeft": 100, "pageMarginTop": 120, "pageMarginBottom": 140,
+          # left margin (verovio max 500) leaves room for the edition piece number beside system 1
+          "header": "none", "footer": "none", "pageMarginLeft": 500, "pageMarginTop": 120, "pageMarginBottom": 140,
           # house style: slurs/ties thinner than verovio defaults (0.6/0.5) — source editions
           "slurMidpointThickness": 0.45, "tieMidpointThickness": 0.4}
 VARIANTS = {"phone":         {"pageWidth": 3000, "pageMarginRight": 100},
@@ -183,6 +184,23 @@ def build_variant(mei: str, vopts: dict):
     return stitched, tm, page, geo_measures, systems, note_xy, note_sys
 
 
+def piece_number_from_xml(xml_path: Path) -> str | None:
+    """Edition piece number stashed by engraving_norm as identification metadata."""
+    raw = xml_path.read_bytes()
+    text = raw.decode('utf-16' if raw[:2] in (b'\xff\xfe', b'\xfe\xff') else 'utf-8', errors='replace')
+    m = re.search(r'<miscellaneous-field name="piece-number">([^<]+)</miscellaneous-field>', text)
+    return m.group(1).strip() if m else None
+
+
+def inject_piece_number(svg: str, number: str, sys1_bbox: list) -> str:
+    """Draw the edition piece number left of system 1, outside the brace,
+    vertically centered on the grand staff (the source editions' position)."""
+    y = sys1_bbox[1] + sys1_bbox[3] / 2 + 150   # baseline ≈ optical center for 430px caps
+    el = (f'<g class="piece-number"><text x="430" y="{y:.0f}" text-anchor="end" '
+          f'font-family="Times, serif" font-size="430px">{number}</text></g>')
+    return svg.replace(CURSOR_EL, el + CURSOR_EL, 1)
+
+
 def build_identity(tm: list, num_map: dict, playback: dict | None = None):
     meas, onsets = [], []
     for e in tm:
@@ -283,6 +301,7 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
     """Build all staff assets for one piece into out_dir; returns the bundle dict."""
     ver = verovio_version()
     sha = hashlib.sha256(xml_path.read_bytes()).hexdigest()[:16]
+    pnum = piece_number_from_xml(xml_path)
     mei = freeze_mei(xml_path)
     num_map = mei_measure_numbers(mei)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -305,6 +324,8 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
         # canonical <piece>.mei stays unadjusted — position is pure presentation
         mei_v, fing_rep = adjust_fingering_mei(mei, {**COMMON, **vopts})
         svg, tm, page, gmeas, systems, note_xy, note_sys = build_variant(mei_v, vopts)
+        if pnum and systems:
+            svg = inject_piece_number(svg, pnum, systems[0]["bbox"])
         (out_dir / f"{piece}.{vname}.svg").write_text(svg)
         identity, onsets = build_identity(tm, num_map, playback)
         span_starts = ([sp["expanded_sec_start"] for sp in playback["spans"][1:]]

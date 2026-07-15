@@ -101,6 +101,8 @@ def test_piece_number_dropped_only_in_measure_one(tmp_path):
     m2_words = [w.text for w in measures[1].iter("words")]
     assert m1_words == ["cresc:"]   # "3." gone, real text kept
     assert m2_words == ["3."]       # later measures never touched
+    field = root.find(".//miscellaneous-field[@name='piece-number']")
+    assert field is not None and field.text == "3."   # captured for the staff builder
 
 
 def test_idempotent(tmp_path):
