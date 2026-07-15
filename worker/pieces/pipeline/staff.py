@@ -171,6 +171,8 @@ def build_variant(mei: str, vopts: dict):
     # stroke colour -> invisible in spec renderers (WebKit) without stroke=currentColor.
     if not rules_style:
         rules_style = '<style>path[stroke-width]{stroke:currentColor}</style>'
+    # house style: slurs/ties read lighter than note ink (colleague-matched to the source editions)
+    rules_style = rules_style.replace('</style>', 'g.slur,g.tie{opacity:.7}</style>')
     stitched = (f'{outer}{defs}{rules_style}{inner}{"".join(parts)}{CURSOR_EL}</svg>'
                 f'{font_style}</svg>')
     page = {"viewbox_w": VBW, "viewbox_h": int(total_h), "svg_px_w": svg_px_w, "svg_px_h": svg_px_h,

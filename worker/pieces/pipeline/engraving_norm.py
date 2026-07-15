@@ -178,6 +178,26 @@ def _drop_piece_number_words(part) -> bool:
     return changed
 
 
+def _pad_tempo_metronome_gap(part) -> bool:
+    """Tempo directions carrying words AND a metronome render glued together
+    ("ADANTINO.(♩.=66)"). Verovio right-trims trailing whitespace-class chars
+    (incl. nbsp) both in the MEI roundtrip and at render, so a plain pad dies;
+    a zero-width joiner terminator is non-whitespace and stops the trim while
+    adding no width. Normalize to exactly two nbsp + ZWJ. Idempotent."""
+    changed = False
+    for d in part.iter("direction"):
+        if d.find(".//metronome") is None:
+            continue
+        for w in d.findall(".//words"):
+            if not (w.text and w.text.strip()):
+                continue
+            padded = w.text.rstrip(" \u00a0\u200d") + "\u00a0\u00a0\u200d"
+            if padded != w.text:
+                w.text = padded
+                changed = True
+    return changed
+
+
 def normalize_engraving(xml_path: Path, out_dir: Path) -> Path:
     """Return a path with fingering placement + piece-number fixes applied.
     Returns the input path untouched when there is nothing to fix."""
@@ -190,6 +210,7 @@ def normalize_engraving(xml_path: Path, out_dir: Path) -> Path:
         changed |= _reanchor_chord_fingerings(part)
         changed |= _fix_fingering_placement(part)
         changed |= _drop_piece_number_words(part)
+        changed |= _pad_tempo_metronome_gap(part)
     if not changed:
         return xml_path
     out = out_dir / (xml_path.stem + ".engraving_norm.musicxml")

@@ -166,3 +166,31 @@ def test_horizontal_pair_not_treated_as_stack(tmp_path):
     root = ET.parse(out).getroot()
     d_note = [n for n in root.iter("note") if n.findtext("pitch/step") == "D"][0]
     assert len(list(d_note.iter("fingering"))) == 2  # substitution pair stays put
+
+
+def test_tempo_metronome_gap_padded(tmp_path):
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1"><measure number="1">
+    <attributes><divisions>4</divisions><clef><sign>G</sign><line>2</line></clef></attributes>
+    <direction placement="above" directive="yes">
+      <direction-type><words font-weight="bold">ADANTINO. </words></direction-type>
+      <direction-type><metronome parentheses="yes"><beat-unit>quarter</beat-unit>
+        <beat-unit-dot/><per-minute>66</per-minute></metronome></direction-type>
+      <sound tempo="99"/>
+    </direction>
+    <direction placement="below">
+      <direction-type><words font-style="italic">dolce cantabile.</words></direction-type>
+    </direction>
+    <note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice></note>
+  </measure></part>
+</score-partwise>"""
+    src = tmp_path / "t.musicxml"
+    src.write_text(xml)
+    out = normalize_engraving(src, tmp_path)
+    text = out.read_text()
+    assert "ADANTINO.\u00a0\u00a0\u200d<" in text   # two nbsp + zwj terminator
+    assert "dolce cantabile.<" in text               # words without metronome untouched
+    out2 = normalize_engraving(out, tmp_path)        # idempotent
+    assert out2.read_text().count("ADANTINO.\u00a0\u00a0\u200d") == 1
