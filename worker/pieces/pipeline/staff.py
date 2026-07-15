@@ -177,6 +177,7 @@ def build_variant(mei: str, vopts: dict):
     rules_style = rules_style.replace('</style>', 'g.slur,g.tie{opacity:.7}</style>')
     stitched = (f'{outer}{defs}{rules_style}{inner}{"".join(parts)}{CURSOR_EL}</svg>'
                 f'{font_style}</svg>')
+    stitched = stitched.replace('font-family="Times, serif"', f'font-family="{TEXT_FONT}"')
     page = {"viewbox_w": VBW, "viewbox_h": int(total_h), "svg_px_w": svg_px_w, "svg_px_h": svg_px_h,
             "px_per_vbunit": round(px_per_vb, 6), "content_h": round(total_h, 1), "margin": [0, 0],
             "src_pages": npages}
@@ -202,10 +203,10 @@ def inject_titles(svg: str, main: str, subtitle: str | None, sys1_bbox: list) ->
     cx = sys1_bbox[0] + sys1_bbox[2] / 2
     top = sys1_bbox[1]
     parts = [f'<text x="{cx:.0f}" y="{top - 1900:.0f}" text-anchor="middle" '
-             f'font-family="Times, serif" font-size="620px">{escape(main)}</text>']
+             f'font-family="{TEXT_FONT}" font-size="620px">{escape(main)}</text>']
     if subtitle:
         parts.append(f'<text x="{cx:.0f}" y="{top - 1330:.0f}" text-anchor="middle" '
-                     f'font-family="Times, serif" font-size="420px">{escape(subtitle)}</text>')
+                     f'font-family="{TEXT_FONT}" font-size="420px">{escape(subtitle)}</text>')
     el = '<g class="title-block">' + "".join(parts) + '</g>'
     return svg.replace(CURSOR_EL, el + CURSOR_EL, 1)
 
@@ -223,6 +224,10 @@ PIECE_NUMBER_MARGIN = 200      # widened pageMarginLeft (option units) when a nu
 PIECE_NUMBER_CLEAR = 650       # number right edge sits this far left of system 1's stafflines
                                # (clears the ~400-unit grand-staff brace plus an edition-like gap)
 TITLE_MARGIN_TOP = 320         # widened pageMarginTop (option units) when a title is rendered
+# house text font (titles, tempo, dynamics text, fingerings, piece number — NOT music glyphs,
+# which stay in the SMuFL font). Baskerville per founder choice 2026-07-14; Windows admin
+# falls back to Palatino Linotype (no Baskerville there), then generic serif.
+TEXT_FONT = "Baskerville, Palatino, 'Palatino Linotype', serif"
 
 
 def inject_piece_number(svg: str, number: str, sys1_bbox: list) -> str:
@@ -232,7 +237,7 @@ def inject_piece_number(svg: str, number: str, sys1_bbox: list) -> str:
     x = sys1_bbox[0] - PIECE_NUMBER_CLEAR
     y = sys1_bbox[1] + sys1_bbox[3] / 2 + 150   # baseline ≈ optical center for 430px caps
     el = (f'<g class="piece-number"><text x="{x:.0f}" y="{y:.0f}" text-anchor="end" '
-          f'font-family="Times, serif" font-size="430px">{number}</text></g>')
+          f'font-family="{TEXT_FONT}" font-size="430px">{number}</text></g>')
     return svg.replace(CURSOR_EL, el + CURSOR_EL, 1)
 
 

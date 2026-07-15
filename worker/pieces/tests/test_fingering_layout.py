@@ -176,3 +176,17 @@ def test_no_title_no_block(tmp_path):
     build_staff_assets("untitled", src, tmp_path / "no.json", tmp_path)
     svg = (tmp_path / "untitled.phone.svg").read_text()
     assert "title-block" not in svg
+
+
+def test_house_text_font_applied(tmp_path):
+    from pipeline.staff import build_staff_assets, TEXT_FONT
+    xml = _score(_note("G", 3, ("1", "3", "5")) + _note("B", 3, chord=True)
+                 + _note("D", 4, chord=True), _note("C", 3)).replace(
+        "<part-list>", "<movement-title>1. T</movement-title><part-list>")
+    src = tmp_path / "f.musicxml"
+    src.write_text(xml)
+    build_staff_assets("fonted", src, tmp_path / "no.json", tmp_path)
+    svg = (tmp_path / "fonted.phone.svg").read_text()
+    assert 'font-family="Times, serif"' not in svg        # every text element retargeted
+    assert f'font-family="{TEXT_FONT}"' in svg
+    assert "Leipzig" not in TEXT_FONT                      # replacement can never touch SMuFL
