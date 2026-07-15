@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from pipeline.vrv import make_toolkit, version as verovio_version
+from pipeline.fingering_layout import adjust_mei as adjust_fingering_mei
 
 ET.register_namespace('', 'http://www.w3.org/2000/svg')
 ET.register_namespace('xlink', 'http://www.w3.org/1999/xlink')
@@ -296,7 +297,10 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
     id_ref = None
     for vname, vopts in VARIANTS.items():
         vopts = {**vopts, **(variant_overrides or {}).get(vname, {})}
-        svg, tm, page, gmeas, systems, note_xy, note_sys = build_variant(mei, vopts)
+        # fingering layout is per-variant (line breaks move the obstacles); the
+        # canonical <piece>.mei stays unadjusted — position is pure presentation
+        mei_v, fing_rep = adjust_fingering_mei(mei, {**COMMON, **vopts})
+        svg, tm, page, gmeas, systems, note_xy, note_sys = build_variant(mei_v, vopts)
         (out_dir / f"{piece}.{vname}.svg").write_text(svg)
         identity, onsets = build_identity(tm, num_map, playback)
         span_starts = ([sp["expanded_sec_start"] for sp in playback["spans"][1:]]
@@ -307,7 +311,8 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
                 "system_index": gmap.get(im["measure_id"], {}).get("system_index"),
                 "bbox": gmap.get(im["measure_id"], {}).get("bbox")} for im in identity]
         bundle["variants"][vname] = {"page": page, "n_systems": len(systems),
-                                     "measures": geo, "systems": systems, "cursor_anchors": anchors}
+                                     "measures": geo, "systems": systems, "cursor_anchors": anchors,
+                                     "fingering_layout": fing_rep}
         if id_ref is None:
             bundle["identity"]["measures"] = identity; id_ref = [m["measure_id"] for m in identity]
         else:
