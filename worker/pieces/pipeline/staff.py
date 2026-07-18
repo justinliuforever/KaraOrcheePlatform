@@ -184,16 +184,28 @@ def build_variant(mei: str, vopts: dict):
     return stitched, tm, page, geo_measures, systems, note_xy, note_sys
 
 
+def _xml_text_field(xml_path: Path, patterns: list[str]) -> str | None:
+    """First matching element text from the raw file (utf-16 aware), with XML
+    entities DECODED — the injectors re-escape, so a raw read would double-escape
+    (&amp; -> &amp;amp; rendered as literal '&amp;')."""
+    from xml.sax.saxutils import unescape
+    raw = xml_path.read_bytes()
+    text = raw.decode('utf-16' if raw[:2] in (b'\xff\xfe', b'\xfe\xff') else 'utf-8', errors='replace')
+    for pat in patterns:
+        m = re.search(pat, text)
+        if m:
+            return unescape(m.group(1), {"&apos;": "'", "&quot;": '"'})
+    return None
+
+
 def titles_from_xml(xml_path: Path) -> tuple[str | None, str | None]:
     """(main title, subtitle) from movement-title (line 2 = subtitle, edition style),
     falling back to work-title."""
-    raw = xml_path.read_bytes()
-    text = raw.decode('utf-16' if raw[:2] in (b'\xff\xfe', b'\xfe\xff') else 'utf-8', errors='replace')
-    m = re.search(r'<movement-title>([^<]+)</movement-title>', text) or \
-        re.search(r'<work-title>([^<]+)</work-title>', text)
-    if not m:
+    t = _xml_text_field(xml_path, [r'<movement-title>([^<]+)</movement-title>',
+                                   r'<work-title>([^<]+)</work-title>'])
+    if not t:
         return None, None
-    lines = [ln.strip() for ln in m.group(1).splitlines() if ln.strip()]
+    lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
     return (lines[0] if lines else None), (lines[1] if len(lines) > 1 else None)
 
 
@@ -213,10 +225,8 @@ def inject_titles(svg: str, main: str, subtitle: str | None, sys1_bbox: list) ->
 
 def piece_number_from_xml(xml_path: Path) -> str | None:
     """Edition piece number stashed by engraving_norm as identification metadata."""
-    raw = xml_path.read_bytes()
-    text = raw.decode('utf-16' if raw[:2] in (b'\xff\xfe', b'\xfe\xff') else 'utf-8', errors='replace')
-    m = re.search(r'<miscellaneous-field name="piece-number">([^<]+)</miscellaneous-field>', text)
-    return m.group(1).strip() if m else None
+    t = _xml_text_field(xml_path, [r'<miscellaneous-field name="piece-number">([^<]+)</miscellaneous-field>'])
+    return t.strip() if t else None
 
 
 # option units are 1/10 of SVG viewBox units (pageWidth 3000 -> viewBox 30000)
@@ -234,10 +244,11 @@ def inject_piece_number(svg: str, number: str, sys1_bbox: list) -> str:
     """Draw the edition piece number immediately left of system 1's brace,
     vertically centered on the grand staff (the source editions' position).
     Anchored to the system's measured bbox, never to the page edge."""
+    from xml.sax.saxutils import escape
     x = sys1_bbox[0] - PIECE_NUMBER_CLEAR
     y = sys1_bbox[1] + sys1_bbox[3] / 2 + 150   # baseline ≈ optical center for 430px caps
     el = (f'<g class="piece-number"><text x="{x:.0f}" y="{y:.0f}" text-anchor="end" '
-          f'font-family="{TEXT_FONT}" font-size="430px">{number}</text></g>')
+          f'font-family="{TEXT_FONT}" font-size="430px">{escape(number)}</text></g>')
     return svg.replace(CURSOR_EL, el + CURSOR_EL, 1)
 
 

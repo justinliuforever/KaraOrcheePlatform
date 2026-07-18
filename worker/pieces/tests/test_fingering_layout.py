@@ -190,3 +190,18 @@ def test_house_text_font_applied(tmp_path):
     assert 'font-family="Times, serif"' not in svg        # every text element retargeted
     assert f'font-family="{TEXT_FONT}"' in svg
     assert "Leipzig" not in TEXT_FONT                      # replacement can never touch SMuFL
+
+
+def test_title_entities_render_singly_escaped(tmp_path):
+    from pipeline.staff import build_staff_assets, titles_from_xml
+    xml = _score(_note("G", 3), _note("C", 3)).replace(
+        "<part-list>",
+        "<movement-title>Waltz &amp; Rondo\n&lt;No.3&gt; &quot;Op.1&quot;</movement-title><part-list>")
+    src = tmp_path / "e.musicxml"
+    src.write_text(xml)
+    assert titles_from_xml(src) == ("Waltz & Rondo", '<No.3> "Op.1"')
+    build_staff_assets("ent", src, tmp_path / "no.json", tmp_path)
+    svg = (tmp_path / "ent.phone.svg").read_text()
+    assert ">Waltz &amp; Rondo</text>" in svg          # singly escaped, renders as "Waltz & Rondo"
+    assert "&amp;amp;" not in svg
+    ET.fromstring(svg)                                  # still valid XML
