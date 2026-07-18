@@ -227,6 +227,8 @@ export interface XmlMeta {
   tempo_bpm: number | null;
   tempo_text: string | null;
   tempo_source: "xml" | "default";
+  software?: string[];
+  export_warnings?: { code: string; measures?: string[] }[];
   suggested_title: string | null;
   suggested_movement: string | null;
   suggested_composer: string | null;

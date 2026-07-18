@@ -10,8 +10,18 @@ export interface StructureFacts {
   expanded_duration_sec?: number;
 }
 
+const EXPORT_WARNING_COPY: Record<string, (measures?: string[]) => string> = {
+  sibelius_direct_export: () =>
+    "Exported directly from Sibelius — fingerings and tempo words degrade. Re-export the XML via Dolet (Home > Plug-ins > Dolet 8).",
+  fingering_stack_no_position: (measures) =>
+    `Fingering stack without position data in m. ${(measures ?? []).join(", ")} — it may be attached to the wrong note. In Sibelius, click the fingering and check its voice matches the chord, then re-export.`,
+};
+
 /** Read-only facts card: the MusicXML is ground truth — to change these, fix the file. */
 export default function FactsCard({ meta, structure }: { meta: XmlMeta; structure?: StructureFacts }) {
+  const warnings = (meta.export_warnings ?? [])
+    .map((w) => EXPORT_WARNING_COPY[w.code]?.(w.measures))
+    .filter((s): s is string => Boolean(s));
   return (
     <div className="rounded-xl border border-line bg-card px-3.5 py-3">
       <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-2">
@@ -39,6 +49,13 @@ export default function FactsCard({ meta, structure }: { meta: XmlMeta; structur
           </div>
         )}
       </dl>
+      {warnings.length > 0 && (
+        <div className="mt-2 space-y-1 border-t border-line pt-2">
+          {warnings.map((w) => (
+            <p key={w} className="text-xs text-warn">{w}</p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
