@@ -10,12 +10,35 @@ from pathlib import Path
 
 MODE_NAMES = {"major", "minor"}
 
+# Sibelius's File > Export writes this literal marker; the Dolet plugin writes
+# "Dolet 8.3 for Sibelius". Direct exports degrade fingerings to <words> digits
+# and drop tempo words — the guide mandates Dolet, so flag at the door.
+DIRECT_EXPORT_MARKER = "Direct export, not from Dolet"
+
 
 def _text(el) -> str | None:
     if el is None or el.text is None:
         return None
     t = el.text.strip()
     return t or None
+
+
+def _fingering_stack_measures(root) -> list[str]:
+    """Printed measure numbers where a note carries a >=2-fingering stack with any
+    fingering missing default-x. Dolet writes default-x only when its position match
+    succeeded — an unpositioned stack is the fingerprint of a voice-driven mis-claim
+    (fingering likely hung on the wrong note)."""
+    seen: list[str] = []
+    for part in root.findall("part"):
+        for meas in part.findall("measure"):
+            for note in meas.findall("note"):
+                fings = [f for tech in note.findall("notations/technical")
+                         for f in tech.findall("fingering")]
+                if len(fings) >= 2 and any(f.get("default-x") is None for f in fings):
+                    num = meas.get("number") or "?"
+                    if num not in seen:
+                        seen.append(num)
+    return seen
 
 
 def extract(xml_path: Path) -> dict:
@@ -75,6 +98,17 @@ def extract(xml_path: Path) -> dict:
                 composer = _text(creator)
                 break
 
+    software = [s for s in (_text(el) for el in root.findall("identification/encoding/software")) if s][:8]
+    export_warnings: list[dict] = []
+    if any(DIRECT_EXPORT_MARKER in s for s in software):
+        export_warnings.append({"code": "sibelius_direct_export"})
+    # NB: the direct-export marker itself contains the word "Dolet" — exclude it.
+    if any("Dolet" in s and DIRECT_EXPORT_MARKER not in s for s in software):
+        stack_measures = _fingering_stack_measures(root)
+        if stack_measures:
+            export_warnings.append({"code": "fingering_stack_no_position",
+                                    "measures": stack_measures[:8]})
+
     return {
         "parts": parts,
         "n_parts": len(parts),
@@ -85,6 +119,8 @@ def extract(xml_path: Path) -> dict:
         "tempo_bpm": tempo_bpm,
         "tempo_text": tempo_text,
         "tempo_source": "xml" if tempo_bpm is not None else "default",
+        "software": software,
+        "export_warnings": export_warnings,
         # Prefill suggestions — NEVER authoritative:
         "suggested_title": _text(root.find("work/work-title")),
         "suggested_movement": _text(root.find("movement-title")),
