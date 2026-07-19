@@ -22,6 +22,7 @@ from pipeline.parts import reduce_xml_to_part, split_midi_notes
 from pipeline.tempo_norm import normalize_tempo
 from pipeline.engraving_norm import normalize_engraving
 from pipeline.preview import render_preview
+from pipeline.thumbnail import render_thumbnail
 from pipeline.audio_gate import AudioGateError
 from pipeline.audio_map import build_time_map
 from pipeline.align import structure_match_score
@@ -336,6 +337,15 @@ def gate_render(piece: str, out_dir: Path) -> dict:
     return metrics
 
 
+def gate_thumbnail(piece: str, out_dir: Path) -> dict:
+    # Catalog art is an enhancement, never a build blocker (mirrors gate_preview).
+    try:
+        return render_thumbnail(out_dir / f"{piece}.phone.svg", out_dir / "thumbnail.webp")
+    except Exception as err:
+        traceback.print_exc()
+        return {"skipped": f"thumbnail failed: {str(err)[:120]}"}
+
+
 # Staged blob name -> (role, variant). PUBLISH_ROLES is the bundle allowlist —
 # preview audio is a review aid and must never enter the immutable bundle.
 ARTIFACT_LAYOUT = [
@@ -348,8 +358,9 @@ ARTIFACT_LAYOUT = [
     ("reference.m4a", "reference.m4a", "reference_audio", None),
     ("audio_map.json", "audio_map.json", "audio_map", None),
     ("preview.m4a", "preview.m4a", "preview_audio", None),
+    ("thumbnail.webp", "thumbnail.webp", "thumbnail", None),
 ]
-PUBLISH_ROLES = {"score_events", "accompaniment_events", "geometry", "svg", "reference_audio", "audio_map"}
+PUBLISH_ROLES = {"score_events", "accompaniment_events", "geometry", "svg", "reference_audio", "audio_map", "thumbnail"}
 
 
 def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out_dir: Path,
@@ -381,6 +392,8 @@ def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out
         stages.append(("audio", lambda: gate_audio(audio_path, out_dir, sf2_path, program, state)))
     if include_render:
         stages.append(("render", lambda: gate_render(piece, out_dir)))
+        # rides the render lane: preflight must never touch playwright
+        stages.append(("thumbnail", lambda: gate_thumbnail(piece, out_dir)))
 
     for stage, fn in stages:
         t0 = time.monotonic()

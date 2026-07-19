@@ -34,7 +34,7 @@ SOURCES_CONTAINER = "piece-sources"
 BUNDLES_CONTAINER = "piece-bundles"
 
 CONTENT_TYPES = {".json": "application/json", ".svg": "image/svg+xml", ".mei": "application/xml",
-                 ".m4a": "audio/mp4"}
+                 ".m4a": "audio/mp4", ".webp": "image/webp"}
 _SF2_CACHE = Path("/tmp/sf2cache")
 
 
