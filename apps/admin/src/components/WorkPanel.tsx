@@ -15,6 +15,7 @@ import {
   type WorkEdit,
 } from "../api";
 import { AuditTrail, ErrorNote, PanelSection, Spinner, inputCls } from "./ui";
+import ComposerSelect from "./ComposerSelect";
 import StatusTag from "./StatusTag";
 import ToneBadge from "./ToneBadge";
 import SlideOver from "./SlideOver";
@@ -252,7 +253,7 @@ export default function WorkPanel({ id, onClose }: { id: string; onClose: () => 
             </div>
             <div>
               <label className={labelCls}>Composer</label>
-              <input className={inputCls} value={form.composer} onChange={(e) => setForm({ ...form, composer: e.target.value })} />
+              <ComposerSelect value={form.composer} onChange={(v) => setForm({ ...form, composer: v })} />
             </div>
             <div>
               <label className={labelCls}>Catalogue No. (Op. / K. / BWV)</label>

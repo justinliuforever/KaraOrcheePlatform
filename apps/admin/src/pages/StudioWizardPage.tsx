@@ -11,6 +11,7 @@ import {
   type XmlMeta,
 } from "../api";
 import { ErrorNote, Spinner, inputCls } from "../components/ui";
+import ComposerSelect, { composerRegistered, useComposerRegistry } from "../components/ComposerSelect";
 import { Badge } from "@/components/ui-kit/badge";
 import { Button } from "@/components/ui-kit/button";
 import { Card } from "@/components/ui-kit/card";
@@ -55,6 +56,8 @@ function WizardBody({ jobId }: { jobId: string }) {
     queryKey: ["books"],
     queryFn: () => api("/admin/books"),
   });
+
+  const composersQ = useComposerRegistry();
 
   // Form state seeds once from the server draft, then autosaves on blur.
   const [meta, setMeta] = useState<StudioMetadata>({});
@@ -339,11 +342,11 @@ function WizardBody({ jobId }: { jobId: string }) {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label className={labelCls}>Composer</Label>
-                <Input
-                  placeholder="Muzio Clementi"
+                <ComposerSelect
                   value={meta.composer ?? ""}
-                  onChange={(e) => setMeta({ ...meta, composer: e.target.value })}
-                  onBlur={(e) => saveField({ composer: e.target.value }, { pieceChecks: true })}
+                  onChange={(v) => setMeta({ ...meta, composer: v })}
+                  onCommit={(v) => saveField({ composer: v }, { pieceChecks: true })}
+                  showUnregisteredHint={false}
                 />
               </div>
               <div>
@@ -432,6 +435,16 @@ function WizardBody({ jobId }: { jobId: string }) {
                   {derivedSlug ?? job.pieceId}
                 </span>
               </p>
+            )}
+            {composerRegistered(composersQ.data, meta.composer ?? "") === false && (
+              <FindingRow
+                f={{
+                  level: "warn",
+                  code: "composer_unregistered",
+                  message:
+                    "Composer not in the registry — select a known name or create an entry. Free text still submits.",
+                }}
+              />
             )}
             {pieceFindings.map((f, i) => (
               <FindingRow key={i} f={f} />

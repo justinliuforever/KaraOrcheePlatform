@@ -10,6 +10,7 @@ import {
   type PieceEdit,
 } from "../api";
 import { ErrorNote, Spinner, inputCls, AuditTrail } from "./ui";
+import ComposerSelect from "./ComposerSelect";
 import ToneBadge from "./ToneBadge";
 import StatusTag from "./StatusTag";
 import SlideOver from "./SlideOver";
@@ -411,7 +412,7 @@ export default function PiecePanel({ id, onClose }: { id: string; onClose: () =>
             </div>
             <div>
               <label className={labelCls}>Composer</label>
-              <input className={inputCls} value={form.composer} onChange={(e) => setForm({ ...form, composer: e.target.value })} />
+              <ComposerSelect value={form.composer} onChange={(v) => setForm({ ...form, composer: v })} />
             </div>
             <div>
               <label className={labelCls}>Subtitle</label>
