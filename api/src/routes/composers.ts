@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { createHash } from "node:crypto";
 import multer from "multer";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -241,16 +242,20 @@ export function composersRouter(deps: Deps): Router {
         }
         throw err;
       }
-      const portraitPath = `composers/${id}/portrait.webp`;
+      // Content-versioned path: devices cache portrait bytes by filename, so a
+      // replacement MUST move to a new blob (and the old one goes away).
+      const sha8 = createHash("sha256").update(portrait).digest("hex").slice(0, 8);
+      const portraitPath = `composers/${id}/portrait_${sha8}.webp`;
       await deps.studio.putBundleBlob(portraitPath, portrait, "image/webp");
+      if (existing.portraitPath && existing.portraitPath !== portraitPath && deps.studio.deleteBundleBlob) {
+        await deps.studio.deleteBundleBlob(existing.portraitPath);
+      }
       const [row] = await db
         .update(composers)
         .set({ portraitPath, updatedAt: sql`now()` })
         .where(eq(composers.id, id))
         .returning();
-      // First portrait changes the emitted portrait_url; same-path replacements
-      // need no rebuild — the URL is unchanged and signed per request.
-      if (!existing.portraitPath) await rebuildCatalog(db, deps.studio);
+      await rebuildCatalog(db, deps.studio);
       await audit(deps, req, "composer.set_portrait", { type: "composer", id });
       res.json({ ...row!, portraitUrl: signPortrait(portraitPath) });
     }),

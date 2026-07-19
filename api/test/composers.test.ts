@@ -385,10 +385,11 @@ describe("composer portrait", () => {
       .set("Authorization", `Bearer ${adminToken}`)
       .attach("portrait", await testPortrait(), "portrait.png");
     expect(res.status).toBe(200);
-    expect(res.body.portraitPath).toBe("composers/johann_friedrich_burgmuller/portrait.webp");
-    expect(res.body.portraitUrl).toContain("portrait.webp");
+    expect(res.body.portraitPath).toMatch(
+      /^composers\/johann_friedrich_burgmuller\/portrait_[0-9a-f]{8}\.webp$/);
+    expect(res.body.portraitUrl).toContain("portrait_");
     expect(res.body.portraitUrl).toContain("?sig=t");
-    const blob = studio.blobs.find((b) => b.path.endsWith("portrait.webp"))!;
+    const blob = studio.blobs.find((b) => /portrait_[0-9a-f]{8}\.webp$/.test(b.path))!;
     const meta = await sharp(blob.data).metadata();
     expect([meta.width, meta.height, meta.format]).toEqual([512, 512, "webp"]);
   });
@@ -458,8 +459,8 @@ describe("catalog emission", () => {
     const cz = cat.composers.find((c) => c.name === "Carl Czerny")!;
     expect(cz.birth_year).toBeNull();
     expect(cz.bio).toBeNull();
-    expect(b.portrait_url).toBe(
-      "https://test.blob.core.windows.net/piece-bundles/composers/johann_friedrich_burgmuller/portrait.webp",
+    expect(b.portrait_url).toMatch(
+      /piece-bundles\/composers\/johann_friedrich_burgmuller\/portrait_[0-9a-f]{8}\.webp$/,
     );
   });
 

@@ -25,7 +25,7 @@ const upload = multer({
 const metadataSchema = z
   .object({
     title: z.string().min(1).max(200),
-    composer: z.string().min(1).max(120),
+    composer: z.string().trim().min(1).max(120),
     subtitle: z.string().max(200).default(""),
     mode: z.literal("solo").default("solo"), // concerto needs stems; out of studio scope
     difficulty: z.number().int().min(1).max(5).nullable().default(null),
@@ -63,7 +63,7 @@ export type StudioMetadata = z.infer<typeof metadataSchema>;
 
 const patchSchema = z.object({
   title: z.string().max(200).optional(),
-  composer: z.string().max(120).optional(),
+  composer: z.string().trim().max(120).optional(),
   subtitle: z.string().max(200).optional(),
   difficulty: z.number().int().min(1).max(5).nullable().optional(),
   tracking: z.enum(["validated", "experimental"]).optional(),

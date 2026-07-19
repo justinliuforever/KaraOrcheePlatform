@@ -111,6 +111,7 @@ export default function ComposerSelect({
   }, [registry.data, typed]);
 
   function commit(next: string) {
+    next = next.trim();
     latest.current = next;
     onChange(next);
     onCommit?.(next);

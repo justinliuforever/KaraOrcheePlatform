@@ -7,6 +7,7 @@ failure as skip, never a gate. Playwright sync API -> full lane / main thread on
 """
 from __future__ import annotations
 import io
+import os
 from pathlib import Path
 
 THUMB_W, THUMB_H = 600, 800
@@ -47,8 +48,10 @@ def rasterize_top(svg: str) -> bytes:
             page = browser.new_page(
                 viewport={"width": THUMB_W * RENDER_SCALE, "height": THUMB_H * RENDER_SCALE})
             page.set_content(html_for(svg))
-            # embedded fonts must finish decoding or glyphs screenshot as tofu
-            page.evaluate("() => document.fonts ? document.fonts.ready : true")
+            # embedded fonts must finish decoding or glyphs screenshot as tofu;
+            # BOUNDED wait — an unresolvable fonts promise must not wedge the lane
+            page.wait_for_function(
+                "document.fonts ? document.fonts.status !== 'loading' : true", timeout=5000)
             page.wait_for_timeout(50)
             return page.screenshot(type="png")
         finally:
@@ -58,7 +61,11 @@ def rasterize_top(svg: str) -> bytes:
 def render_thumbnail(svg_path: Path, out_path: Path) -> dict:
     from PIL import Image, ImageStat
     img = compose(Image.open(io.BytesIO(rasterize_top(svg_path.read_text()))).convert("RGB"))
-    img.save(out_path, "WEBP", quality=WEBP_QUALITY, method=6)
+    # Atomic: a failed encode must never leave a truncated file where stage_artifacts
+    # selects on existence.
+    part = out_path.with_suffix(".part")
+    img.save(part, "WEBP", quality=WEBP_QUALITY, method=6)
+    os.replace(part, out_path)
     stddev = ImageStat.Stat(img.convert("L")).stddev[0]
     return {"width": THUMB_W, "height": THUMB_H, "bytes": out_path.stat().st_size,
             "ink_stddev": round(stddev, 1)}
