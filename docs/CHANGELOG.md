@@ -6,6 +6,30 @@ The version shown in the sidebar (`vX.Y.Z · <sha>`) has two parts:
 - **sha** — the git commit the running build was made from (injected by
   `scripts/deploy.sh`); changes on every deploy, needs no ceremony.
 
+## Unreleased (deployed on dev, no version bump yet)
+
+Shipped 2026-07-18/19, founder-directed; sidebar stays 0.8.0 pending the next
+founder-signed bump:
+
+- **Composers tab** (Collections): registry of canonical composer identities —
+  name, sort name, alias editor, portrait upload (square webp), birth/death
+  years, bio, attribution/source. Status column reconciles every composer string
+  on pieces/works against the registry (Registered / Alias of X / Unregistered);
+  renames auto-alias the old spelling; alias collisions across entries are
+  rejected; API writes canonicalize composer strings on the way in.
+- **Composer picker**: wizard/PiecePanel/WorkPanel composer fields become
+  search-and-select over the registry (alias-aware, inline create, free-text
+  escape hatch with a non-blocking unregistered warning).
+- **Authored totals**: books carry the printed edition's piece count +
+  description; works carry a movement count — the app's honest "No. 3 of 25".
+- **Catalog artwork**: worker renders a first-page thumbnail + opening row icon
+  per build; job page shows the artwork stage; catalog serves signed URLs.
+- **Publish gates hardened**: anchor coverage/max-gap/p90 residual, schema-1
+  repeat-split hard-fail, endpoint overrun assert, default-tempo pieces publish
+  follow_ready=false, audio-map clamp, render_generation stamps.
+- Upload guardrail: batch tools preflight book ids; publish 409s a missing book
+  instead of silently creating a coverless one.
+
 ## 0.8.0 — 2026-07-11 (founder-verified; colleague handoff release)
 
 Founder ran the full 12-point walkthrough and signed off. Everything below shipped

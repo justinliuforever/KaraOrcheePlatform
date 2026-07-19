@@ -18,8 +18,13 @@ Declared in `infra/main.bicep`; env differences are parameters only (SKUs, min r
 Dev API (live 2026-07-05): `https://ca-app-api-dev.graymoss-40d67a2f.centralus.azurecontainerapps.io`
 — image `acrkaraorchee.azurecr.io/karaorchee-app/api:<tag>` (built via `az acr build`), secrets
 `dburl`/`storagecs` on the container app, AUTH_* env pointed at the CIAM iOS App Registration.
-Database `karaorchee_app` on `pg-karaorchee-app-dev` (migrations applied); catalog has
-`bach_bwv_846` + `czerny_599_41` v1 bundles (count as of 2026-07-05; the Pieces Library is live truth).
+Database `karaorchee_app` on `pg-karaorchee-app-dev` (migrations applied through 0009);
+the Pieces Library is live truth (95 published pieces as of 2026-07-19 — Czerny 599, Burgmüller
+Op. 100, Hanon, flagship singles; every piece carries a first-page `thumbnail.webp` + `row_icon.webp`).
+Composers are a registry (`composers` table: canonical name + aliases + portrait + years + bio;
+writes canonicalize through it — see `api/src/composer_canon.ts`). Publish gates (worker) enforce
+anchor coverage/p90 residual/endpoint/`-rend` schema splits/audio-map clamp; `render_generation`
+stamps staff.json + SVGs against cross-generation mixing. Corpus health tool: `tools/corpus_health/`.
 
 ## Resources (per env)
 
