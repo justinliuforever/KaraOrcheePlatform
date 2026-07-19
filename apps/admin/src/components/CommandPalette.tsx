@@ -86,6 +86,10 @@ export default function CommandPalette({
             <ListMusic />
             Collections · Works
           </CommandItem>
+          <CommandItem value="nav-collections-composers" keywords={["composers", "portraits", "aliases", "registry"]} onSelect={() => go("/collections?tab=composers")}>
+            <Users />
+            Collections · Composers
+          </CommandItem>
           <CommandItem value="nav-ops-logs" keywords={["ops", "logs", "observability", "requests", "traffic"]} onSelect={() => go("/ops?view=logs")}>
             <Activity />
             Ops · Logs

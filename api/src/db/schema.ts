@@ -36,6 +36,10 @@ export const books = pgTable("books", {
   publisher: text("publisher"),
   edition: text("edition"),
   coverPath: text("cover_path"), // container-relative blob path
+  // Authored total per the printed edition (e.g. 98 for Czerny 599) — the app's
+  // "No. n of M" denominator. NEVER derived from attached rows.
+  pieceCount: integer("piece_count"),
+  description: text("description"),
   rights: text("rights").notNull().default("unknown"), // public_domain | licensed | unknown | blocked
   rightsNote: text("rights_note"),
   sortIndex: integer("sort_index"),
@@ -55,8 +59,27 @@ export const works = pgTable("works", {
   catalogue: text("catalogue"), // "K. 330" | "BWV 846" — free text, normalized only for dup checks
   workType: text("work_type").notNull().default("other"), // structural hint only, no business logic
   parentWorkId: text("parent_work_id").references((): AnyPgColumn => works.id),
+  movementCount: integer("movement_count"), // authored total movements, not a row count
   sortIndex: integer("sort_index"), // admin-maintained ordering within composer
   display: jsonb("display").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Lean composer registry: NO foreign keys to pieces/works — composer strings live
+// denormalized on pieces.composer / works.composer and join by name/alias at read
+// time. The registry only adds presentation data (sort name, portrait, attribution).
+export const composers = pgTable("composers", {
+  id: text("id").primaryKey(), // slug, e.g. johann_friedrich_burgmuller
+  name: text("name").notNull().unique(), // canonical display form, as used on pieces
+  sortName: text("sort_name"), // "Burgmüller, Johann Friedrich"
+  aliases: jsonb("aliases").notNull().default([]), // alternate spellings mapping here
+  birthYear: integer("birth_year"),
+  deathYear: integer("death_year"),
+  bio: text("bio"), // short authored background blurb
+  portraitPath: text("portrait_path"), // container-relative blob path
+  attribution: text("attribution"),
+  sourceUrl: text("source_url"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -150,4 +173,5 @@ export type User = typeof users.$inferSelect;
 export type Piece = typeof pieces.$inferSelect;
 export type Book = typeof books.$inferSelect;
 export type Work = typeof works.$inferSelect;
+export type Composer = typeof composers.$inferSelect;
 export type PieceVersion = typeof pieceVersions.$inferSelect;

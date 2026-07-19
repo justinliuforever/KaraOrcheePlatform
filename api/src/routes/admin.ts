@@ -18,6 +18,8 @@ const workSchema = z.object({
   workType: z
     .enum(["sonata", "suite", "etude_set", "prelude_fugue", "variations", "cycle", "concerto", "collection", "other"])
     .default("other"),
+  // Authored total movements — the app's "No. n of M" denominator, never a row count.
+  movementCount: z.number().int().min(1).max(999).nullable().optional(),
   sortIndex: z.number().int().nullable().optional(),
 });
 
@@ -63,6 +65,10 @@ const bookEditSchema = z
     author: z.string().max(120).nullable().optional(),
     publisher: z.string().max(120).nullable().optional(),
     edition: z.string().max(120).nullable().optional(),
+    // Authored total per the printed edition (98 for Czerny 599) — NOT the number
+    // of attached rows; the app's "No. n of M" denominator.
+    pieceCount: z.number().int().min(1).max(9999).nullable().optional(),
+    description: z.string().max(4000).nullable().optional(),
     rights: z.enum(["public_domain", "licensed", "unknown", "blocked"]).optional(),
     rightsNote: z.string().max(2000).nullable().optional(),
     sortIndex: z.number().int().nullable().optional(),
@@ -326,7 +332,7 @@ export function adminRouter(deps: Deps): Router {
       }
       const [row] = await db
         .insert(works)
-        .values({ id, title: w.title, composer: w.composer, catalogue: w.catalogue ?? null, workType: w.workType, sortIndex: w.sortIndex ?? null })
+        .values({ id, title: w.title, composer: w.composer, catalogue: w.catalogue ?? null, workType: w.workType, movementCount: w.movementCount ?? null, sortIndex: w.sortIndex ?? null })
         .returning();
       await audit(deps, req, "work.create", { type: "work", id });
       res.status(201).json(row);

@@ -36,6 +36,7 @@ type EditForm = {
   composer: string;
   catalogue: string;
   workType: string;
+  movementCount: string;
   sortIndex: string;
 };
 
@@ -45,6 +46,7 @@ function toForm(d: AdminWorkDetail): EditForm {
     composer: d.composer,
     catalogue: d.catalogue ?? "",
     workType: d.workType,
+    movementCount: d.movementCount != null ? String(d.movementCount) : "",
     sortIndex: d.sortIndex != null ? String(d.sortIndex) : "",
   };
 }
@@ -167,6 +169,8 @@ export default function WorkPanel({ id, onClose }: { id: string; onClose: () => 
     if (f.composer !== d.composer) patch.composer = f.composer;
     if (f.catalogue !== (d.catalogue ?? "")) patch.catalogue = f.catalogue || null;
     if (f.workType !== d.workType) patch.workType = f.workType as WorkEdit["workType"];
+    const mCount = f.movementCount !== "" ? Number(f.movementCount) : null;
+    if (mCount !== d.movementCount) patch.movementCount = mCount;
     const sIdx = f.sortIndex !== "" ? Number(f.sortIndex) : null;
     if (sIdx !== d.sortIndex) patch.sortIndex = sIdx;
     return patch;
@@ -266,6 +270,21 @@ export default function WorkPanel({ id, onClose }: { id: string; onClose: () => 
                   <option key={t} value={t}>{t.replaceAll("_", " ")}</option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className={labelCls}>Movements (authored total)</label>
+              <input
+                className={inputCls}
+                type="number"
+                min={1}
+                placeholder="unknown"
+                value={form.movementCount}
+                onChange={(e) => setForm({ ...form, movementCount: e.target.value })}
+              />
+              <p className="text-[11px] text-ink-faint mt-1">
+                Per the composition itself (25 for Op. 100) — the app's "No. n of M"
+                denominator, independent of how many are uploaded.
+              </p>
             </div>
             <div>
               <label className={labelCls}>Sort order within composer</label>

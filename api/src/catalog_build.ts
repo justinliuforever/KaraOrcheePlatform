@@ -1,7 +1,7 @@
 import { and, eq, inArray, min } from "drizzle-orm";
 import type { Orm } from "./db/client";
 import type { StudioStore } from "./storage";
-import { books, pieces, pieceVersions, works } from "./db/schema";
+import { books, composers, pieces, pieceVersions, works } from "./db/schema";
 
 export interface BundleFile {
   role: string;
@@ -121,6 +121,18 @@ async function buildCatalogDoc(db: Orm, studio: StudioStore): Promise<unknown> {
     bookRows = await db.select().from(books).where(inArray(books.id, [...bookIds]));
   }
 
+  // composers[]: live-values law like works/books — only registry entries whose
+  // name or alias matches a published piece's composer string are emitted.
+  const publishedComposers = new Set(entries.map((e) => e.composer));
+  let composerRows: (typeof composers.$inferSelect)[] = [];
+  if (publishedComposers.size > 0) {
+    composerRows = (await db.select().from(composers).orderBy(composers.name)).filter(
+      (c) =>
+        publishedComposers.has(c.name) ||
+        (c.aliases as string[]).some((a) => publishedComposers.has(a)),
+    );
+  }
+
   const catalog = {
     catalog_version: 1,
     generated_at: new Date().toISOString(),
@@ -132,6 +144,7 @@ async function buildCatalogDoc(db: Orm, studio: StudioStore): Promise<unknown> {
       catalogue: w.catalogue,
       work_type: w.workType,
       parent_work_id: w.parentWorkId,
+      movement_count: w.movementCount,
       sort_index: w.sortIndex,
       ...(w.display && Object.keys(w.display as object).length > 0 ? { display: w.display } : {}),
     })),
@@ -139,9 +152,20 @@ async function buildCatalogDoc(db: Orm, studio: StudioStore): Promise<unknown> {
       id: b.id,
       title: b.title,
       author: b.author,
+      piece_count: b.pieceCount,
+      description: b.description,
       sort_index: b.sortIndex,
       ...(b.coverPath ? { cover_url: studio.bundleUrl(b.coverPath) } : {}),
       ...(b.display && Object.keys(b.display as object).length > 0 ? { display: b.display } : {}),
+    })),
+    composers: composerRows.map((c) => ({
+      name: c.name,
+      sort_name: c.sortName,
+      aliases: c.aliases,
+      birth_year: c.birthYear,
+      death_year: c.deathYear,
+      bio: c.bio,
+      ...(c.portraitPath ? { portrait_url: studio.bundleUrl(c.portraitPath) } : {}),
     })),
   };
   return catalog;

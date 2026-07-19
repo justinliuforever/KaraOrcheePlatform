@@ -23,9 +23,9 @@ function signUrls(node: unknown, store: CatalogStore): void {
         }
       }
     }
-    // Top-level string URLs (book covers, piece thumbnails) — the container is
-    // private, an unsigned URL is a guaranteed 403 in the app.
-    for (const key of ["cover_url", "thumbnail_url"]) {
+    // Top-level string URLs (book covers, piece thumbnails, composer portraits) —
+    // the container is private, an unsigned URL is a guaranteed 403 in the app.
+    for (const key of ["cover_url", "thumbnail_url", "portrait_url"]) {
       if (typeof obj[key] === "string") obj[key] = store.signReadUrl(obj[key] as string);
     }
     for (const value of Object.values(obj)) signUrls(value, store);

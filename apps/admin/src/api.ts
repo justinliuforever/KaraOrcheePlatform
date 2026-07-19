@@ -241,6 +241,7 @@ export interface AdminWork {
   catalogue: string | null;
   workType: string;
   parentWorkId: string | null;
+  movementCount: number | null; // authored total movements, never a row count
   sortIndex: number | null;
   display: Record<string, unknown>;
   createdAt: string;
@@ -282,6 +283,7 @@ export interface AdminBook {
   publisher: string | null;
   edition: string | null;
   coverPath: string | null;
+  description: string | null;
   rights: string;
   rightsNote: string | null;
   sortIndex: number | null;
@@ -289,6 +291,8 @@ export interface AdminBook {
   display: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+  // In LIST responses this is the number of ATTACHED rows (server rollup); the
+  // authored printed total travels on the detail response instead.
   pieceCount: number;
   coverUrl: string | null;
   coverThumbUrl: string | null;
@@ -341,8 +345,10 @@ export interface WorkPieceRow extends Omit<BookPieceRow, "bookIndex"> {
   workIndex: number | null;
 }
 
-// Detail responses carry the member pieces instead of a pieceCount.
+// Detail responses carry the member pieces instead of the attached-rows rollup;
+// here pieceCount is the AUTHORED printed total (e.g. 98 for Czerny 599).
 export interface AdminBookDetail extends Omit<AdminBook, "pieceCount"> {
+  pieceCount: number | null;
   pieces: BookPieceRow[];
   recentAudit: AuditEntry[];
 }
@@ -358,6 +364,8 @@ export type BookEdit = Partial<{
   author: string | null;
   publisher: string | null;
   edition: string | null;
+  pieceCount: number | null;
+  description: string | null;
   rights: Rights;
   rightsNote: string | null;
   sortIndex: number | null;
@@ -368,6 +376,7 @@ export type WorkEdit = Partial<{
   composer: string;
   catalogue: string | null;
   workType: WorkType;
+  movementCount: number | null;
   sortIndex: number | null;
 }>;
 
@@ -432,6 +441,74 @@ export function mergeWork(
     method: "POST",
     body: JSON.stringify({ targetWorkId, ...(confirmMovementClash ? { confirmMovementClash } : {}) }),
   });
+}
+
+// ---- Composers registry (lean: joins pieces/works by name/alias string) ----
+
+export interface AdminComposer {
+  id: string;
+  name: string;
+  sortName: string | null;
+  aliases: string[];
+  birthYear: number | null;
+  deathYear: number | null;
+  bio: string | null;
+  portraitPath: string | null;
+  attribution: string | null;
+  sourceUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+  portraitUrl: string | null;
+  usageCount: number; // pieces whose composer string matches name OR any alias
+}
+
+/** One distinct composer string as it appears on pieces/works rows. */
+export interface ComposerString {
+  value: string;
+  pieceCount: number;
+  workCount: number;
+  composerId: string | null;
+  composerName: string | null;
+  matched: "name" | "alias" | null;
+}
+
+export interface ComposersResponse {
+  items: AdminComposer[];
+  strings: ComposerString[];
+  unregistered: ComposerString[];
+}
+
+export type ComposerEdit = Partial<{
+  name: string;
+  sortName: string | null;
+  aliases: string[];
+  birthYear: number | null;
+  deathYear: number | null;
+  bio: string | null;
+  attribution: string | null;
+  sourceUrl: string | null;
+}>;
+
+export function listComposers(): Promise<ComposersResponse> {
+  return api("/admin/composers");
+}
+
+export function createComposer(fields: ComposerEdit & { name: string }): Promise<AdminComposer> {
+  return api("/admin/composers", { method: "POST", body: JSON.stringify(fields) });
+}
+
+export function patchComposer(id: string, patch: ComposerEdit): Promise<AdminComposer> {
+  return api(`/admin/composers/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+}
+
+export function deleteComposer(id: string): Promise<{ ok: boolean }> {
+  return api(`/admin/composers/${id}`, { method: "DELETE" });
+}
+
+export function putComposerPortrait(id: string, portrait: File): Promise<AdminComposer> {
+  const form = new FormData();
+  form.set("portrait", portrait);
+  return apiForm(`/admin/composers/${id}/portrait`, form, "PUT");
 }
 
 // ---- Ops (logs / request timeline / queue) ----

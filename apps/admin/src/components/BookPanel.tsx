@@ -34,6 +34,8 @@ type EditForm = {
   author: string;
   publisher: string;
   edition: string;
+  pieceCount: string;
+  description: string;
   sortIndex: string;
   rights: string;
   rightsNote: string;
@@ -45,6 +47,8 @@ function toForm(d: AdminBookDetail): EditForm {
     author: d.author ?? "",
     publisher: d.publisher ?? "",
     edition: d.edition ?? "",
+    pieceCount: d.pieceCount != null ? String(d.pieceCount) : "",
+    description: d.description ?? "",
     sortIndex: d.sortIndex != null ? String(d.sortIndex) : "",
     rights: d.rights,
     rightsNote: d.rightsNote ?? "",
@@ -169,6 +173,9 @@ export default function BookPanel({ id, onClose }: { id: string; onClose: () => 
     if (f.author !== (d.author ?? "")) patch.author = f.author || null;
     if (f.publisher !== (d.publisher ?? "")) patch.publisher = f.publisher || null;
     if (f.edition !== (d.edition ?? "")) patch.edition = f.edition || null;
+    const pCount = f.pieceCount !== "" ? Number(f.pieceCount) : null;
+    if (pCount !== d.pieceCount) patch.pieceCount = pCount;
+    if (f.description !== (d.description ?? "")) patch.description = f.description || null;
     const sIdx = f.sortIndex !== "" ? Number(f.sortIndex) : null;
     if (sIdx !== d.sortIndex) patch.sortIndex = sIdx;
     if (f.rights !== d.rights) patch.rights = f.rights as BookEdit["rights"];
@@ -314,6 +321,21 @@ export default function BookPanel({ id, onClose }: { id: string; onClose: () => 
               <input className={inputCls} value={form.edition} onChange={(e) => setForm({ ...form, edition: e.target.value })} />
             </div>
             <div>
+              <label className={labelCls}>Pieces in book (printed total)</label>
+              <input
+                className={inputCls}
+                type="number"
+                min={1}
+                placeholder="unknown"
+                value={form.pieceCount}
+                onChange={(e) => setForm({ ...form, pieceCount: e.target.value })}
+              />
+              <p className="text-[11px] text-ink-faint mt-1">
+                The authored total per the printed edition (98 for Czerny 599) — the app's
+                "No. n of M" denominator, independent of how many are uploaded.
+              </p>
+            </div>
+            <div>
               <label className={labelCls}>Shelf order (lower = earlier)</label>
               <input
                 className={inputCls}
@@ -331,6 +353,15 @@ export default function BookPanel({ id, onClose }: { id: string; onClose: () => 
                 <option value="unknown">unknown</option>
                 <option value="blocked">blocked</option>
               </select>
+            </div>
+            <div className="col-span-2">
+              <label className={labelCls}>Description</label>
+              <textarea
+                className={`${inputCls} h-20 resize-none`}
+                placeholder="Shown to students on the book's shelf page."
+                value={form.description}
+                onChange={(e) => setForm({ ...form, description: e.target.value })}
+              />
             </div>
             <div className="col-span-2">
               <label className={labelCls}>Provenance / rights note</label>
