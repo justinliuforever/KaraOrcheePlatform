@@ -10,6 +10,7 @@ import { auditEvents, books, pieces, pieceVersions, studioJobs, users, works } f
 import { processCover, CoverError } from "../covers";
 import { bookSlug, likeEsc, normalizeCatalogue, slugify } from "../slug";
 import { rebuildCatalog } from "../catalog_build";
+import { canonicalComposer } from "../composer_canon";
 
 const workSchema = z.object({
   title: z.string().min(1).max(200),
@@ -324,6 +325,7 @@ export function adminRouter(deps: Deps): Router {
           return;
         }
       }
+      w.composer = await canonicalComposer(db, w.composer);
       const id = workSlugFor(w.composer, w.title, w.catalogue);
       const [existing] = await db.select().from(works).where(eq(works.id, id)).limit(1);
       if (existing) {
@@ -354,6 +356,7 @@ export function adminRouter(deps: Deps): Router {
         res.status(404).json({ error: "not_found" });
         return;
       }
+      if (parsed.data.composer) parsed.data.composer = await canonicalComposer(db, parsed.data.composer);
       const [row] = await db
         .update(works)
         .set({ ...parsed.data, updatedAt: sql`now()` })
@@ -910,7 +913,7 @@ export function adminRouter(deps: Deps): Router {
         .update(pieces)
         .set({
           ...(p.title !== undefined ? { title: p.title } : {}),
-          ...(p.composer !== undefined ? { composer: p.composer } : {}),
+          ...(p.composer !== undefined ? { composer: await canonicalComposer(db, p.composer) } : {}),
           ...(p.subtitle !== undefined ? { subtitle: p.subtitle } : {}),
           ...(p.difficulty !== undefined ? { difficulty: p.difficulty } : {}),
           ...(p.tracking !== undefined ? { tracking: p.tracking } : {}),

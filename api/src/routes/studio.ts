@@ -9,6 +9,7 @@ import { requireAuth } from "../auth";
 import { requireAdmin, audit } from "../admin";
 import { books, pieces, pieceVersions, studioJobs, users, works } from "../db/schema";
 import { rebuildCatalog, type BundleFile } from "../catalog_build";
+import { canonicalComposer } from "../composer_canon";
 import { pieceSlug, bookSlug, normalizeCatalogue, likeEsc } from "../slug";
 
 const PUBLISH_ROLES = new Set(["score_events", "accompaniment_events", "geometry", "svg", "reference_audio", "audio_map", "thumbnail"]);
@@ -405,7 +406,9 @@ export function studioRouter(deps: Deps): Router {
         return;
       }
       const prev = job.metadata as Record<string, unknown>;
-      const merged = { ...prev, ...parsed.data };
+      const patch = { ...parsed.data };
+      if (patch.composer) patch.composer = await canonicalComposer(db, patch.composer);
+      const merged = { ...prev, ...patch };
       const title = typeof merged.title === "string" ? merged.title : "";
       const composer = typeof merged.composer === "string" ? merged.composer : "";
       const subtitle = typeof merged.subtitle === "string" ? merged.subtitle : "";
@@ -964,6 +967,7 @@ export function studioRouter(deps: Deps): Router {
         }
       }
 
+      const composerCanon = await canonicalComposer(db, meta.composer);
       const txResult = await db.transaction(async (tx) => {
         if (meta.book) {
           await tx
@@ -973,7 +977,7 @@ export function studioRouter(deps: Deps): Router {
         }
         const pieceCols = {
           title: meta.title,
-          composer: meta.composer,
+          composer: composerCanon,
           subtitle: meta.subtitle,
           difficulty: meta.difficulty,
           tracking: meta.tracking,

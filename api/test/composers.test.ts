@@ -554,3 +554,37 @@ describe("book/work PATCH: authored totals", () => {
     expect(created.body.movementCount).toBe(18);
   });
 });
+
+describe("canonicalize on write", () => {
+  it("work create and piece PATCH rewrite alias spellings to the canonical name", async () => {
+    await request(makeApp())
+      .post("/admin/composers")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Ludwig van Beethoven", aliases: ["L. v. Beethoven"] });
+
+    const work = await request(makeApp())
+      .post("/admin/works")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ title: "Bagatelles", composer: "L. v. Beethoven", workType: "collection" });
+    expect(work.status).toBe(201);
+    expect(work.body.composer).toBe("Ludwig van Beethoven");
+
+    const patched = await request(makeApp())
+      .patch("/admin/pieces/czerny_599_3")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ composer: "L. v. Beethoven" });
+    expect(patched.status).toBe(200);
+    const [row] = await db.orm.select().from(pieces).where(eq(pieces.id, "czerny_599_3"));
+    expect(row.composer).toBe("Ludwig van Beethoven");
+
+    // Unregistered strings pass through untouched — normalizer, never a gate.
+    const untouched = await request(makeApp())
+      .patch("/admin/pieces/czerny_599_3")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ composer: "Carl Czerny" });
+    expect(untouched.status).toBe(200);
+    const [back] = await db.orm.select().from(pieces).where(eq(pieces.id, "czerny_599_3"));
+    expect(back.composer).toBe("Carl Czerny");
+  });
+
+});
