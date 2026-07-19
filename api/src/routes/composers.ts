@@ -4,6 +4,7 @@ import multer from "multer";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Deps } from "../deps";
+import type { Orm } from "../db/client";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireAdmin, audit } from "../admin";
@@ -34,6 +35,24 @@ interface UsageRow {
   value: string;
   pieceCount: number;
   workCount: number;
+}
+
+
+/// An alias claimed by two rows makes canonicalize-at-write row-order dependent —
+/// reject the collision at intake instead.
+async function aliasConflict(
+  db: Orm,
+  selfId: string | null,
+  aliases: string[],
+): Promise<{ alias: string; owner: string } | null> {
+  const rows = await db.select({ id: composers.id, name: composers.name, aliases: composers.aliases }).from(composers);
+  for (const a of aliases) {
+    for (const r of rows) {
+      if (selfId && r.id === selfId) continue;
+      if (r.name === a || (r.aliases as string[]).includes(a)) return { alias: a, owner: r.name };
+    }
+  }
+  return null;
 }
 
 export function composersRouter(deps: Deps): Router {
@@ -124,13 +143,19 @@ export function composersRouter(deps: Deps): Router {
         res.status(409).json({ error: "composer_exists", composer: sameName });
         return;
       }
+      const requested = (c.aliases ?? []).filter((a) => a !== c.name);
+      const clashA = await aliasConflict(db, null, requested);
+      if (clashA) {
+        res.status(409).json({ error: "alias_conflict", ...clashA });
+        return;
+      }
       const [row] = await db
         .insert(composers)
         .values({
           id,
           name: c.name,
           sortName: c.sortName ?? null,
-          aliases: c.aliases ?? [],
+          aliases: requested,
           birthYear: c.birthYear ?? null,
           deathYear: c.deathYear ?? null,
           bio: c.bio ?? null,
@@ -178,6 +203,16 @@ export function composersRouter(deps: Deps): Router {
         updates.aliases = [...new Set([...base, existing.name])].filter(
           (a) => a !== parsed.data.name,
         );
+      }
+      const effectiveName = (updates.name as string | undefined) ?? existing.name;
+      if (updates.aliases) {
+        updates.aliases = (updates.aliases as string[]).filter((a) => a !== effectiveName);
+      }
+      const effectiveAliases = (updates.aliases as string[] | undefined) ?? (existing.aliases as string[]);
+      const clashB = await aliasConflict(db, id, effectiveAliases);
+      if (clashB) {
+        res.status(409).json({ error: "alias_conflict", ...clashB });
+        return;
       }
       const [row] = await db
         .update(composers)

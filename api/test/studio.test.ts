@@ -461,6 +461,9 @@ describe("retry + publish", () => {
   it("publishes: copies blobs, upserts piece+version, rebuilds catalog, audits", async () => {
     const studio = fakeStudio();
     const app = makeApp({ studio });
+    // Publish now REQUIRES the referenced book to exist (silent coverless
+    // auto-create was the drift hole the audit closed).
+    await db.orm.insert(books).values({ id: "clementi_op36", title: "Sonatinas Op. 36" }).onConflictDoNothing();
     const meta = { ...FULL_META, book: { id: "clementi_op36", title: "Sonatinas Op. 36", index: 1 } };
     const [job] = await db.orm
       .insert(studioJobs)

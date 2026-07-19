@@ -588,3 +588,34 @@ describe("canonicalize on write", () => {
   });
 
 });
+
+describe("alias hygiene", () => {
+  it("409s an alias that collides with another entry's name or alias", async () => {
+    await request(makeApp())
+      .post("/admin/composers")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Muzio Clementi", aliases: ["Clementi"] });
+
+    const nameClash = await request(makeApp())
+      .post("/admin/composers")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Other Clementi", aliases: ["Muzio Clementi"] });
+    expect(nameClash.status).toBe(409);
+    expect(nameClash.body.error).toBe("alias_conflict");
+
+    const aliasClash = await request(makeApp())
+      .patch("/admin/composers/carl_czerny")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ aliases: ["Clementi"] });
+    expect(aliasClash.status).toBe(409);
+    expect(aliasClash.body.owner).toBe("Muzio Clementi");
+
+    // Own name inside one's own aliases is silently stripped, not an error.
+    const own = await request(makeApp())
+      .patch("/admin/composers/muzio_clementi")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ aliases: ["Muzio Clementi", "M. Clementi"] });
+    expect(own.status).toBe(200);
+    expect(own.body.aliases).toEqual(["M. Clementi"]);
+  });
+});

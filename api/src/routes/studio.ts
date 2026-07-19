@@ -459,7 +459,8 @@ export function studioRouter(deps: Deps): Router {
         return;
       }
       const db = deps.db!.orm;
-      const { title, composer, subtitle, book, work, instrument } = parsed.data;
+      let { title, composer, subtitle, book, work, instrument } = parsed.data;
+      if (composer) composer = await canonicalComposer(db, composer);
       const findings: { level: "info" | "warn" | "error"; code: string; message: string }[] = [];
       let slug: string | null = null;
 
@@ -967,14 +968,19 @@ export function studioRouter(deps: Deps): Router {
         }
       }
 
+      // Book membership must reference an EXISTING book (created via POST /admin/books,
+      // which enforces the mandatory cover). Auto-creating here minted silent coverless
+      // books titled with the raw id whenever a batch tool typo'd --book-id.
+      if (meta.book) {
+        const [bk] = await db.select().from(books).where(eq(books.id, meta.book.id)).limit(1);
+        if (!bk) {
+          res.status(409).json({ error: "book_missing", bookId: meta.book.id });
+          return;
+        }
+      }
+
       const composerCanon = await canonicalComposer(db, meta.composer);
       const txResult = await db.transaction(async (tx) => {
-        if (meta.book) {
-          await tx
-            .insert(books)
-            .values({ id: meta.book.id, title: meta.book.title ?? meta.book.id })
-            .onConflictDoNothing();
-        }
         const pieceCols = {
           title: meta.title,
           composer: composerCanon,

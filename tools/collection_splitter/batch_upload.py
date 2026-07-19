@@ -63,6 +63,12 @@ def run(split_dir: Path, token: str, only: list[int] | None, submit: bool,
     title = cfg.get("title", TITLE)
     composer = cfg.get("composer", COMPOSER)
     book_id = cfg.get("book_id", BOOK_ID)
+    if book_id:
+        # A typo'd book id used to mint a silent coverless book at publish; the server
+        # now 409s it — fail the whole run up front instead of 79 pieces in.
+        rb = s.get(f"{API}/admin/books/{book_id}", timeout=30)
+        if rb.status_code != 200:
+            raise SystemExit(f"book id '{book_id}' not found on the server (HTTP {rb.status_code}) — create the book in admin first")
     skip = set(cfg.get("skip", [41] if book_id == "czerny_op599" else []))
     s = requests.Session()
     s.headers["Authorization"] = f"Bearer {token}"

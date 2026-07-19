@@ -307,6 +307,7 @@ export function adminRouter(deps: Deps): Router {
       }
       const db = deps.db!.orm;
       const w = parsed.data;
+      w.composer = await canonicalComposer(db, w.composer);
       // Dup check: normalized catalogue within composer — the check that stops a bulk
       // upload fragmenting one sonata into three works.
       if (w.catalogue) {
@@ -325,7 +326,6 @@ export function adminRouter(deps: Deps): Router {
           return;
         }
       }
-      w.composer = await canonicalComposer(db, w.composer);
       const id = workSlugFor(w.composer, w.title, w.catalogue);
       const [existing] = await db.select().from(works).where(eq(works.id, id)).limit(1);
       if (existing) {
@@ -578,6 +578,7 @@ export function adminRouter(deps: Deps): Router {
         res.status(404).json({ error: "not_found" });
         return;
       }
+      if (parsed.data.author) parsed.data.author = await canonicalComposer(db, parsed.data.author);
       const [row] = await db
         .update(books)
         .set({ ...parsed.data, updatedAt: sql`now()` })
@@ -738,7 +739,12 @@ export function adminRouter(deps: Deps): Router {
       }
       const [row] = await db
         .insert(books)
-        .values({ ...parsed.data, id, coverPath })
+        .values({
+          ...parsed.data,
+          ...(parsed.data.author ? { author: await canonicalComposer(db, parsed.data.author) } : {}),
+          id,
+          coverPath,
+        })
         .returning();
       await audit(deps, req, "book.create", { type: "book", id });
       res.status(201).json({ ...row, ...signCover(coverPath) });
