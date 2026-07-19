@@ -323,10 +323,21 @@ def cursor_anchors(onsets, note_xy, note_sys, span_starts=()):
     return anchors
 
 
+# Publish-gate thresholds (2026-07-19 corpus audit). The p50-only gate shipped a build
+# with a 16.3s anchor hole (p50 4.8ms, p90 4460ms, 50/226 onsets anchorless).
+RESIDUAL_P50_MS = 12.0
+RESIDUAL_P90_MS = 100.0
+RESIDUAL_P90_BASIS = "healthy corpus p90 <= ~31ms; the shipped anchor-hole build measured 4460ms"
+ANCHOR_COVERAGE_MIN = 0.98
+ANCHOR_COVERAGE_WIN_MS = 60.0
+ANCHOR_GAP_RATIO = 2.0
+ENDPOINT_SLACK_SEC = 0.05
+
+
 def timeline_residual_ms(score_events_path: Path, anchor_secs: list):
     """Consistency gate: nearest-onset residual (ms) between cursor anchors (Verovio timemap)
-    and score_events.json (the keyboard's source). Gate is on the MEDIAN — robust to a few
-    ornament onsets present in only one source."""
+    and score_events.json (the keyboard's source). Returns (p50, p90, coverage) where
+    coverage = fraction of unique score onsets with an anchor within ANCHOR_COVERAGE_WIN_MS."""
     if not score_events_path.exists() or not anchor_secs:
         return None
     ev = json.loads(score_events_path.read_text())["events"]
@@ -343,7 +354,84 @@ def timeline_residual_ms(score_events_path: Path, anchor_secs: list):
         errs.append(min(c) * 1000 if c else 0.0)
     errs.sort()
     n = len(errs)
-    return (round(errs[int(0.5 * (n - 1))], 1), round(errs[int(0.9 * (n - 1))], 1))
+    cov = sum(1 for e in errs if e <= ANCHOR_COVERAGE_WIN_MS) / n
+    return (round(errs[int(0.5 * (n - 1))], 1), round(errs[int(0.9 * (n - 1))], 1), round(cov, 4))
+
+
+def anchor_gap_check(anchor_secs: list, bounds: list) -> dict:
+    """Dead-cursor detector: a non-terminal inter-anchor gap wider than ANCHOR_GAP_RATIO x
+    the longest measure it overlaps parks the cursor mid-piece. The terminal gap is excused
+    (final held chord/fermata is legitimate — rach op23/4, scriabin op8/11 class)."""
+    out = {"max_gap_sec": 0.0, "max_gap_ratio": 0.0, "max_gap_at_sec": None, "ok": True}
+    secs = sorted(set(anchor_secs))
+    if len(secs) < 3 or not bounds:
+        return out
+    starts = [b0 for b0, _ in bounds]
+    durs = [b1 - b0 for b0, b1 in bounds]
+    for k in range(len(secs) - 2):
+        gap = secs[k + 1] - secs[k]
+        if gap <= 0:
+            continue
+        i = max(bisect.bisect_right(starts, secs[k]) - 1, 0)
+        j = max(bisect.bisect_right(starts, secs[k + 1]) - 1, i)
+        local = max(durs[i:j + 1])
+        if local < 1e-6:
+            # zero-length rows (pickup/final onset-only measures): judge vs neighbors
+            local = max(durs[max(i - 1, 0):min(j + 2, len(durs))])
+        if local < 1e-6:
+            continue
+        r = gap / local
+        if r > out["max_gap_ratio"]:
+            out.update(max_gap_ratio=round(r, 2), max_gap_sec=round(gap, 2),
+                       max_gap_at_sec=round(secs[k], 2))
+    out["ok"] = out["max_gap_ratio"] <= ANCHOR_GAP_RATIO
+    return out
+
+
+def timemap_rend_count(tm: list) -> int:
+    n = 0
+    for e in tm:
+        mon = e.get("measureOn")
+        if mon and _REND.search(mon):
+            n += 1
+        n += sum(1 for i in e.get("on", ()) if _REND.search(i))
+    return n
+
+
+def score_events_end_sec(score_events_path: Path):
+    if not score_events_path.exists():
+        return None
+    ev = json.loads(score_events_path.read_text())["events"]
+    return round(max((e["onset_sec"] + max(e["durations"]) for e in ev), default=0.0), 4)
+
+
+def staff_gate_reasons(bundle: dict) -> list[str]:
+    """Publish verdict — staff_eligible is the AND of every clause; each maps to a
+    shipped or near-shipped bug class."""
+    r = []
+    p50, p90 = bundle.get("timeline_residual_ms_p50"), bundle.get("timeline_residual_ms_p90")
+    cov = bundle.get("anchor_coverage")
+    if p50 is None:
+        r.append("no score_events to compare against")
+    else:
+        if p50 >= RESIDUAL_P50_MS:
+            r.append(f"residual p50 {p50}ms >= {RESIDUAL_P50_MS}ms")
+        if p90 >= RESIDUAL_P90_MS:
+            r.append(f"residual p90 {p90}ms >= {RESIDUAL_P90_MS}ms ({RESIDUAL_P90_BASIS})")
+        if cov is not None and cov < ANCHOR_COVERAGE_MIN:
+            r.append(f"anchor coverage {cov} < {ANCHOR_COVERAGE_MIN} "
+                     f"(score onsets with an anchor within {ANCHOR_COVERAGE_WIN_MS:.0f}ms)")
+    if bundle.get("anchor_max_gap_ratio", 0) > ANCHOR_GAP_RATIO:
+        r.append(f"anchor hole: {bundle['anchor_max_gap_sec']}s gap at {bundle['anchor_max_gap_at_sec']}s "
+                 f"= {bundle['anchor_max_gap_ratio']}x the local measure (max {ANCHOR_GAP_RATIO}x)")
+    if bundle.get("schema") == 1 and bundle.get("timemap_rend_ids", 0) > 0:
+        r.append(f"schema-1 bundle over an expanded timemap ({bundle['timemap_rend_ids']} -rend ids) "
+                 "— linear anchors vs repeat playback")
+    ee, me = bundle.get("score_events_end_sec"), bundle.get("map_end_sec")
+    if ee is not None and me is not None and ee > me + ENDPOINT_SLACK_SEC:
+        r.append(f"score_events last release {ee}s overruns map end {me}s by {round(ee - me, 3)}s "
+                 f"(slack {ENDPOINT_SLACK_SEC}s; ending early is normal, overrun is split-brain)")
+    return r
 
 
 def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_dir: Path,
@@ -380,6 +468,8 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
         # canonical <piece>.mei stays unadjusted — position is pure presentation
         mei_v, fing_rep = adjust_fingering_mei(mei, {**COMMON, **vopts})
         svg, tm, page, gmeas, systems, note_xy, note_sys = build_variant(mei_v, vopts)
+        if vname == "phone":
+            phone_tm = tm
         if pnum and systems:
             svg = inject_piece_number(svg, pnum, systems[0]["bbox"])
         if title_main and systems:
@@ -400,12 +490,30 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
             bundle["identity"]["measures"] = identity; id_ref = [m["measure_id"] for m in identity]
         else:
             bundle["variants"][vname]["id_match_phone"] = (id_ref == [m["measure_id"] for m in identity])
-    res = timeline_residual_ms(score_events_path, [a[0] for a in bundle["variants"]["phone"]["cursor_anchors"]])
-    p50, p90 = res if res else (None, None)
+    ph = bundle["variants"]["phone"]
+    anchor_secs = [a[0] for a in ph["cursor_anchors"]]
+    res = timeline_residual_ms(score_events_path, anchor_secs)
+    p50, p90, coverage = res if res else (None, None, None)
     bundle["timeline_residual_ms_p50"] = p50
     bundle["timeline_residual_ms_p90"] = p90
-    bundle["staff_eligible"] = (p50 is not None and p50 < 12.0)   # bar<->keyboard one-timeline gate (MEDIAN)
-    ph = bundle["variants"]["phone"]
+    bundle["anchor_coverage"] = coverage
+    bundle["timemap_rend_ids"] = timemap_rend_count(phone_tm)
+    if playback is not None:
+        gap_bounds = [(o["expanded_sec_start"], o["expanded_sec_end"]) for o in playback["occurrences"]]
+        map_end = playback["counts"]["expanded_duration_sec"]
+    else:
+        gap_bounds = [(m["score_sec_start"], m["score_sec_end"]) for m in bundle["identity"]["measures"]]
+        # linear map end = final barline of the timemap (max tstamp covers the note-offs)
+        map_end = round(max((e.get("tstamp", 0) for e in phone_tm), default=0) / 1000.0, 4)
+    gap = anchor_gap_check(anchor_secs, gap_bounds)
+    bundle["anchor_max_gap_sec"] = gap["max_gap_sec"]
+    bundle["anchor_max_gap_ratio"] = gap["max_gap_ratio"]
+    bundle["anchor_max_gap_at_sec"] = gap["max_gap_at_sec"]
+    bundle["score_events_end_sec"] = score_events_end_sec(score_events_path)
+    bundle["map_end_sec"] = map_end
+    reasons = staff_gate_reasons(bundle)
+    bundle["staff_ineligible_reasons"] = reasons
+    bundle["staff_eligible"] = not reasons
     bands = {sg["system_index"]: sg["bbox"] for sg in ph["systems"]}
     oob = sum(1 for a in ph["cursor_anchors"]
               if (bb := bands.get(int(a[3]))) and not (bb[1] - bb[3] <= a[2] <= bb[1] + 2 * bb[3]))

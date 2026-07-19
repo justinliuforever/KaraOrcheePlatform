@@ -16,7 +16,9 @@ import pretty_midi
 from pipeline import score_events as se
 from pipeline import xml_meta
 from pipeline.vrv import make_toolkit
-from pipeline.staff import build_staff_assets
+from pipeline.staff import (ANCHOR_COVERAGE_MIN, ANCHOR_GAP_RATIO, ENDPOINT_SLACK_SEC,
+                            RESIDUAL_P50_MS, RESIDUAL_P90_MS, RESIDUAL_P90_BASIS,
+                            build_staff_assets)
 from pipeline.cursor_gate import run_gate
 from pipeline.parts import reduce_xml_to_part, split_midi_notes
 from pipeline.tempo_norm import normalize_tempo
@@ -295,13 +297,36 @@ def gate_geometry(piece: str, xml_path: Path, out_dir: Path,
         "anchors": len(ph["cursor_anchors"]),
         "residual_p50_ms": bundle["timeline_residual_ms_p50"],
         "residual_p90_ms": bundle["timeline_residual_ms_p90"],
+        "residual_p50_gate_ms": RESIDUAL_P50_MS,
+        "residual_p90_gate_ms": RESIDUAL_P90_MS,
+        "residual_p90_gate_basis": RESIDUAL_P90_BASIS,
+        "anchor_coverage": bundle["anchor_coverage"],
+        "anchor_coverage_min": ANCHOR_COVERAGE_MIN,
+        "anchor_max_gap_sec": bundle["anchor_max_gap_sec"],
+        "anchor_max_gap_ratio": bundle["anchor_max_gap_ratio"],
+        "anchor_gap_ratio_max": ANCHOR_GAP_RATIO,
+        "timemap_rend_ids": bundle["timemap_rend_ids"],
+        "score_events_end_sec": bundle["score_events_end_sec"],
+        "map_end_sec": bundle["map_end_sec"],
+        "endpoint_slack_sec": ENDPOINT_SLACK_SEC,
         "anchors_out_of_band": bundle["anchors_out_of_band"],
         "staff_eligible": bundle["staff_eligible"],
     }
+    if bundle["schema"] == 1 and bundle["timemap_rend_ids"] > 0:
+        raise GateError(
+            f"split-brain: verovio expanded repeats ({bundle['timemap_rend_ids']} -rend timemap ids) "
+            "but the bundle is schema 1 with linear anchors — the state that shipped the anchor-hole builds",
+            metrics)
+    ee, me = bundle["score_events_end_sec"], bundle["map_end_sec"]
+    if ee is not None and me is not None and ee > me + ENDPOINT_SLACK_SEC:
+        raise GateError(
+            f"score_events overrun the playback map: last release {ee}s > map end {me}s "
+            f"+ {ENDPOINT_SLACK_SEC}s slack (ending before the final barline is normal; "
+            "overrunning it is a split timeline)", metrics)
     if not bundle["staff_eligible"]:
         raise GateError(
-            f"score/MIDI timelines disagree: median residual {bundle['timeline_residual_ms_p50']}ms >= 12ms "
-            "(the MIDI likely doesn't correspond to this MusicXML, or has expressive timing)",
+            "staff timeline gate failed: " + "; ".join(bundle["staff_ineligible_reasons"]) +
+            " (the MIDI likely doesn't correspond to this MusicXML, or has expressive timing)",
             metrics)
     if metrics["anchors"] < 1:
         raise GateError("no cursor anchors produced", metrics)
