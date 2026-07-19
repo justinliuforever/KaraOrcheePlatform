@@ -8,7 +8,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from gates import ARTIFACT_LAYOUT, PUBLISH_ROLES, gate_thumbnail
 from pipeline.thumbnail import (
-    ICON_FALLBACK_WIDTH_FRAC, ICON_H, ICON_MIN_WIDTH_FRAC, ICON_W, PAPER_RGB,
+    ICON_FALLBACK_WIDTH_FRAC, ICON_H, ICON_W, PAPER_RGB,
     TEXT_FONT_FILE, THUMB_H, THUMB_W, compose, compose_icon, font_face_css,
     html_for, icon_crop_rect, render_catalog_art, render_thumbnail,
 )
@@ -52,31 +52,34 @@ def _staff(measures, sysbbox=(500.0, 1000.0, 29000.0, 2000.0), vbw=30000):
         "measures": measures}}}
 
 
-def test_icon_rect_first_two_measures_union():
+def test_icon_rect_is_3_4_window_at_system_left():
     staff = _staff([{"bbox": [500.0, 1000.0, 6000.0, 2000.0]},
-                    {"bbox": [6500.0, 1000.0, 6000.0, 2000.0]},
-                    {"bbox": [12500.0, 1000.0, 6000.0, 2000.0]}])   # m3 must not widen it
+                    {"bbox": [6500.0, 1000.0, 6000.0, 2000.0]}])
     rect, source = icon_crop_rect(staff, 1200)
     assert source == "system0"
     scale, pad = 1200 / 30000, 0.15 * 2000
     x0, y0, x1, y1 = rect
+    band_h = 2000 + 2 * pad
     assert x0 == pytest.approx((500 - pad) * scale)
     assert y0 == pytest.approx((1000 - pad) * scale)
-    assert x1 == pytest.approx((500 + 12000 + pad) * scale)         # union right = m2's edge
+    # width = band height * 3/4: the window ITSELF is 3:4, so the crop fills the
+    # canvas — no letterboxed thin strip.
+    assert x1 == pytest.approx((500 - pad + band_h * ICON_W / ICON_H) * scale)
     assert y1 == pytest.approx((1000 + 2000 + pad) * scale)
+    assert (x1 - x0) / (y1 - y0) == pytest.approx(ICON_W / ICON_H)
 
 
-def test_icon_rect_min_width_floor_for_tiny_measures():
-    staff = _staff([{"bbox": [500.0, 1000.0, 1500.0, 2000.0]},
-                    {"bbox": [2000.0, 1000.0, 1500.0, 2000.0]}])
+def test_icon_rect_width_clamped_to_narrow_system():
+    # A tall band on a NARROW system: width must clamp to the system, not spill.
+    staff = _staff([{"bbox": [500.0, 1000.0, 900.0, 2000.0]}],
+                   sysbbox=(500.0, 1000.0, 1000.0, 2000.0))
     rect, source = icon_crop_rect(staff, 1200)
     assert source == "system0"
     scale, pad = 1200 / 30000, 0.15 * 2000
-    want_w = ICON_MIN_WIDTH_FRAC * 29000                            # 3000-unit union < 35% floor
-    assert rect[2] == pytest.approx((500 + want_w + pad) * scale)
+    assert rect[2] == pytest.approx((500 - pad + 1000 + 2 * pad) * scale)
 
 
-def test_icon_rect_missing_measure_bboxes_still_uses_floor():
+def test_icon_rect_measure_bboxes_not_required():
     rect, source = icon_crop_rect(_staff([{"bbox": None}, {}]), 1200)
     assert source == "system0"
     assert rect[2] > rect[0]

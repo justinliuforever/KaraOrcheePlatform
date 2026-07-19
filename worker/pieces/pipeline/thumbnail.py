@@ -20,7 +20,6 @@ PAPER = "#FBFAF6"                # bundle paper — pads scores shorter than the
 PAPER_RGB = (0xFB, 0xFA, 0xF6)
 WEBP_QUALITY = 80
 
-ICON_MIN_WIDTH_FRAC = 0.35       # of system width — two tiny measures must still read as a score
 ICON_PAD_FRAC = 0.15             # of system height, both axes
 ICON_FALLBACK_WIDTH_FRAC = 0.5   # no usable geometry: top-left band of the page
 
@@ -65,18 +64,20 @@ def compose(img):
 
 
 def icon_crop_rect(staff: dict | None, img_w: int) -> tuple[tuple[float, float, float, float], str]:
-    """Pixel-space (x0, y0, x1, y1) for the row icon. Geometry path: phone system 0's
-    vertical band, horizontally the first two measures' bbox union floored at
-    ICON_MIN_WIDTH_FRAC of the system. Missing/unusable staff.json -> top-left page band."""
+    """Pixel-space (x0, y0, x1, y1) for the row icon: a 3:4 window over the opening
+    of system 0. Missing/unusable staff.json -> top-left page band."""
     try:
         ph = staff["variants"]["phone"]
         sx, sy, sw, sh = ph["systems"][0]["bbox"]
         scale = img_w / ph["page"]["viewbox_w"]
-        rights = [b[0] + b[2] for b in (m.get("bbox") for m in ph["measures"][:2]) if b]
-        w = min(max(max(rights, default=0.0) - sx, ICON_MIN_WIDTH_FRAC * sw), sw)
+        # 3:4 BY CONSTRUCTION: height = system band + padding, width = height * 3/4,
+        # anchored at the system's left edge — the opening FILLS the canvas. A
+        # measure-width crop letterboxes into a thin strip at row size.
         pad = ICON_PAD_FRAC * sh
+        band_h = sh + 2 * pad
+        w = min(band_h * ICON_W / ICON_H, sw + 2 * pad)
         return ((sx - pad) * scale, (sy - pad) * scale,
-                (sx + w + pad) * scale, (sy + sh + pad) * scale), "system0"
+                (sx - pad + w) * scale, (sy + sh + pad) * scale), "system0"
     except Exception:
         w = img_w * ICON_FALLBACK_WIDTH_FRAC
         return (0.0, 0.0, w, w * ICON_H / ICON_W), "fallback"
