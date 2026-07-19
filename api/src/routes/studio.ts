@@ -11,7 +11,7 @@ import { books, pieces, pieceVersions, studioJobs, users, works } from "../db/sc
 import { rebuildCatalog, type BundleFile } from "../catalog_build";
 import { pieceSlug, bookSlug, normalizeCatalogue, likeEsc } from "../slug";
 
-const PUBLISH_ROLES = new Set(["score_events", "accompaniment_events", "geometry", "svg", "reference_audio", "audio_map"]);
+const PUBLISH_ROLES = new Set(["score_events", "accompaniment_events", "geometry", "svg", "reference_audio", "audio_map", "thumbnail"]);
 const INSTRUMENTS = ["piano", "violin", "guitar"] as const;
 
 const upload = multer({
@@ -915,6 +915,7 @@ export function studioRouter(deps: Deps): Router {
         await deps.studio.copyWithinBundles(a.path, toPath);
         versionFiles.push({ ...a, path: toPath });
       }
+      const thumbFile = versionFiles.find((a) => a.role === "thumbnail");
 
       const engineSha = (gates?.geometry?.metrics?.engine_sha as string | undefined) ?? null;
       // Assemble facts from gate metrics: XML ground truth + computed duration + the
@@ -985,6 +986,8 @@ export function studioRouter(deps: Deps): Router {
           // null (serialized as true) rather than omitted: a re-publish whose new
           // build has no repeats must clear a stale false on the existing row.
           followReady: structureMetrics?.kind === "repeats" ? false : null,
+          // null, not omitted: a re-publish without a thumbnail clears a stale path.
+          thumbnailPath: thumbFile?.path ?? null,
           rights: meta.rights,
           rightsNote: meta.rightsNote || null,
           status: "published",

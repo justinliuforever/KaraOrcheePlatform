@@ -159,6 +159,7 @@ export function composersRouter(deps: Deps): Router {
         res.status(404).json({ error: "not_found" });
         return;
       }
+      const updates: typeof parsed.data = { ...parsed.data };
       if (parsed.data.name && parsed.data.name !== existing.name) {
         const [clash] = await db
           .select()
@@ -169,15 +170,22 @@ export function composersRouter(deps: Deps): Router {
           res.status(409).json({ error: "composer_exists", composer: clash });
           return;
         }
+        // Rename propagation: pieces/works keep denormalized composer strings with
+        // no FK — the old name auto-joins the aliases (deduped, new name stripped)
+        // or every existing piece string would orphan out of the catalog join.
+        const base = parsed.data.aliases ?? (existing.aliases as string[]);
+        updates.aliases = [...new Set([...base, existing.name])].filter(
+          (a) => a !== parsed.data.name,
+        );
       }
       const [row] = await db
         .update(composers)
-        .set({ ...parsed.data, updatedAt: sql`now()` })
+        .set({ ...updates, updatedAt: sql`now()` })
         .where(eq(composers.id, id))
         .returning();
       // Name/alias edits change which published pieces match — rebuild like works do.
       if (deps.studio) await rebuildCatalog(db, deps.studio);
-      await audit(deps, req, "composer.update", { type: "composer", id }, { changes: parsed.data });
+      await audit(deps, req, "composer.update", { type: "composer", id }, { changes: updates });
       res.json({ ...row!, portraitUrl: signPortrait(row!.portraitPath) });
     }),
   );

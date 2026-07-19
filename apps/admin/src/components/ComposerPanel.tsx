@@ -273,9 +273,12 @@ export default function ComposerPanel({
             <button
               className="rounded-lg border border-red-200 text-bad text-sm font-medium px-3.5 py-2 hover:bg-red-50 disabled:opacity-40"
               disabled={remove.isPending}
+              title="Allowed even while in use — pieces keep their composer strings; the app falls back to a monogram"
               onClick={() => setConfirmDelete(true)}
             >
-              Delete entry
+              {entry && entry.usageCount > 0
+                ? `Delete entry (${entry.usageCount} in use)`
+                : "Delete entry"}
             </button>
           </>
         )}
@@ -476,6 +479,12 @@ export default function ComposerPanel({
             <AlertDialogDescription>
               Name and alias edits change which pieces this entry decorates — the live catalog
               updates immediately.
+              {entry && form && form.name.trim() !== entry.name && (
+                <>
+                  {" "}Renaming keeps "{entry.name}" as an alias automatically, so pieces still
+                  carrying the old spelling stay matched.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -492,8 +501,11 @@ export default function ComposerPanel({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete "{entry?.name}" from the registry?</AlertDialogTitle>
             <AlertDialogDescription>
-              Pieces keep their composer strings — only the portrait, sort name, and aliases
-              disappear from the app catalog.
+              {entry && entry.usageCount > 0
+                ? `This entry currently decorates ${entry.usageCount} piece${entry.usageCount === 1 ? "" : "s"}. `
+                : "No piece currently uses this entry. "}
+              Pieces keep their composer strings and nothing breaks — the app just falls back
+              to a monogram where the portrait and details were shown.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

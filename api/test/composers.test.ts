@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import sharp from "sharp";
 import { eq } from "drizzle-orm";
@@ -250,6 +250,91 @@ describe("composers CRUD", () => {
   it("requires admin auth", async () => {
     const res = await request(makeApp()).get("/admin/composers");
     expect(res.status).toBe(401);
+  });
+});
+
+describe("rename propagation", () => {
+  it("renaming appends the old name to aliases; usage and catalog match survive", async () => {
+    // A published piece carries the shorthand string the registry starts from.
+    await db.orm.insert(pieces).values({
+      id: "beyer_101_8",
+      title: "Vorschule im Klavierspiel",
+      subtitle: "No. 8",
+      composer: "Beyer",
+      rights: "public_domain",
+      rightsNote: "PD",
+      status: "published",
+      publishedVersion: 1,
+    });
+    await db.orm.insert(pieceVersions).values({
+      pieceId: "beyer_101_8",
+      version: 1,
+      files: [{ role: "score_events", path: "beyer_101_8/v1/score_events.json" }],
+    });
+
+    const created = await request(makeApp())
+      .post("/admin/composers")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Beyer" });
+    expect(created.status).toBe(201);
+
+    const before = await request(makeApp())
+      .get("/admin/composers")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(before.body.items.find((c: { id: string }) => c.id === "beyer").usageCount).toBe(1);
+
+    const renamed = await request(makeApp())
+      .patch("/admin/composers/beyer")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Ferdinand Beyer" });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.name).toBe("Ferdinand Beyer");
+    expect(renamed.body.aliases).toContain("Beyer");
+
+    // The piece string "Beyer" now alias-matches: usage count unchanged.
+    const after = await request(makeApp())
+      .get("/admin/composers")
+      .set("Authorization", `Bearer ${adminToken}`);
+    const entry = after.body.items.find((c: { id: string }) => c.id === "beyer");
+    expect(entry.usageCount).toBe(1);
+    const str = after.body.strings.find((s: { value: string }) => s.value === "Beyer");
+    expect(str.matched).toBe("alias");
+    expect(str.composerId).toBe("beyer");
+
+    // Catalog composers[] still matches the published piece via the auto-alias.
+    const studio = fakeStudio();
+    await rebuildCatalog(db.orm, studio);
+    const cat = studio.jsons.find((j) => j.path === "catalog.json")!.body as {
+      composers: { name: string; aliases: string[] }[];
+    };
+    const emitted = cat.composers.find((c) => c.name === "Ferdinand Beyer")!;
+    expect(emitted.aliases).toContain("Beyer");
+  });
+
+  it("dedupes on repeated renames and strips the new name from aliases", async () => {
+    // Rename back: "Ferdinand Beyer" becomes an alias, "Beyer" leaves the aliases
+    // (a name must never double as its own alias).
+    const back = await request(makeApp())
+      .patch("/admin/composers/beyer")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Beyer" });
+    expect(back.status).toBe(200);
+    expect(back.body.aliases).toEqual(["Ferdinand Beyer"]);
+
+    // Rename forward again WITH aliases supplied: old name still auto-appended, no dupes.
+    const forward = await request(makeApp())
+      .patch("/admin/composers/beyer")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Ferdinand Beyer", aliases: ["Ferdinand Beyer", "F. Beyer"] });
+    expect(forward.status).toBe(200);
+    expect(forward.body.aliases).toEqual(["F. Beyer", "Beyer"]);
+  });
+
+  afterAll(async () => {
+    // Fixtures here must not leak into the catalog-emission assertions below.
+    await db.orm.delete(pieceVersions).where(eq(pieceVersions.pieceId, "beyer_101_8"));
+    await db.orm.delete(pieces).where(eq(pieces.id, "beyer_101_8"));
+    await db.orm.delete(composers).where(eq(composers.id, "beyer"));
   });
 });
 
