@@ -12,7 +12,7 @@ import { rebuildCatalog, type BundleFile } from "../catalog_build";
 import { canonicalComposer } from "../composer_canon";
 import { pieceSlug, bookSlug, normalizeCatalogue, likeEsc } from "../slug";
 
-const PUBLISH_ROLES = new Set(["score_events", "accompaniment_events", "geometry", "svg", "reference_audio", "audio_map", "thumbnail"]);
+const PUBLISH_ROLES = new Set(["score_events", "accompaniment_events", "geometry", "svg", "reference_audio", "audio_map", "thumbnail", "row_icon"]);
 const INSTRUMENTS = ["piano", "violin", "guitar"] as const;
 
 const upload = multer({
@@ -920,6 +920,7 @@ export function studioRouter(deps: Deps): Router {
         versionFiles.push({ ...a, path: toPath });
       }
       const thumbFile = versionFiles.find((a) => a.role === "thumbnail");
+      const rowIconFile = versionFiles.find((a) => a.role === "row_icon");
 
       const engineSha = (gates?.geometry?.metrics?.engine_sha as string | undefined) ?? null;
       // Assemble facts from gate metrics: XML ground truth + computed duration + the
@@ -994,10 +995,14 @@ export function studioRouter(deps: Deps): Router {
           instrumentation,
           facts,
           // null (serialized as true) rather than omitted: a re-publish whose new
-          // build has no repeats must clear a stale false on the existing row.
-          followReady: structureMetrics?.kind === "repeats" ? false : null,
-          // null, not omitted: a re-publish without a thumbnail clears a stale path.
+          // build fixes the condition must clear a stale false on the existing row.
+          // tempo_source "default" = no numeric tempo in the XML — the synthetic
+          // timeline biases FOLLOW from t=0. Absent field (old bundles) passes through.
+          followReady:
+            structureMetrics?.kind === "repeats" || xm.tempo_source === "default" ? false : null,
+          // null, not omitted: a re-publish without the artifact clears a stale path.
           thumbnailPath: thumbFile?.path ?? null,
+          rowIconPath: rowIconFile?.path ?? null,
           rights: meta.rights,
           rightsNote: meta.rightsNote || null,
           status: "published",

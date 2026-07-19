@@ -114,6 +114,7 @@ export const pieces = pgTable("pieces", {
   status: text("status").notNull().default("draft"), // draft | published | archived
   publishedVersion: integer("published_version"), // pointer, set transactionally at publish
   thumbnailPath: text("thumbnail_path"),
+  rowIconPath: text("row_icon_path"), // 300x400 webp of the opening system, list-row art
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

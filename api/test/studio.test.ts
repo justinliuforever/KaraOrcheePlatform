@@ -595,6 +595,117 @@ describe("retry + publish", () => {
     expect(cat.pieces.find((p) => p.id === "linear_facts")!.follow_ready).toBe(true);
   });
 
+  it("records row_icon like thumbnail; re-publish without either clears both", async () => {
+    const mk = async (artifacts: object[]) => {
+      const [job] = await db.orm
+        .insert(studioJobs)
+        .values({
+          pieceId: "row_icon_piece",
+          status: "ready_for_review",
+          checkStatus: "pass",
+          metadata: FULL_META,
+          sources: [],
+          artifacts,
+          gates: { geometry: { status: "pass", metrics: { engine_sha: "verovio-6.2.1" } } },
+        })
+        .returning();
+      return job!;
+    };
+    const withArt = await mk([
+      { role: "score_events", path: "staging/ri/score_events.json", bytes: 1, sha256: "z" },
+      { role: "thumbnail", path: "staging/ri/thumbnail.webp", bytes: 2, sha256: "t" },
+      { role: "row_icon", path: "staging/ri/row_icon.webp", bytes: 3, sha256: "r" },
+    ]);
+    const studio = fakeStudio();
+    const res = await request(makeApp({ studio }))
+      .post(`/admin/studio/jobs/${withArt.id}/publish`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    let [piece] = await db.orm.select().from(pieces).where(eq(pieces.id, "row_icon_piece"));
+    expect(piece!.thumbnailPath).toBe("row_icon_piece/v1/thumbnail.webp");
+    expect(piece!.rowIconPath).toBe("row_icon_piece/v1/row_icon.webp");
+    const cat = studio.jsons.find((j) => j.path === "catalog.json")!.body as {
+      pieces: { id: string; thumbnail_url?: string; row_icon_url?: string }[];
+    };
+    const entry = cat.pieces.find((p) => p.id === "row_icon_piece")!;
+    expect(entry.thumbnail_url).toContain("row_icon_piece/v1/thumbnail.webp");
+    expect(entry.row_icon_url).toContain("row_icon_piece/v1/row_icon.webp");
+
+    const withoutArt = await mk([
+      { role: "score_events", path: "staging/ri2/score_events.json", bytes: 1, sha256: "z" },
+    ]);
+    const studio2 = fakeStudio();
+    const res2 = await request(makeApp({ studio: studio2 }))
+      .post(`/admin/studio/jobs/${withoutArt.id}/publish`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res2.status).toBe(200);
+    [piece] = await db.orm.select().from(pieces).where(eq(pieces.id, "row_icon_piece"));
+    expect(piece!.thumbnailPath).toBeNull();
+    expect(piece!.rowIconPath).toBeNull();
+    const cat2 = studio2.jsons.find((j) => j.path === "catalog.json")!.body as {
+      pieces: { id: string; thumbnail_url?: string; row_icon_url?: string }[];
+    };
+    const entry2 = cat2.pieces.find((p) => p.id === "row_icon_piece")!;
+    expect(entry2.thumbnail_url).toBeUndefined();
+    expect(entry2.row_icon_url).toBeUndefined();
+  });
+
+  it("default tempo_source publishes follow_ready=false; a real-tempo re-publish clears it", async () => {
+    const mk = async (xmlMeta: object | undefined) => {
+      const [job] = await db.orm
+        .insert(studioJobs)
+        .values({
+          pieceId: "tempo_default_piece",
+          status: "ready_for_review",
+          checkStatus: "pass",
+          metadata: FULL_META,
+          sources: [],
+          artifacts: [{ role: "score_events", path: "staging/td/score_events.json", bytes: 1, sha256: "z" }],
+          gates: {
+            geometry: { status: "pass", metrics: { engine_sha: "verovio-6.2.1" } },
+            ...(xmlMeta ? { sanity: { status: "pass", metrics: { xml_meta: xmlMeta } } } : {}),
+          },
+        })
+        .returning();
+      return job!;
+    };
+
+    const defaultTempo = await mk({ tempo_bpm: 120, tempo_source: "default" });
+    const studio = fakeStudio();
+    const res = await request(makeApp({ studio }))
+      .post(`/admin/studio/jobs/${defaultTempo.id}/publish`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    let [piece] = await db.orm.select().from(pieces).where(eq(pieces.id, "tempo_default_piece"));
+    expect(piece!.followReady).toBe(false);
+    const cat = studio.jsons.find((j) => j.path === "catalog.json")!.body as {
+      pieces: { id: string; follow_ready: boolean }[];
+    };
+    expect(cat.pieces.find((p) => p.id === "tempo_default_piece")!.follow_ready).toBe(false);
+
+    const xmlTempo = await mk({ tempo_bpm: 96, tempo_source: "xml" });
+    const studio2 = fakeStudio();
+    const res2 = await request(makeApp({ studio: studio2 }))
+      .post(`/admin/studio/jobs/${xmlTempo.id}/publish`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res2.status).toBe(200);
+    [piece] = await db.orm.select().from(pieces).where(eq(pieces.id, "tempo_default_piece"));
+    expect(piece!.followReady).toBeNull();
+    const cat2 = studio2.jsons.find((j) => j.path === "catalog.json")!.body as {
+      pieces: { id: string; follow_ready: boolean }[];
+    };
+    expect(cat2.pieces.find((p) => p.id === "tempo_default_piece")!.follow_ready).toBe(true);
+
+    // Old bundles without the field pass through untouched.
+    const absentField = await mk(undefined);
+    const res3 = await request(makeApp())
+      .post(`/admin/studio/jobs/${absentField.id}/publish`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res3.status).toBe(200);
+    [piece] = await db.orm.select().from(pieces).where(eq(pieces.id, "tempo_default_piece"));
+    expect(piece!.followReady).toBeNull();
+  });
+
   it("blocks publish when rights are unknown", async () => {
     const [job] = await db.orm
       .insert(studioJobs)

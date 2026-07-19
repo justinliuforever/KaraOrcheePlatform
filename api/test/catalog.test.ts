@@ -107,7 +107,12 @@ describe("top-level url signing", () => {
       catalog: fakeStore({
         async readCatalog() {
           return {
-            pieces: [{ id: "p1", book_id: "b1", thumbnail_url: "https://acct.blob.core.windows.net/piece-bundles/p1/thumb.webp" }],
+            pieces: [{
+              id: "p1",
+              book_id: "b1",
+              thumbnail_url: "https://acct.blob.core.windows.net/piece-bundles/p1/thumb.webp",
+              row_icon_url: "https://acct.blob.core.windows.net/piece-bundles/p1/row_icon.webp",
+            }],
             books: [{ id: "b1", cover_url: "https://acct.blob.core.windows.net/piece-bundles/books/b1/cover.webp" }],
           };
         },
@@ -117,6 +122,7 @@ describe("top-level url signing", () => {
     expect(res.status).toBe(200);
     expect(res.body.books[0].cover_url.endsWith("?sig=fake")).toBe(true);
     expect(res.body.pieces[0].thumbnail_url.endsWith("?sig=fake")).toBe(true);
+    expect(res.body.pieces[0].row_icon_url.endsWith("?sig=fake")).toBe(true);
   });
 
   it("capability gate trims books whose pieces are all filtered", async () => {

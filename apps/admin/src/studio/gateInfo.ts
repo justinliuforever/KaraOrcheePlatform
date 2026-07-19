@@ -77,7 +77,18 @@ export const RENDER_GATE: GateInfo = {
   ],
 };
 
-export const ALL_GATES = [...PREFLIGHT_GATES, AUDIO_GATE, RENDER_GATE];
+export const THUMBNAIL_GATE: GateInfo = {
+  key: "thumbnail",
+  label: "Catalog artwork",
+  blurb: "Renders the library thumbnail and row icon",
+  explain: [
+    "The score's opening page is rasterized into the catalog thumbnail (600×800) and the list-row icon (300×400) shown in the app library.",
+    "Artwork is an enhancement, never a build blocker — if rendering fails the step reports \"skipped\" with the reason and the piece still publishes without art.",
+    "The reported dimensions confirm the crop size; \"ink stddev\" measures how much engraved content landed in the crop — a value near zero means the image came out blank.",
+  ],
+};
+
+export const ALL_GATES = [...PREFLIGHT_GATES, AUDIO_GATE, RENDER_GATE, THUMBNAIL_GATE];
 
 // Actionable remediation, matched on the worker's failure text.
 export function failureHint(gateKey: string, error: string): string {
@@ -138,6 +149,9 @@ export function failureHint(gateKey: string, error: string): string {
   }
   if (gateKey === "render") {
     return "This is usually a pipeline problem, not your files. Re-run the checks; if it fails again, flag it to engineering.";
+  }
+  if (gateKey === "thumbnail") {
+    return "Artwork is optional — the piece publishes without it. Re-run the checks to retry; if it keeps skipping, flag it to engineering.";
   }
   return "Check the details above, fix the export, and replace the files to re-run the checks.";
 }

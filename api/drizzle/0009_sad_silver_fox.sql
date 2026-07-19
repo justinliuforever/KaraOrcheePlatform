@@ -1,0 +1,1 @@
+ALTER TABLE "pieces" ADD COLUMN "row_icon_path" text;

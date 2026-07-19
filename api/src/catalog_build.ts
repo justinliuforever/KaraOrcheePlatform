@@ -95,6 +95,7 @@ async function buildCatalogDoc(db: Orm, studio: StudioStore): Promise<unknown> {
       ...(Array.isArray(p.tags) && (p.tags as unknown[]).length > 0 ? { tags: p.tags } : {}),
       ...(p.display && Object.keys(p.display as object).length > 0 ? { display: p.display } : {}),
       ...(p.thumbnailPath ? { thumbnail_url: studio.bundleUrl(p.thumbnailPath) } : {}),
+      ...(p.rowIconPath ? { row_icon_url: studio.bundleUrl(p.rowIconPath) } : {}),
       ...(firstPub?.first ? { first_published_at: firstPub.first.toISOString() } : {}),
     });
   }

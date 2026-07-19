@@ -22,6 +22,24 @@ function formatElapsed(ms: number): string {
   return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 }
 
+// One-level flatten so sub-artifact metrics (thumbnail's nested row_icon block)
+// read as "row_icon width" instead of "[object Object]".
+function metricEntries(metrics: Record<string, unknown>): [string, unknown][] {
+  return Object.entries(metrics)
+    .filter(([k]) => k !== "duration_ms")
+    .flatMap(([k, v]) =>
+      v && typeof v === "object" && !Array.isArray(v)
+        ? Object.entries(v as Record<string, unknown>).map(
+            ([k2, v2]): [string, unknown] => [`${k} ${k2}`, v2],
+          )
+        : ([[k, v]] as [string, unknown][]),
+    );
+}
+
+function fmtMetric(v: unknown): string {
+  return v && typeof v === "object" ? JSON.stringify(v) : String(v);
+}
+
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-3 py-1">
@@ -359,13 +377,12 @@ export default function StudioJobPage() {
                   </div>
                   {entry?.metrics && Object.keys(entry.metrics).length > 0 && (
                     <dl className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5">
-                      {Object.entries(entry.metrics)
-                        .filter(([k]) => k !== "duration_ms")
-                        .slice(0, 6)
+                      {metricEntries(entry.metrics)
+                        .slice(0, 8)
                         .map(([k, v]) => (
                           <div key={k} className="flex justify-between text-[11px]">
                             <dt className="text-ink-faint">{k.replaceAll("_", " ")}</dt>
-                            <dd className="tabular-nums text-ink-soft">{String(v)}</dd>
+                            <dd className="tabular-nums text-ink-soft">{fmtMetric(v)}</dd>
                           </div>
                         ))}
                     </dl>
