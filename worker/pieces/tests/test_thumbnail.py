@@ -1,3 +1,4 @@
+import base64
 import sys
 from pathlib import Path
 
@@ -6,7 +7,11 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from gates import ARTIFACT_LAYOUT, PUBLISH_ROLES, gate_thumbnail
-from pipeline.thumbnail import PAPER_RGB, THUMB_H, THUMB_W, compose, render_thumbnail
+from pipeline.thumbnail import (
+    ICON_FALLBACK_WIDTH_FRAC, ICON_H, ICON_MIN_WIDTH_FRAC, ICON_W, PAPER_RGB,
+    TEXT_FONT_FILE, THUMB_H, THUMB_W, compose, compose_icon, font_face_css,
+    html_for, icon_crop_rect, render_catalog_art, render_thumbnail,
+)
 from tests.test_structure import ATTRS, measure, score
 
 
@@ -40,19 +45,98 @@ def test_compose_exact_aspect_is_pure_resize():
     assert out.getpixel((300, 400)) == (10, 20, 30)
 
 
+def _staff(measures, sysbbox=(500.0, 1000.0, 29000.0, 2000.0), vbw=30000):
+    return {"variants": {"phone": {
+        "page": {"viewbox_w": vbw},
+        "systems": [{"system_index": 0, "bbox": list(sysbbox)}],
+        "measures": measures}}}
+
+
+def test_icon_rect_first_two_measures_union():
+    staff = _staff([{"bbox": [500.0, 1000.0, 6000.0, 2000.0]},
+                    {"bbox": [6500.0, 1000.0, 6000.0, 2000.0]},
+                    {"bbox": [12500.0, 1000.0, 6000.0, 2000.0]}])   # m3 must not widen it
+    rect, source = icon_crop_rect(staff, 1200)
+    assert source == "system0"
+    scale, pad = 1200 / 30000, 0.15 * 2000
+    x0, y0, x1, y1 = rect
+    assert x0 == pytest.approx((500 - pad) * scale)
+    assert y0 == pytest.approx((1000 - pad) * scale)
+    assert x1 == pytest.approx((500 + 12000 + pad) * scale)         # union right = m2's edge
+    assert y1 == pytest.approx((1000 + 2000 + pad) * scale)
+
+
+def test_icon_rect_min_width_floor_for_tiny_measures():
+    staff = _staff([{"bbox": [500.0, 1000.0, 1500.0, 2000.0]},
+                    {"bbox": [2000.0, 1000.0, 1500.0, 2000.0]}])
+    rect, source = icon_crop_rect(staff, 1200)
+    assert source == "system0"
+    scale, pad = 1200 / 30000, 0.15 * 2000
+    want_w = ICON_MIN_WIDTH_FRAC * 29000                            # 3000-unit union < 35% floor
+    assert rect[2] == pytest.approx((500 + want_w + pad) * scale)
+
+
+def test_icon_rect_missing_measure_bboxes_still_uses_floor():
+    rect, source = icon_crop_rect(_staff([{"bbox": None}, {}]), 1200)
+    assert source == "system0"
+    assert rect[2] > rect[0]
+
+
+def test_icon_rect_fallback_without_geometry():
+    for staff in (None, {}, {"variants": {}}, {"variants": {"phone": {"systems": []}}}):
+        rect, source = icon_crop_rect(staff, 1200)
+        assert source == "fallback"
+        w = 1200 * ICON_FALLBACK_WIDTH_FRAC
+        assert rect == (0.0, 0.0, w, w * ICON_H / ICON_W)
+
+
+def test_compose_icon_pads_wide_crop_to_3_4():
+    src = Image.new("RGB", (1200, 1600), (0, 0, 0))
+    out = compose_icon(src, (0, 0, 400, 100))
+    assert out.size == (ICON_W, ICON_H)
+    assert _dark(out.getpixel((ICON_W // 2, ICON_H // 2)))          # content centered
+    top = out.getpixel((ICON_W // 2, 4))
+    assert all(abs(a - b) <= 2 for a, b in zip(top, PAPER_RGB))     # paper above
+
+
+def test_compose_icon_clamps_and_survives_bad_rects():
+    src = Image.new("RGB", (1200, 1600), (40, 40, 40))
+    assert compose_icon(src, (1000, 1500, 5000, 5000)).size == (ICON_W, ICON_H)
+    assert compose_icon(src, (2000, 2000, 3000, 3000)).size == (ICON_W, ICON_H)
+
+
 def test_gate_thumbnail_skips_on_failure(tmp_path):
     metrics = gate_thumbnail("nope", tmp_path)              # no SVG present
     assert "skipped" in metrics
     assert not (tmp_path / "thumbnail.webp").exists()
+    assert not (tmp_path / "row_icon.webp").exists()
 
 
-def test_thumbnail_registered_for_staging_and_publish():
+def test_catalog_art_registered_for_staging_and_publish():
     row = next(r for r in ARTIFACT_LAYOUT if r[0] == "thumbnail.webp")
     assert (row[1], row[2], row[3]) == ("thumbnail.webp", "thumbnail", None)
-    assert "thumbnail" in PUBLISH_ROLES
+    row = next(r for r in ARTIFACT_LAYOUT if r[0] == "row_icon.webp")
+    assert (row[1], row[2], row[3]) == ("row_icon.webp", "row_icon", None)
+    assert "thumbnail" in PUBLISH_ROLES and "row_icon" in PUBLISH_ROLES
     # source-text check (parity.test.ts style): importing main drags azure/psycopg
     main_src = (Path(__file__).parent.parent / "main.py").read_text()
     assert '".webp": "image/webp"' in main_src
+
+
+def test_house_font_vendored_with_license():
+    assert TEXT_FONT_FILE.exists() and TEXT_FONT_FILE.stat().st_size > 50_000
+    assert TEXT_FONT_FILE.read_bytes()[:4] == b"\x00\x01\x00\x00"   # TrueType sfnt magic
+    ofl = (TEXT_FONT_FILE.parent / "OFL.txt").read_text()
+    assert "SIL OPEN FONT LICENSE" in ofl and "Libre Baskerville" in ofl
+
+
+def test_html_embeds_baskerville_font_face():
+    html = html_for("<svg></svg>")
+    assert "@font-face" in html and "font-family:Baskerville" in html
+    head = base64.b64encode(TEXT_FONT_FILE.read_bytes()[:60]).decode()
+    assert f"data:font/ttf;base64,{head}" in html
+    assert html.index("@font-face") < html.index("<body>")
+    assert font_face_css() in html
 
 
 def _webkit_ready() -> bool:
@@ -64,13 +148,14 @@ def _webkit_ready() -> bool:
         return False
 
 
-def test_e2e_thumbnail_from_built_svg(tmp_path):
+def test_e2e_catalog_art_from_built_svg(tmp_path):
     if not _webkit_ready():
         pytest.skip("playwright webkit browser not installed (CI runs browserless)")
     from pipeline.staff import build_staff_assets
     xml = score(measure(1, ATTRS), *[measure(i) for i in range(2, 13)])
     build_staff_assets("t", xml, tmp_path / "score_events.json", tmp_path)
-    m = render_thumbnail(tmp_path / "t.phone.svg", tmp_path / "thumbnail.webp")
+    m = render_catalog_art(tmp_path / "t.phone.svg", tmp_path / "t.staff.json",
+                           tmp_path / "thumbnail.webp", tmp_path / "row_icon.webp")
     img = Image.open(tmp_path / "thumbnail.webp")
     assert img.format == "WEBP" and img.size == (THUMB_W, THUMB_H)
     assert m["bytes"] > 2000
@@ -81,3 +166,12 @@ def test_e2e_thumbnail_from_built_svg(tmp_path):
     assert all(abs(a - b) <= 6 for a, b in zip(corner, PAPER_RGB))
     px = list(img.convert("L").getdata())
     assert sum(1 for p in px if p < 100) > 200
+    # row icon: from system-0 geometry, right size, carries ink
+    assert m["row_icon"]["source"] == "system0"
+    icon = Image.open(tmp_path / "row_icon.webp")
+    assert icon.format == "WEBP" and icon.size == (ICON_W, ICON_H)
+    ipx = list(icon.convert("L").getdata())
+    assert sum(1 for p in ipx if p < 100) > 100
+    # thumbnail path alone still works (legacy single-artifact entry point)
+    m2 = render_thumbnail(tmp_path / "t.phone.svg", tmp_path / "thumb2.webp")
+    assert m2["bytes"] > 2000

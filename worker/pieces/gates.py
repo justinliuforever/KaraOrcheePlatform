@@ -24,7 +24,7 @@ from pipeline.parts import reduce_xml_to_part, split_midi_notes
 from pipeline.tempo_norm import normalize_tempo
 from pipeline.engraving_norm import normalize_engraving
 from pipeline.preview import render_preview
-from pipeline.thumbnail import render_thumbnail
+from pipeline.thumbnail import render_catalog_art
 from pipeline.audio_gate import AudioGateError
 from pipeline.audio_map import build_time_map
 from pipeline.align import structure_match_score
@@ -292,6 +292,7 @@ def gate_geometry(piece: str, xml_path: Path, out_dir: Path,
     ph = bundle["variants"]["phone"]
     metrics = {
         "engine_sha": f"verovio-{bundle['verovio_version']}",
+        "render_generation": bundle["render_generation"],
         "measures": len(bundle["identity"]["measures"]),
         "systems": ph["n_systems"],
         "anchors": len(ph["cursor_anchors"]),
@@ -365,7 +366,8 @@ def gate_render(piece: str, out_dir: Path) -> dict:
 def gate_thumbnail(piece: str, out_dir: Path) -> dict:
     # Catalog art is an enhancement, never a build blocker (mirrors gate_preview).
     try:
-        return render_thumbnail(out_dir / f"{piece}.phone.svg", out_dir / "thumbnail.webp")
+        return render_catalog_art(out_dir / f"{piece}.phone.svg", out_dir / f"{piece}.staff.json",
+                                  out_dir / "thumbnail.webp", out_dir / "row_icon.webp")
     except Exception as err:
         traceback.print_exc()
         return {"skipped": f"thumbnail failed: {str(err)[:120]}"}
@@ -384,8 +386,9 @@ ARTIFACT_LAYOUT = [
     ("audio_map.json", "audio_map.json", "audio_map", None),
     ("preview.m4a", "preview.m4a", "preview_audio", None),
     ("thumbnail.webp", "thumbnail.webp", "thumbnail", None),
+    ("row_icon.webp", "row_icon.webp", "row_icon", None),
 ]
-PUBLISH_ROLES = {"score_events", "accompaniment_events", "geometry", "svg", "reference_audio", "audio_map", "thumbnail"}
+PUBLISH_ROLES = {"score_events", "accompaniment_events", "geometry", "svg", "reference_audio", "audio_map", "thumbnail", "row_icon"}
 
 
 def run_all(job_id: str, piece: str, xml_path: Path, midi_path: Path | None, out_dir: Path,

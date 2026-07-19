@@ -42,6 +42,10 @@ MAX_BREAKPOINTS = 400
 # identity — a dense wrong piece can fake it. Chroma along the path can't be faked.
 CHROMA_SIM_MEAN_MIN = 0.60
 CHROMA_SIM_P10_MIN = 0.15
+# Map invariants: the DTW path runs into the deadpan synthesis' release tail, so the
+# map is clamped to the written end; an interior breakpoint bending where the score
+# has no event is an alignment artifact, not a tempo change.
+MAP_BP_ONSET_TOL_SEC = 0.35
 
 
 def _score_onsets(score_events_path: Path) -> tuple[np.ndarray, float]:
@@ -88,6 +92,47 @@ def _simplify(xs: np.ndarray, ys: np.ndarray, tol_sec: float = 0.010) -> tuple[l
         idx = np.linspace(0, len(keep) - 1, MAX_BREAKPOINTS).astype(int)
         keep = [keep[j] for j in idx]
     return [round(float(xs[k]), 4) for k in keep], [round(float(ys[k]), 4) for k in keep]
+
+
+def clamp_map_to_end(score_sec: list[float], audio_sec: list[float],
+                     end_sec: float) -> tuple[list[float], list[float]]:
+    """Clamp breakpoints to the written end: drop points past it, terminate the map
+    exactly at (end, interp(end))."""
+    if score_sec[-1] <= end_sec:
+        return list(score_sec), list(audio_sec)
+    y_end = float(np.interp(end_sec, score_sec, audio_sec))
+    k = next(i for i, x in enumerate(score_sec) if x >= end_sec)
+    return list(score_sec[:k]) + [round(end_sec, 4)], list(audio_sec[:k]) + [round(y_end, 4)]
+
+
+def check_map_invariants(score_sec, audio_sec, onsets, last_onset: float) -> None:
+    """Both axes strictly monotone, and every body breakpoint (score_sec <= last onset;
+    the first breakpoint is the map origin, the tail sits at the written end) within
+    MAP_BP_ONSET_TOL_SEC of a score onset. Violations raise AudioGateError with numbers."""
+    xs, ys = np.asarray(score_sec, dtype=float), np.asarray(audio_sec, dtype=float)
+    flat = (np.diff(xs) <= 0) | (np.diff(ys) <= 0)
+    if flat.any():
+        k = int(np.argmax(flat))
+        raise AudioGateError(
+            f"audio map is not strictly monotonic: {int(flat.sum())} non-increasing steps "
+            f"(first at breakpoint {k}: score {xs[k]:.3f}->{xs[k + 1]:.3f}s, "
+            f"audio {ys[k]:.3f}->{ys[k + 1]:.3f}s)",
+            {"map_breakpoints": len(xs), "map_monotone_violations": int(flat.sum())})
+    ov = np.asarray(onsets, dtype=float)
+    body = xs[1:][xs[1:] <= last_onset + 1e-6]
+    if len(body) and len(ov):
+        i = np.searchsorted(ov, body)
+        d = np.minimum(np.abs(body - ov[np.clip(i - 1, 0, len(ov) - 1)]),
+                       np.abs(body - ov[np.clip(i, 0, len(ov) - 1)]))
+        far = d > MAP_BP_ONSET_TOL_SEC
+        if far.any():
+            w = int(np.argmax(d))
+            raise AudioGateError(
+                f"{int(far.sum())}/{len(body)} audio-map breakpoints sit more than "
+                f"{MAP_BP_ONSET_TOL_SEC}s from any score onset (worst {d[w]:.2f}s at "
+                f"score_sec {body[w]:.2f}) — the map bends where the score has no event",
+                {"map_breakpoints": len(xs), "map_bp_far_from_onset": int(far.sum()),
+                 "map_bp_worst_dev_sec": round(float(d[w]), 3)})
 
 
 def _deadpan_wav(score_events_path: Path, sf2_path: Path, program: int, out_dir: Path) -> Path:
@@ -152,11 +197,13 @@ def build_time_map(audio_path: Path, score_events_path: Path, out_dir: Path,
     # Tier 1: the strict linear gate (cheap, and most uploads are studio renders).
     try:
         metrics = check_reference_audio(audio_path, score_events_path)
-        _, notated_end = _score_onsets(score_events_path)
+        onsets, notated_end = _score_onsets(score_events_path)
         content = metrics["content_duration_sec"]
         lead = metrics["lead_in_sec"]
-        _write_map(out_dir, [0.0, round(float(notated_end), 4)],
-                   [round(lead, 4), round(lead + content, 4)], tier=1)
+        xs = [0.0, round(float(notated_end), 4)]
+        ys = [round(lead, 4), round(lead + content, 4)]
+        check_map_invariants(xs, ys, onsets, float(onsets[-1]))
+        _write_map(out_dir, xs, ys, tier=1)
         metrics["tier"] = 1
         return metrics
     except AudioGateError as tier1_err:
@@ -253,8 +300,12 @@ def build_time_map(audio_path: Path, score_events_path: Path, out_dir: Path,
                 "the score timeline closely enough for tap-to-seek and cursor sync.",
                 metrics) from None
     xs, ys = _simplify(map_score, map_audio)
+    clamped = xs[-1] > notated_end
+    xs, ys = clamp_map_to_end(xs, ys, round(float(notated_end), 4))
+    check_map_invariants(xs, ys, score_onsets, float(score_onsets[-1]))
     _write_map(out_dir, xs, ys, tier=2)
     metrics["map_breakpoints"] = len(xs)
+    metrics["map_clamped_to_end"] = bool(clamped)
     return metrics
 
 

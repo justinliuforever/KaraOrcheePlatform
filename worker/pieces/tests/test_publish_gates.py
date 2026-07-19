@@ -7,8 +7,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from gates import GateError, gate_alignment, gate_geometry, run_all
 from pipeline.staff import (ANCHOR_COVERAGE_MIN, ANCHOR_GAP_RATIO, ENDPOINT_SLACK_SEC,
-                            RESIDUAL_P50_MS, RESIDUAL_P90_MS, anchor_gap_check,
-                            score_events_end_sec, staff_gate_reasons,
+                            RESIDUAL_P50_MS, RESIDUAL_P90_MS, VARIANTS, anchor_gap_check,
+                            assert_render_generation, build_staff_assets,
+                            layout_options_hash, score_events_end_sec, staff_gate_reasons,
                             timeline_residual_ms, timemap_rend_count)
 from tests.test_structure import ATTRS, FWD, bwd, measure, score
 
@@ -133,11 +134,50 @@ def test_linear_preflight_green_and_emits_gate_metrics(tmp_path):
     for k in ("residual_p90_ms", "residual_p90_gate_ms", "residual_p90_gate_basis",
               "anchor_coverage", "anchor_coverage_min", "anchor_max_gap_ratio",
               "anchor_gap_ratio_max", "timemap_rend_ids", "score_events_end_sec",
-              "map_end_sec", "endpoint_slack_sec"):
+              "map_end_sec", "endpoint_slack_sec", "render_generation"):
         assert k in m
     assert m["timemap_rend_ids"] == 0
     assert m["anchor_coverage"] == 1.0
     assert m["score_events_end_sec"] <= m["map_end_sec"] + ENDPOINT_SLACK_SEC
+
+
+def test_render_generation_stamped_in_every_written_file(tmp_path):
+    import re
+    xml = score(measure(1, ATTRS), measure(2), measure(3))
+    b = build_staff_assets("p", xml, tmp_path / "score_events.json", tmp_path)
+    stamp = b["render_generation"]
+    assert re.fullmatch(r"verovio-.+\+layout-[0-9a-f]{12}", stamp)
+    assert stamp.endswith(layout_options_hash())
+    for v in VARIANTS:
+        assert f"<!--render_generation:{stamp}-->" in (tmp_path / f"p.{v}.svg").read_text()
+    assert json.loads((tmp_path / "p.staff.json").read_text())["render_generation"] == stamp
+    assert_render_generation(tmp_path, "p", stamp)               # build-end assert passes
+
+
+def test_render_generation_mismatch_and_absence_raise(tmp_path):
+    xml = score(measure(1, ATTRS), measure(2))
+    stamp = build_staff_assets("p", xml, tmp_path / "score_events.json", tmp_path)["render_generation"]
+    phone = tmp_path / "p.phone.svg"
+    good = phone.read_text()
+    phone.write_text(good.replace(stamp, "verovio-0.0.0+layout-000000000000"))
+    with pytest.raises(RuntimeError, match="mismatch") as ei:
+        assert_render_generation(tmp_path, "p", stamp)
+    assert stamp in str(ei.value) and "000000000000" in str(ei.value)
+    phone.write_text(good.replace(f"<!--render_generation:{stamp}-->", ""))
+    with pytest.raises(RuntimeError, match="mismatch"):
+        assert_render_generation(tmp_path, "p", stamp)
+
+
+def test_layout_hash_is_stable_and_options_sensitive():
+    from pipeline import staff as staff_mod
+    h = layout_options_hash()
+    assert h == layout_options_hash() and len(h) == 12
+    orig = staff_mod.COMMON["scale"]
+    try:
+        staff_mod.COMMON["scale"] = orig + 1
+        assert layout_options_hash() != h
+    finally:
+        staff_mod.COMMON["scale"] = orig
 
 
 def test_real_bach_passes_all_new_checks():

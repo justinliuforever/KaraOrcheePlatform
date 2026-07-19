@@ -38,6 +38,35 @@ CURSOR_EL = ('<g id="cursor" visibility="hidden">'
              'stroke-opacity="0.95" stroke-linecap="round"/></g>')
 
 
+_STAMP_RE = re.compile(r'<!--render_generation:(.*?)-->')
+
+
+def layout_options_hash() -> str:
+    """Stable fingerprint of the house layout config; part of render_generation."""
+    blob = json.dumps({"common": COMMON, "variants": VARIANTS, "page_gap": PAGE_GAP},
+                      sort_keys=True)
+    return hashlib.sha256(blob.encode()).hexdigest()[:12]
+
+
+def render_generation_stamp(ver: str) -> str:
+    return f"verovio-{ver}+layout-{layout_options_hash()}"
+
+
+def assert_render_generation(out_dir: Path, piece: str, stamp: str) -> None:
+    """Build-end integrity: every file this build wrote must carry THIS build's stamp.
+    A mismatch means a stale artifact survived from another engine/layout config
+    (the amend-after-build / healthz-lies bug class)."""
+    for vname in VARIANTS:
+        f = out_dir / f"{piece}.{vname}.svg"
+        m = _STAMP_RE.search(f.read_text())
+        got = m.group(1) if m else None
+        if got != stamp:
+            raise RuntimeError(f"render_generation mismatch in {f.name}: {got!r} != {stamp!r}")
+    got = json.loads((out_dir / f"{piece}.staff.json").read_text()).get("render_generation")
+    if got != stamp:
+        raise RuntimeError(f"render_generation mismatch in {piece}.staff.json: {got!r} != {stamp!r}")
+
+
 def s(tag: str) -> str:
     return tag.split('}')[-1]
 
@@ -439,6 +468,7 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
                        playback: dict | None = None) -> dict:
     """Build all staff assets for one piece into out_dir; returns the bundle dict."""
     ver = verovio_version()
+    stamp = render_generation_stamp(ver)
     sha = hashlib.sha256(xml_path.read_bytes()).hexdigest()[:16]
     pnum = piece_number_from_xml(xml_path)
     title_main, title_sub = titles_from_xml(xml_path)
@@ -457,6 +487,7 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
                   "anchor_rule": "musical-coordinate {measure_index, pass, qstamp}; pass=1 when no repeats; xml:id is a hint only",
                   "paper": "#FBFAF6", "ink": "#111111", "identity": {"measures": []},
                   "playback": playback, "variants": {}}
+    bundle["render_generation"] = stamp
     id_ref = None
     for vname, vopts in VARIANTS.items():
         vopts = {**vopts, **(variant_overrides or {}).get(vname, {})}
@@ -474,7 +505,8 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
             svg = inject_piece_number(svg, pnum, systems[0]["bbox"])
         if title_main and systems:
             svg = inject_titles(svg, title_main, title_sub, systems[0]["bbox"])
-        (out_dir / f"{piece}.{vname}.svg").write_text(svg)
+        (out_dir / f"{piece}.{vname}.svg").write_text(
+            svg + f'<!--render_generation:{stamp}-->')
         identity, onsets = build_identity(tm, num_map, playback)
         span_starts = ([sp["expanded_sec_start"] for sp in playback["spans"][1:]]
                        if playback else ())
@@ -519,4 +551,5 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
               if (bb := bands.get(int(a[3]))) and not (bb[1] - bb[3] <= a[2] <= bb[1] + 2 * bb[3]))
     bundle["anchors_out_of_band"] = oob
     (out_dir / f"{piece}.staff.json").write_text(json.dumps(bundle))
+    assert_render_generation(out_dir, piece, stamp)
     return bundle
