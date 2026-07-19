@@ -215,6 +215,47 @@ def has_dc(piece_measures):
                for m in piece_measures for _, t in _words_of(m))
 
 
+def fix_start_repeats(piece_measures) -> int:
+    """Make implicit repeat sections explicit: an end-repeat with no forward repeat
+    since the previous end-repeat means "repeat from the previous section end" in
+    Sibelius (confirmed by the engine's BarPlaybackOrderString), but verovio reads
+    it as "repeat from the beginning" — cascading into a quadratic expansion the
+    structure gate rightly rejects. Injecting the forward barline encodes what the
+    engraver actually hears on playback."""
+    # Sibelius's implicit repeat start = the start of the current SECTION, where
+    # sections are delimited by FINAL (light-heavy) barlines — verified against the
+    # engine's BarPlaybackOrderString on the real Hanon book (repeat at bar 17 jumps
+    # to 11 = the bar after the section-final at 10, NOT after the previous repeat).
+    injected = 0
+    section_start = 0
+    explicit = True    # beginning-of-piece needs no barline (verovio agrees there)
+    pending = []       # (backward_index) waiting to be resolved in this section
+    for i, m in enumerate(piece_measures):
+        has_forward = any(bl.find("repeat") is not None and
+                          bl.find("repeat").get("direction") == "forward"
+                          for bl in m.findall("barline"))
+        if has_forward:
+            section_start = i
+            explicit = True
+        backward = any(bl.find("repeat") is not None and
+                       bl.find("repeat").get("direction") == "backward"
+                       for bl in m.findall("barline"))
+        if backward and section_start > 0 and not explicit:
+            target = piece_measures[section_start]
+            bl = ET.Element("barline", {"location": "left"})
+            ET.SubElement(bl, "bar-style").text = "heavy-light"
+            ET.SubElement(bl, "repeat", {"direction": "forward"})
+            target.insert(0, bl)
+            injected += 1
+            explicit = True  # one barline serves every backward in this section
+        is_final = any((bl.findtext("bar-style") or "") in ("light-heavy", "heavy")
+                       for bl in m.findall("barline"))
+        if is_final:
+            section_start = i + 1
+            explicit = False
+    return injected
+
+
 def split(src: Path, out_dir: Path):
     root, part, measures = load(src)
     starts, seg_rows = find_starts(measures)
@@ -299,7 +340,68 @@ def split(src: Path, out_dir: Path):
     return manifest, conservation, ok
 
 
+def split_explicit(src: Path, out_dir: Path, starts: list[int], numbers: list[int],
+                   inject_tempo: bool, prefix: str):
+    """Explicit-boundary mode for collections without edition-number labels
+    (boundaries e.g. from per-piece metronome marks). Same surgery + conservation."""
+    root, part, measures = load(src)
+    snapshots = carry_attributes(measures)
+    total_notes = len(part.findall(".//note"))
+    total_fings = len(part.findall(".//fingering"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest = []
+    bounds = starts + [len(measures)]
+    sum_m = sum_n = sum_f = 0
+    for k, n in enumerate(numbers):
+        seg = [copy.deepcopy(m) for m in measures[bounds[k]:bounds[k + 1]]]
+        new_root = ET.Element("score-partwise", {"version": root.get("version") or "4.0"})
+        for child in root:
+            if child.tag in ("movement-title", "part", "credit"):
+                continue
+            new_root.append(copy.deepcopy(child))
+        new_part = ET.SubElement(new_root, "part", {"id": part.get("id") or "P1"})
+        num = 0 if seg[0].get("implicit") == "yes" else 1
+        for m in seg:
+            m.set("number", str(num)); num += 1
+            new_part.append(m)
+        ensure_first_measure_attributes(seg[0], snapshots[bounds[k]])
+        if inject_tempo:
+            term, bpm, _ = piece_tempo(seg)
+            inject_sound_tempo(seg[0], bpm)
+        fixed = fix_start_repeats(seg)
+        dc = has_dc(seg)
+        dest = out_dir / f"{prefix}_{n:02d}.musicxml"
+        ET.ElementTree(new_root).write(dest, encoding="UTF-8", xml_declaration=True)
+        nm, nn, nf = len(seg), len(new_part.findall(".//note")), len(new_part.findall(".//fingering"))
+        sum_m += nm; sum_n += nn; sum_f += nf
+        manifest.append({"piece": n, "file": dest.name, "measures": nm, "notes": nn,
+                         "fingerings": nf, "dc_al_fine": dc, "hold": False,
+                         "start_repeats_injected": fixed,
+                         "start_index": bounds[k], "seg_note": "", "tempo_source": "in-file"})
+    conservation = {"measures": (sum_m, len(measures)), "notes": (sum_n, total_notes),
+                    "fingerings": (sum_f, total_fings)}
+    ok = all(a == b for a, b in conservation.values())
+    json.dump({"pieces": manifest, "conservation": conservation, "conserved": ok},
+              open(out_dir / "manifest.json", "w"), indent=1, ensure_ascii=False)
+    return manifest, conservation, ok
+
+
 def main():
+    if "--starts" in sys.argv:
+        i = sys.argv.index("--starts")
+        starts = [int(x) for x in sys.argv[i + 1].split(",")]
+        j = sys.argv.index("--numbers")
+        numbers = [int(x) for x in sys.argv[j + 1].split(",")]
+        prefix = sys.argv[sys.argv.index("--prefix") + 1] if "--prefix" in sys.argv else "piece"
+        inject = "--inject-tempo" in sys.argv
+        manifest, conservation, ok = split_explicit(
+            Path(sys.argv[1]), Path(sys.argv[2]), starts, numbers, inject, prefix)
+        print(f"pieces: {len(manifest)}")
+        for key, (got, want) in conservation.items():
+            print(f"conservation {key}: {got}/{want} {'OK' if got == want else 'MISMATCH'}")
+        if not ok:
+            raise SystemExit("CONSERVATION FAILED")
+        return
     src = Path(sys.argv[1])
     out_dir = Path(sys.argv[2])
     manifest, conservation, ok = split(src, out_dir)
