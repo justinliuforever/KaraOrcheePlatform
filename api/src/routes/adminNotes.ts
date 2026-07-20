@@ -387,17 +387,24 @@ export function adminNotesRouter(deps: Deps): Router {
       const status = typeof req.query.status === "string" ? req.query.status : "";
       const stage = typeof req.query.stage === "string" ? req.query.stage : "";
       const conds = [];
-      if (NOTE_JOB_STATUSES.includes(status)) conds.push(eq(noteJobs.status, status));
-      if (NOTE_JOB_STAGES.includes(stage)) conds.push(eq(noteJobs.stage, stage));
-      if (q) {
-        conds.push(
-          or(
-            like(users.email, q),
-            like(users.displayName, q),
-            sql`${noteJobs.id}::text ILIKE ${`%${q}%`}`,
-          ),
-        );
+      // Facets reflect every filter EXCEPT status itself, so switching status stays
+      // meaningful (the count shows how many are in each status under q/stage).
+      const facetConds = [];
+      if (NOTE_JOB_STAGES.includes(stage)) {
+        const c = eq(noteJobs.stage, stage);
+        conds.push(c);
+        facetConds.push(c);
       }
+      if (q) {
+        const c = or(
+          like(users.email, q),
+          like(users.displayName, q),
+          sql`${noteJobs.id}::text ILIKE ${`%${q}%`}`,
+        );
+        conds.push(c);
+        facetConds.push(c);
+      }
+      if (NOTE_JOB_STATUSES.includes(status)) conds.push(eq(noteJobs.status, status));
       const rows = await db
         .select({
           id: noteJobs.id,
@@ -431,6 +438,9 @@ export function adminNotesRouter(deps: Deps): Router {
       const statusCounts = await db
         .select({ status: noteJobs.status, count: sql<number>`count(*)::int` })
         .from(noteJobs)
+        .leftJoin(lessonSessions, eq(noteJobs.lessonSessionId, lessonSessions.id))
+        .leftJoin(users, eq(lessonSessions.teacherId, users.id))
+        .where(facetConds.length ? and(...facetConds) : undefined)
         .groupBy(noteJobs.status);
       res.json({ items, facets: { status: statusCounts.map((c) => ({ value: c.status, count: c.count })) } });
     }),

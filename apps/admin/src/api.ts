@@ -667,3 +667,269 @@ export function getOpsRequest(reqId: string, signal?: AbortSignal): Promise<OpsR
 export function getOpsQueue(signal?: AbortSignal): Promise<OpsQueueResponse> {
   return api("/admin/ops/queue", { signal });
 }
+
+// ---- Notes admin (pairings / subscriptions / note-jobs / activity) ----
+
+export type LinkStatus = "active" | "removed";
+
+export interface NoteLink {
+  id: string;
+  teacherId: string;
+  studentId: string;
+  status: LinkStatus;
+  createdVia: string;
+  consentAt: string | null;
+  removedAt: string | null;
+  createdAt: string;
+  teacherEmail: string | null;
+  teacherName: string | null;
+  studentEmail: string | null;
+  studentName: string | null;
+}
+
+export type InviteState = "active" | "expired" | "exhausted" | "revoked";
+
+export interface NoteInvite {
+  id: string;
+  code: string;
+  teacherId: string;
+  expiresAt: string;
+  maxUses: number;
+  usedCount: number;
+  sentToEmail: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+  teacherEmail: string | null;
+  teacherName: string | null;
+  state: InviteState;
+}
+
+export type EntitlementSource = "trial" | "apple_iap" | "admin_grant" | "org";
+export type EntitlementStatus = "active" | "grace" | "expired" | "revoked";
+
+export interface NoteEntitlement {
+  id: string;
+  userId: string;
+  source: string;
+  status: string;
+  startsAt: string;
+  expiresAt: string | null;
+  productId: string | null;
+  appleOriginalTransactionId: string | null;
+  environment: string | null;
+  autoRenew: boolean;
+  orgId: string | null;
+  // The admin grant reason lives in the note column; grantor identity is in the audit trail.
+  reason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  userEmail: string | null;
+  userName: string | null;
+}
+
+export interface MonetizationConfig {
+  value: string | null;
+  state: "beta_free" | "paid_after";
+}
+
+/** Server-side effective access resolution (mirrors NotesAccess in api/notes/entitlement.ts). */
+export interface NotesAccess {
+  status: "teacher_free" | "beta_free" | "trial" | "active" | "grace" | "lapsed";
+  trialEndsAt?: string;
+  lockedAfter?: string;
+}
+
+export type NoteJobStatus = "queued" | "processing" | "failed" | "ready_for_review";
+
+export interface NoteJobMetrics {
+  asr_secs?: number;
+  llm_secs?: number;
+  annotations?: number;
+  grounded?: number;
+  language?: string | null;
+  audio_duration?: number | null;
+  llm_model?: string;
+  llm_in_tok?: number;
+  llm_out_tok?: number;
+  reqId?: string;
+  [k: string]: unknown;
+}
+
+export interface NoteJobRow {
+  id: string;
+  status: string;
+  stage: string | null;
+  attempts: number;
+  error: string | null;
+  failureHints: string[];
+  metrics: NoteJobMetrics;
+  transcriptPath: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lessonSessionId: string;
+  teacherId: string | null;
+  pieceId: string | null;
+  pieceLabel: string | null;
+  teacherEmail: string | null;
+  teacherName: string | null;
+  reqId: string | null;
+}
+
+export interface NoteJobsResponse {
+  items: NoteJobRow[];
+  facets: { status: { value: string; count: number }[] };
+}
+
+export interface NoteJobDetail {
+  job: {
+    id: string;
+    lessonSessionId: string;
+    status: string;
+    stage: string | null;
+    error: string | null;
+    failureHints: string[];
+    attempts: number;
+    transcriptPath: string | null;
+    metrics: NoteJobMetrics;
+    createdBy: string | null;
+    createdAt: string;
+    updatedAt: string;
+  };
+  lesson: {
+    id: string;
+    status: string;
+    teacherId: string;
+    teacher: { id: string; email: string | null; displayName: string | null } | null;
+    studentId: string | null;
+    student: { id: string; email: string | null; displayName: string | null } | null;
+    pieceId: string | null;
+    pieceLabel: string | null;
+    durationSec: number | null;
+    language: string | null;
+    createdAt: string;
+  } | null;
+  notes: { id: string; status: string; studentId: string | null }[];
+}
+
+export interface NoteTranscript {
+  text?: string;
+  utterances?: { speaker?: string; text?: string; start?: number; end?: number }[];
+  language?: string | null;
+  audio_duration?: number | null;
+  [k: string]: unknown;
+}
+
+export interface NoteTranscriptResponse {
+  jobId: string;
+  transcriptPath: string;
+  transcript: NoteTranscript;
+}
+
+export interface NotesActivity {
+  user: {
+    id: string;
+    email: string | null;
+    displayName: string | null;
+    isTeacher: boolean;
+    isStudent: boolean;
+    isAdmin: boolean;
+    status: string;
+  };
+  links: {
+    asTeacher: {
+      id: string;
+      studentId: string;
+      status: string;
+      createdVia: string;
+      createdAt: string;
+      studentEmail: string | null;
+      studentName: string | null;
+    }[];
+    asStudent: {
+      id: string;
+      teacherId: string;
+      status: string;
+      createdVia: string;
+      createdAt: string;
+      teacherEmail: string | null;
+      teacherName: string | null;
+    }[];
+  };
+  invitesIssued: {
+    id: string;
+    code: string;
+    expiresAt: string;
+    maxUses: number;
+    usedCount: number;
+    revokedAt: string | null;
+    createdAt: string;
+    state: InviteState;
+  }[];
+  lessons: { count: number; recentPieceLabels: string[] };
+  notes: { sent: number; received: number };
+  access: NotesAccess;
+}
+
+function notesQs(params: Record<string, string | undefined>): string {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v) p.set(k, v);
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+// Pairings — links
+export function listNoteLinks(q: string, status: string): Promise<{ items: NoteLink[] }> {
+  return api(`/admin/notes/links${notesQs({ q, status })}`);
+}
+export function createNoteLink(teacherId: string, studentId: string): Promise<{ link: NoteLink }> {
+  return api("/admin/notes/links", { method: "POST", body: JSON.stringify({ teacherId, studentId }) });
+}
+export function removeNoteLink(id: string): Promise<{ ok: boolean; link: NoteLink }> {
+  return api(`/admin/notes/links/${id}`, { method: "DELETE" });
+}
+
+// Pairings — invites
+export function listNoteInvites(q: string, state: string): Promise<{ items: NoteInvite[] }> {
+  return api(`/admin/notes/invites${notesQs({ q, state })}`);
+}
+export function revokeNoteInvite(id: string): Promise<{ ok: boolean; invite: NoteInvite }> {
+  return api(`/admin/notes/invites/${id}/revoke`, { method: "POST" });
+}
+
+// Subscriptions — entitlements
+export function listEntitlements(q: string, source: string, status: string): Promise<{ items: NoteEntitlement[] }> {
+  return api(`/admin/notes/entitlements${notesQs({ q, source, status })}`);
+}
+export function grantEntitlement(input: { userId: string; days: number; reason: string }): Promise<NoteEntitlement> {
+  return api("/admin/notes/entitlements/grant", { method: "POST", body: JSON.stringify(input) });
+}
+export function revokeEntitlement(id: string, reason: string): Promise<NoteEntitlement> {
+  return api(`/admin/notes/entitlements/${id}/revoke`, { method: "POST", body: JSON.stringify({ reason }) });
+}
+
+// Subscriptions — monetization config
+export function getMonetization(): Promise<MonetizationConfig> {
+  return api("/admin/notes/config/monetization");
+}
+export function putMonetization(value: string | null): Promise<MonetizationConfig> {
+  return api("/admin/notes/config/monetization", { method: "PUT", body: JSON.stringify({ value }) });
+}
+
+// Note-jobs (Ops lane)
+export function listNoteJobs(params: { status?: string; stage?: string; q?: string }): Promise<NoteJobsResponse> {
+  return api(`/admin/note-jobs${notesQs(params)}`);
+}
+export function getNoteJob(id: string): Promise<NoteJobDetail> {
+  return api(`/admin/note-jobs/${id}`);
+}
+export function requeueNoteJob(id: string): Promise<{ job: NoteJobDetail["job"] }> {
+  return api(`/admin/note-jobs/${id}/requeue`, { method: "POST" });
+}
+export function getNoteTranscript(id: string, reason: string): Promise<NoteTranscriptResponse> {
+  return api(`/admin/note-jobs/${id}/transcript?reason=${encodeURIComponent(reason)}`);
+}
+
+// User activity aggregate
+export function getNotesActivity(userId: string): Promise<NotesActivity> {
+  return api(`/admin/users/${userId}/notes-activity`);
+}

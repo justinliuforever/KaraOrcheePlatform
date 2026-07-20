@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Activity, AlertTriangle, BookCopy, Hammer, Inbox, Library, ListMusic, Plus, Users } from "lucide-react";
+import { Activity, AlertTriangle, BookCopy, CreditCard, Hammer, Inbox, Library, Link2, ListChecks, ListMusic, Plus, Users } from "lucide-react";
 import { api, type AdminPiece, type StudioJob } from "../api";
 import { statusLabel } from "../studio/gateInfo";
 import StatusTag from "./StatusTag";
@@ -89,6 +89,18 @@ export default function CommandPalette({
           <CommandItem value="nav-collections-composers" keywords={["composers", "portraits", "aliases", "registry"]} onSelect={() => go("/collections?tab=composers")}>
             <Users />
             Collections · Composers
+          </CommandItem>
+          <CommandItem value="nav-notes-pairings" keywords={["notes", "pairings", "links", "invites", "teacher", "student"]} onSelect={() => go("/notes/pairings")}>
+            <Link2 />
+            Notes · Pairings
+          </CommandItem>
+          <CommandItem value="nav-notes-subscriptions" keywords={["notes", "subscriptions", "entitlements", "monetization", "paywall", "grant"]} onSelect={() => go("/notes/subscriptions")}>
+            <CreditCard />
+            Notes · Subscriptions
+          </CommandItem>
+          <CommandItem value="nav-ops-notes-jobs" keywords={["ops", "notes", "jobs", "asr", "llm", "transcript", "requeue"]} onSelect={() => go("/ops?view=notes-jobs")}>
+            <ListChecks />
+            Ops · Notes jobs
           </CommandItem>
           <CommandItem value="nav-ops-logs" keywords={["ops", "logs", "observability", "requests", "traffic"]} onSelect={() => go("/ops?view=logs")}>
             <Activity />

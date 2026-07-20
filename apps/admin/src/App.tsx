@@ -24,6 +24,8 @@ import PieceDetailPage from "./pages/PieceDetailPage";
 import StudioPage from "./pages/StudioPage";
 import StudioWizardPage from "./pages/StudioWizardPage";
 import StudioJobPage from "./pages/StudioJobPage";
+import PairingsPage from "./pages/PairingsPage";
+import SubscriptionsPage from "./pages/SubscriptionsPage";
 
 export default function App() {
   const authed = useIsAuthenticated();
@@ -88,12 +90,31 @@ function Shell() {
     );
   }
 
-  const nav = [
-    { to: "/studio", label: "Pieces Studio" },
-    { to: "/pieces", label: "Pieces Library" },
-    { to: "/collections", label: "Collections" },
-    { to: "/ops", label: "Ops" },
-    { to: "/users", label: "Users" },
+  // IA: grouped single sidebar (option C). Flat routes stay; the nav is sliced into
+  // labeled groups so the Notes surfaces read as their own area without a part-switcher.
+  const navGroups = [
+    {
+      label: "Pieces",
+      items: [
+        { to: "/studio", label: "Studio" },
+        { to: "/pieces", label: "Library" },
+        { to: "/collections", label: "Collections" },
+      ],
+    },
+    {
+      label: "Notes",
+      items: [
+        { to: "/notes/pairings", label: "Pairings" },
+        { to: "/notes/subscriptions", label: "Subscriptions" },
+      ],
+    },
+    {
+      label: "System",
+      items: [
+        { to: "/ops", label: "Ops" },
+        { to: "/users", label: "Users" },
+      ],
+    },
   ];
 
   return (
@@ -105,18 +126,26 @@ function Shell() {
         </div>
         <Separator />
         <nav className="p-2 flex-1">
-          {nav.map((n) => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              className={({ isActive }) =>
-                `block rounded-lg px-3 py-2 text-sm font-medium mb-0.5 ${
-                  isActive ? "bg-brand-soft text-brand" : "text-ink-soft hover:bg-paper"
-                }`
-              }
-            >
-              {n.label}
-            </NavLink>
+          {navGroups.map((group, gi) => (
+            <div key={group.label}>
+              {gi > 0 && <Separator className="my-2" />}
+              <p className="px-3 pb-1 pt-1 text-xs font-medium uppercase tracking-wide text-ink-faint">
+                {group.label}
+              </p>
+              {group.items.map((n) => (
+                <NavLink
+                  key={n.to}
+                  to={n.to}
+                  className={({ isActive }) =>
+                    `block rounded-lg px-3 py-2 text-sm font-medium mb-0.5 ${
+                      isActive ? "bg-brand-soft text-brand" : "text-ink-soft hover:bg-paper"
+                    }`
+                  }
+                >
+                  {n.label}
+                </NavLink>
+              ))}
+            </div>
           ))}
           <button
             className="mt-2 flex w-full items-center justify-between rounded-lg border border-line bg-paper/60 px-3 py-1.5 text-xs text-ink-faint transition-colors hover:border-ink-faint/40 hover:text-ink-soft focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
@@ -170,6 +199,8 @@ function Shell() {
           <Route path="/pieces" element={<PiecesPage />} />
           <Route path="/pieces/:id" element={<PieceDetailPage />} />
           <Route path="/collections" element={<CollectionsPage />} />
+          <Route path="/notes/pairings" element={<PairingsPage />} />
+          <Route path="/notes/subscriptions" element={<SubscriptionsPage />} />
           <Route path="/ops" element={<OpsPage />} />
           <Route path="/users" element={<UsersPage />} />
         </Routes>

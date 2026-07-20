@@ -22,6 +22,7 @@ import LogTable from "../ops/LogTable";
 import LogDrawer from "../ops/LogDrawer";
 import RequestTimeline from "../ops/RequestTimeline";
 import QueuePanel from "../ops/QueuePanel";
+import NotesJobsView from "../ops/NotesJobsView";
 import SavedViews from "../ops/SavedViews";
 import {
   opsParamsString,
@@ -36,11 +37,16 @@ import {
 export default function OpsPage() {
   const [params, setParams] = useSearchParams();
   const state = useMemo(() => parseOpsState(params), [params]);
+  // notes-jobs is a self-contained lane, not an OpsState view — read it off the raw
+  // param so the OpsState machine stays untouched (it has no time-range/severity here).
+  const isNotesJobs = params.get("view") === "notes-jobs";
+  const activeTab = isNotesJobs ? "notes-jobs" : state.view;
 
   // Tabs are state seeds: switching rewrites the query string to that view's defaults.
   const switchView = (v: string) => {
-    if (v === state.view) return;
-    if (v === "queue") setParams({ view: "queue" });
+    if (v === activeTab) return;
+    if (v === "notes-jobs") setParams({ view: "notes-jobs" });
+    else if (v === "queue") setParams({ view: "queue" });
     else if (v === "errors") setParams({ view: "errors", severity: "error", range: "24h" });
     else setParams({ view: "logs", range: "1h" });
   };
@@ -49,19 +55,22 @@ export default function OpsPage() {
     <>
       <PageHeader
         title="Ops"
-        subtitle="Logs, request timelines, and queue health"
-        right={<SavedViews />}
+        subtitle="Logs, request timelines, queue health, and notes jobs"
+        right={isNotesJobs ? undefined : <SavedViews />}
       />
       <div className="mb-4">
-        <Tabs value={state.view} onValueChange={switchView}>
+        <Tabs value={activeTab} onValueChange={switchView}>
           <TabsList>
             <TabsTrigger value="logs">Logs</TabsTrigger>
             <TabsTrigger value="errors">Errors</TabsTrigger>
             <TabsTrigger value="queue">Queue</TabsTrigger>
+            <TabsTrigger value="notes-jobs">Notes Jobs</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
-      {state.view === "queue" ? (
+      {isNotesJobs ? (
+        <NotesJobsView />
+      ) : state.view === "queue" ? (
         <QueuePanel />
       ) : (
         <LogsView state={state} params={params} setParams={setParams} />

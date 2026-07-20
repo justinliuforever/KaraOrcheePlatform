@@ -1,0 +1,231 @@
+import { useEffect, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
+import { RefreshCw } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { listNoteJobs, type NoteJobMetrics, type NoteJobsResponse } from "../api";
+import { ErrorNote, Spinner, thCls } from "../components/ui";
+import StatusTag from "../components/StatusTag";
+import { Button } from "@/components/ui-kit/button";
+import { Card } from "@/components/ui-kit/card";
+import { Input } from "@/components/ui-kit/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui-kit/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui-kit/table";
+import { timeAgo } from "../studio/gateInfo";
+import NoteJobPanel from "./NoteJobPanel";
+
+const STAGES = ["asr", "llm", "gates"] as const;
+
+function metricSummary(m: NoteJobMetrics): string {
+  const bits: string[] = [];
+  if (typeof m.asr_secs === "number") bits.push(`asr ${m.asr_secs}s`);
+  if (typeof m.llm_secs === "number") bits.push(`llm ${m.llm_secs}s`);
+  return bits.join(" · ");
+}
+
+/** Self-contained notes-jobs lane inside /ops. It does NOT ride the OpsState machine
+ * (no time-range / histogram / severity): status + stage + q are its own query state,
+ * with the selected job id in ?sel for a shareable deep link. */
+export default function NotesJobsView() {
+  const [params, setParams] = useSearchParams();
+  const status = params.get("status") ?? "";
+  const stage = params.get("stage") ?? "";
+  const sel = params.get("sel");
+  const q = params.get("q") ?? "";
+
+  // The input echoes locally; the trimmed term is debounced into ?q so it's deep-linkable
+  // and stays consistent with facet clicks (which rebuild the URL from current params).
+  // replace:true keeps per-keystroke writes out of the history stack.
+  const [search, setSearch] = useState(q);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const v = search.trim();
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (v) next.set("q", v);
+          else next.delete("q");
+          return next;
+        },
+        { replace: true },
+      );
+    }, 300);
+    return () => clearTimeout(t);
+  }, [search, setParams]);
+
+  const query = useQuery<NoteJobsResponse, Error>({
+    queryKey: ["note-jobs", status, stage, q],
+    queryFn: () => listNoteJobs({ status, stage, q }),
+    placeholderData: keepPreviousData,
+    staleTime: 0,
+  });
+
+  const set = (patch: Record<string, string | null>) => {
+    const next = new URLSearchParams(params);
+    next.set("view", "notes-jobs");
+    for (const [k, v] of Object.entries(patch)) {
+      if (v) next.set(k, v);
+      else next.delete(k);
+    }
+    setParams(next);
+  };
+
+  const facets = query.data?.facets.status ?? [];
+
+  return (
+    <>
+      <div className="mb-4 flex items-center gap-3 flex-wrap">
+        <Input
+          className="w-72"
+          placeholder="Search teacher email / name or job id…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <Select value={stage || "all"} onValueChange={(v) => set({ stage: v === "all" ? null : v, sel: null })}>
+          <SelectTrigger size="sm" className="w-36">
+            <SelectValue placeholder="Any stage" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Any stage</SelectItem>
+            {STAGES.map((s) => (
+              <SelectItem key={s} value={s}>
+                {s.toUpperCase()}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
+          <RefreshCw className={cn(query.isFetching && "animate-spin")} />
+          Refresh
+        </Button>
+      </div>
+
+      {query.isError && <ErrorNote message={query.error.message} />}
+
+      <div className="flex items-start gap-4">
+        <div className="w-52 shrink-0 rounded-xl border border-line bg-card p-2">
+          <p className="px-1.5 pb-1 text-[11px] font-medium uppercase tracking-wide text-ink-faint">Status</p>
+          <button
+            className={cn(
+              "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+              status === "" ? "bg-brand-soft text-brand font-medium" : "text-ink-soft hover:bg-paper",
+            )}
+            onClick={() => set({ status: null, sel: null })}
+          >
+            <span className="min-w-0 flex-1 truncate">all</span>
+            <span className="tabular-nums text-ink-faint">
+              {facets.reduce((a, f) => a + f.count, 0)}
+            </span>
+          </button>
+          {facets.length === 0 && <p className="px-1.5 py-1 text-xs text-ink-faint">—</p>}
+          {facets.map((f) => {
+            const active = status === f.value;
+            return (
+              <button
+                key={f.value}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                  active ? "bg-brand-soft text-brand font-medium" : "text-ink-soft hover:bg-paper",
+                )}
+                onClick={() => set({ status: active ? null : f.value, sel: null })}
+              >
+                <span className="min-w-0 flex-1 truncate">{f.value.replaceAll("_", " ")}</span>
+                <span className={cn("tabular-nums", active ? "text-brand/70" : "text-ink-faint")}>{f.count}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          {query.isPending ? (
+            <Spinner />
+          ) : (
+            <Card className={cn("overflow-hidden p-0 gap-0", query.isFetching && "opacity-60")}>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className={thCls}>Job</TableHead>
+                    <TableHead className={thCls}>Status</TableHead>
+                    <TableHead className={thCls}>Stage</TableHead>
+                    <TableHead className={`${thCls} text-right`}>Attempts</TableHead>
+                    <TableHead className={thCls}>Teacher</TableHead>
+                    <TableHead className={thCls}>Piece</TableHead>
+                    <TableHead className={thCls}>Timings</TableHead>
+                    <TableHead className={`${thCls} text-right`}>Annot.</TableHead>
+                    <TableHead className={`${thCls} text-right`}>Created</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(query.data?.items ?? []).map((j) => (
+                    <TableRow
+                      key={j.id}
+                      className={cn("cursor-pointer", sel === j.id && "bg-brand-soft/40 hover:bg-brand-soft/50")}
+                      onClick={() => set({ sel: j.id })}
+                    >
+                      <TableCell className="px-4 py-2.5 font-mono text-xs" title={j.id}>
+                        {j.id.slice(0, 8)}
+                      </TableCell>
+                      <TableCell className="px-4 py-2.5">
+                        <StatusTag value={j.status} family="lifecycle" label={j.status.replaceAll("_", " ")} />
+                      </TableCell>
+                      <TableCell className="px-4 py-2.5 text-xs text-ink-soft">{j.stage ?? "—"}</TableCell>
+                      <TableCell className="px-4 py-2.5 text-right text-xs text-ink-soft tabular-nums">
+                        {j.attempts}
+                      </TableCell>
+                      <TableCell className="px-4 py-2.5 text-xs text-ink-soft">
+                        <span className="block truncate max-w-40" title={j.teacherEmail ?? undefined}>
+                          {j.teacherEmail ?? "—"}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-4 py-2.5 text-xs text-ink-soft">
+                        <span className="block truncate max-w-40" title={j.pieceLabel ?? j.pieceId ?? undefined}>
+                          {j.pieceLabel ?? j.pieceId ?? "—"}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-4 py-2.5 text-xs text-ink-soft tabular-nums">
+                        {metricSummary(j.metrics) || "—"}
+                      </TableCell>
+                      <TableCell className="px-4 py-2.5 text-right text-xs text-ink-soft tabular-nums">
+                        {typeof j.metrics.annotations === "number"
+                          ? `${j.metrics.grounded ?? 0}/${j.metrics.annotations}`
+                          : "—"}
+                      </TableCell>
+                      <TableCell className="px-4 py-2.5 text-right text-xs text-ink-soft tabular-nums">
+                        <span title={new Date(j.createdAt).toLocaleString()}>{timeAgo(j.createdAt)}</span>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {query.data && query.data.items.length === 0 && (
+                    <TableRow className="hover:bg-transparent">
+                      <TableCell className="px-4 py-10 text-center whitespace-normal" colSpan={9}>
+                        <p className="text-sm font-medium text-ink">No note jobs found</p>
+                        <p className="text-sm text-ink-soft mt-1">
+                          Jobs appear when a teacher submits a recorded lesson for processing.
+                        </p>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      {sel && <NoteJobPanel key={sel} id={sel} onClose={() => set({ sel: null })} />}
+    </>
+  );
+}
