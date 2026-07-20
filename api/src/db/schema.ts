@@ -218,6 +218,9 @@ export const invites = pgTable("invites", {
 export const lessonSessions = pgTable("lesson_sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
   teacherId: uuid("teacher_id").notNull().references(() => users.id),
+  // Client-chosen idempotency key (the app's local session UUID): a lost create
+  // response must not double-create when the outbox retries. NULLs never collide.
+  clientLessonId: text("client_lesson_id"),
   studentId: uuid("student_id").references(() => users.id),
   pieceId: text("piece_id").references(() => pieces.id),
   pieceLabel: text("piece_label"), // free-text fallback for non-catalog pieces
@@ -232,7 +235,7 @@ export const lessonSessions = pgTable("lesson_sessions", {
   status: text("status").notNull().default("created"), // created | submitted | canceled
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [unique("uq_lesson_client_id").on(t.teacherId, t.clientLessonId)]);
 
 // One ASR+LLM run per submitted lesson. Worker owns status/stage; SB message is
 // {jobId, reqId} only — this row is the source of truth (idempotent redelivery).

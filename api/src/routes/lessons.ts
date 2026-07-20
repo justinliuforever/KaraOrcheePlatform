@@ -34,6 +34,24 @@ export function lessonsRouter(deps: Deps): Router {
         ? body.pieceLabel.trim()
         : null;
       const studentId = typeof body.studentId === "string" ? body.studentId : null;
+      const clientLessonId = typeof body.clientLessonId === "string" ? body.clientLessonId : null;
+
+      // Idempotent create: a retried outbox POST with the same client id returns the
+      // existing row (+ a fresh SAS) instead of a duplicate orphan.
+      if (clientLessonId) {
+        const [dup] = await db
+          .select()
+          .from(lessonSessions)
+          .where(and(eq(lessonSessions.teacherId, me.id), eq(lessonSessions.clientLessonId, clientLessonId)))
+          .limit(1);
+        if (dup) {
+          res.status(200).json({
+            lesson: dup,
+            uploadUrl: dup.audioPath ? deps.lessons.uploadUrl(dup.audioPath) : null,
+          });
+          return;
+        }
+      }
 
       if (pieceId) {
         const [piece] = await db.select({ id: pieces.id }).from(pieces).where(eq(pieces.id, pieceId)).limit(1);
@@ -64,6 +82,7 @@ export function lessonsRouter(deps: Deps): Router {
         .insert(lessonSessions)
         .values({
           teacherId: me.id,
+          clientLessonId,
           studentId,
           pieceId,
           pieceLabel,

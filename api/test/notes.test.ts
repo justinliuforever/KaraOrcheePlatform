@@ -600,6 +600,27 @@ describe("lessons", () => {
     expect(res.body.uploadUrl).toBe(`https://fake/${path}?sas`);
   });
 
+  it("create is idempotent on clientLessonId (a retried outbox POST returns the same row)", async () => {
+    const first = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ clientLessonId: "local-uuid-1", studentId: student.id });
+    expect(first.status).toBe(201);
+    const second = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ clientLessonId: "local-uuid-1", studentId: student.id });
+    expect(second.status).toBe(200);
+    expect(second.body.lesson.id).toBe(first.body.lesson.id);
+    expect(second.body.uploadUrl).toBe(first.body.uploadUrl);
+    // A different client id is a genuinely new lesson.
+    const other = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ clientLessonId: "local-uuid-2", studentId: student.id });
+    expect(other.body.lesson.id).not.toBe(first.body.lesson.id);
+  });
+
   it("upload-url re-mints a fresh SAS for an un-submitted lesson only", async () => {
     const lesson = await request(makeApp())
       .post("/v1/lessons")
