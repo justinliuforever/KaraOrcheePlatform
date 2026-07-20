@@ -1,7 +1,8 @@
 import { loadConfig } from "./config";
 import { createPool, createDb } from "./db/client";
 import { createBlobCatalogStore, createBlobStudioStore } from "./storage";
-import { createServiceBusQueue } from "./queue";
+import { createBlobLessonStore } from "./notes/lessons_store";
+import { createServiceBusQueue, createServiceBusNotesQueue } from "./queue";
 import { verifierFromConfig } from "./auth";
 import { createServer } from "./server";
 import { createLogAnalyticsOpsStore } from "./opslogs";
@@ -22,6 +23,12 @@ function main(): void {
   const piecesQueue = config.serviceBus
     ? createServiceBusQueue(config.serviceBus.connectionString, "pieces-jobs", "pieces-preflight")
     : undefined;
+  const notesQueue = config.serviceBus
+    ? createServiceBusNotesQueue(config.serviceBus.connectionString, "notes-jobs")
+    : undefined;
+  const lessons = config.storage
+    ? createBlobLessonStore(config.storage.connectionString)
+    : undefined;
   const auth = config.auth ? verifierFromConfig(config.auth) : undefined;
   const opsLogs = config.logAnalyticsWorkspaceId
     ? createLogAnalyticsOpsStore(config.logAnalyticsWorkspaceId)
@@ -35,6 +42,8 @@ function main(): void {
     catalog,
     studio,
     piecesQueue,
+    notesQueue,
+    lessons,
     auth,
     corsOrigins: config.adminOrigins,
     opsLogs,

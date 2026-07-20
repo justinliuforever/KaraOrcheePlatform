@@ -7,6 +7,7 @@ import {
   jsonb,
   timestamp,
   primaryKey,
+  unique,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
@@ -23,6 +24,11 @@ export const users = pgTable("users", {
   isAdmin: boolean("is_admin").notNull().default(false),
   status: text("status").notNull().default("active"), // active | deleted
   referredBy: uuid("referred_by").references((): AnyPgColumn => users.id),
+  // Trial expiry is computed as max(trial_started_at, monetization_live_at) + 30d so
+  // beta testers get a fresh clock when the paywall goes live — never store expiry.
+  trialStartedAt: timestamp("trial_started_at", { withTimezone: true }),
+  // First-use Notes consent (teacher: recording responsibility; student: terms).
+  notesConsentAt: timestamp("notes_consent_at", { withTimezone: true }),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -170,9 +176,172 @@ export const auditEvents = pgTable("audit_events", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── Notes domain ────────────────────────────────────────────────────────────────
+
+// Teacher↔student pairs. Rows go straight to active on invite redemption (the
+// redeem IS the acceptance); removed rows are kept — sent notes stay visible.
+export const teacherStudentLinks = pgTable(
+  "teacher_student_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    teacherId: uuid("teacher_id").notNull().references(() => users.id),
+    studentId: uuid("student_id").notNull().references(() => users.id),
+    status: text("status").notNull().default("active"), // active | removed
+    createdVia: text("created_via").notNull().default("invite_code"), // invite_code | email_invite | admin
+    // "Lessons may be recorded" acceptance at redeem (parent for minors).
+    consentAt: timestamp("consent_at", { withTimezone: true }),
+    removedAt: timestamp("removed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique("uq_link_pair").on(t.teacherId, t.studentId)],
+);
+
+// Teacher-generated linking codes (no global user search exists by design — minors).
+// The code may be redeemed by a student who signs up AFTER it was issued.
+export const invites = pgTable("invites", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  code: text("code").notNull().unique(), // 6-char Crockford base32, no ambiguous chars
+  teacherId: uuid("teacher_id").notNull().references(() => users.id),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  maxUses: integer("max_uses").notNull().default(1),
+  usedCount: integer("used_count").notNull().default(0),
+  redeemedBy: jsonb("redeemed_by").notNull().default([]), // user ids, audit only
+  // Delivery address for the email fallback; used once, never copied to the link.
+  sentToEmail: text("sent_to_email"),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// One recorded lesson. The row is created at SEND time (recording is fully local
+// and offline-first); piece/student stay nullable — both are fixable at review.
+export const lessonSessions = pgTable("lesson_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  teacherId: uuid("teacher_id").notNull().references(() => users.id),
+  studentId: uuid("student_id").references(() => users.id),
+  pieceId: text("piece_id").references(() => pieces.id),
+  pieceLabel: text("piece_label"), // free-text fallback for non-catalog pieces
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  endedAt: timestamp("ended_at", { withTimezone: true }),
+  durationSec: integer("duration_sec"),
+  audioPath: text("audio_path"), // lesson-audio container-relative; blob auto-deletes at 90d
+  audioBytes: integer("audio_bytes"),
+  language: text("language").notNull().default("en"),
+  // Default-checked "student has been informed this lesson is recorded" confirm.
+  attested: boolean("attested").notNull().default(false),
+  status: text("status").notNull().default("created"), // created | uploaded | submitted | canceled
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// One ASR+LLM run per submitted lesson. Worker owns status/stage; SB message is
+// {jobId, reqId} only — this row is the source of truth (idempotent redelivery).
+export const noteJobs = pgTable("note_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  lessonSessionId: uuid("lesson_session_id").notNull().references(() => lessonSessions.id),
+  status: text("status").notNull().default("queued"), // queued | processing | failed | ready_for_review
+  stage: text("stage"), // asr | llm | gates
+  error: text("error"),
+  failureHints: jsonb("failure_hints").notNull().default([]),
+  attempts: integer("attempts").notNull().default(0),
+  transcriptPath: text("transcript_path"), // notes-assets, durable (survives audio deletion)
+  metrics: jsonb("metrics").notNull().default({}), // asr/llm timings, annotation + grounding counts
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// A note delivered (or to be delivered) to ONE student. Group lessons duplicate the
+// reviewed note per student. No in-place edit after send: retract + duplicate + resend
+// (superseded_by chains versions) so the student always holds one truthful copy.
+export const notes = pgTable("notes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  noteJobId: uuid("note_job_id").notNull().references(() => noteJobs.id),
+  lessonSessionId: uuid("lesson_session_id").notNull().references(() => lessonSessions.id),
+  teacherId: uuid("teacher_id").notNull().references(() => users.id),
+  studentId: uuid("student_id").references(() => users.id), // nullable until assigned
+  pieceId: text("piece_id").references(() => pieces.id),
+  pieceLabel: text("piece_label"),
+  // Anchors pin to the piece version live at send — republish can renumber measures.
+  pieceVersion: integer("piece_version"),
+  status: text("status").notNull().default("draft"), // draft | sent | retracted
+  contentOriginal: jsonb("content_original").notNull(), // frozen LLM output, provenance
+  content: jsonb("content").notNull(), // teacher-edited: lesson_summary, practice_plan
+  editedAt: timestamp("edited_at", { withTimezone: true }),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  retractedAt: timestamp("retracted_at", { withTimezone: true }),
+  supersededBy: uuid("superseded_by").references((): AnyPgColumn => notes.id),
+  readAt: timestamp("read_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Annotations are rows (not embedded JSON): per-item student done_at and future
+// FOLLOW practice receipts attach here. Quotes are verbatim transcript evidence —
+// review edits the instruction, never the quote (delete the row instead).
+export const noteAnnotations = pgTable("note_annotations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  noteId: uuid("note_id").notNull().references(() => notes.id),
+  idx: integer("idx").notNull(),
+  category: text("category").notNull(),
+  instruction: text("instruction").notNull(),
+  quote: text("quote"),
+  // {type: absolute|compound|relative|deixis|none, raw, measureStart?, measureEnd?,
+  //  grounded: bool, hint?, pinnedBy?: auto|teacher|student}
+  location: jsonb("location").notNull().default({}),
+  doneAt: timestamp("done_at", { withTimezone: true }),
+  practiceReceipt: jsonb("practice_receipt"), // FOLLOW-session corroboration, additive
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Multi-row by design: a user can hold trial + admin_grant + apple_iap rows over time.
+// The resolver picks the strongest live row; teachers bypass entitlements entirely.
+export const entitlements = pgTable("entitlements", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  source: text("source").notNull(), // trial | apple_iap | admin_grant | org
+  status: text("status").notNull().default("active"), // active | grace | expired | revoked
+  startsAt: timestamp("starts_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  productId: text("product_id"),
+  appleOriginalTransactionId: text("apple_original_transaction_id").unique(),
+  environment: text("environment"), // sandbox | production — sandbox never grants prod access
+  autoRenew: boolean("auto_renew").notNull().default(false),
+  orgId: uuid("org_id"), // future school/studio seats; no orgs table yet
+  note: text("note"), // admin grant reason
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// APNS device tokens; upsert by token (a device changing owners rebinds it).
+export const devices = pgTable("devices", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  token: text("token").notNull().unique(),
+  platform: text("platform").notNull().default("ios"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Admin-editable runtime config (e.g. monetization_live_at). Not for secrets.
+export const platformConfig = pgTable("platform_config", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type User = typeof users.$inferSelect;
 export type Piece = typeof pieces.$inferSelect;
 export type Book = typeof books.$inferSelect;
 export type Work = typeof works.$inferSelect;
 export type Composer = typeof composers.$inferSelect;
 export type PieceVersion = typeof pieceVersions.$inferSelect;
+export type TeacherStudentLink = typeof teacherStudentLinks.$inferSelect;
+export type Invite = typeof invites.$inferSelect;
+export type LessonSession = typeof lessonSessions.$inferSelect;
+export type NoteJob = typeof noteJobs.$inferSelect;
+export type Note = typeof notes.$inferSelect;
+export type NoteAnnotation = typeof noteAnnotations.$inferSelect;
+export type Entitlement = typeof entitlements.$inferSelect;
+export type Device = typeof devices.$inferSelect;

@@ -1,0 +1,299 @@
+import { Router } from "express";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import type { Deps } from "../deps";
+import { wrap } from "../deps";
+import { requireAuth } from "../auth";
+import { requireUser, userAudit } from "../notes/user";
+import { lessonSessions, noteJobs, notes, pieces, teacherStudentLinks } from "../db/schema";
+
+const MAX_AUDIO_BYTES = 200 * 1024 * 1024; // ~6h at 64kbps; anything bigger is a client bug
+
+// Offline-first contract: recording is fully local; this row is created at SEND
+// time. Piece and student stay nullable — both are fixable at review.
+export function lessonsRouter(deps: Deps): Router {
+  const router = Router();
+  const guards = [requireAuth(deps.auth), requireUser(deps)];
+
+  router.post(
+    "/v1/lessons",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      if (!me.isTeacher) {
+        res.status(403).json({ error: "teacher_only" });
+        return;
+      }
+      if (!deps.lessons) {
+        res.status(503).json({ error: "storage_not_configured" });
+        return;
+      }
+      const db = deps.db!.orm;
+      const body = req.body ?? {};
+      const pieceId = typeof body.pieceId === "string" ? body.pieceId : null;
+      const pieceLabel = typeof body.pieceLabel === "string" && body.pieceLabel.trim()
+        ? body.pieceLabel.trim()
+        : null;
+      const studentId = typeof body.studentId === "string" ? body.studentId : null;
+
+      if (pieceId) {
+        const [piece] = await db.select({ id: pieces.id }).from(pieces).where(eq(pieces.id, pieceId)).limit(1);
+        if (!piece) {
+          res.status(400).json({ error: "unknown_piece" });
+          return;
+        }
+      }
+      if (studentId) {
+        const [link] = await db
+          .select()
+          .from(teacherStudentLinks)
+          .where(and(
+            eq(teacherStudentLinks.teacherId, me.id),
+            eq(teacherStudentLinks.studentId, studentId),
+            eq(teacherStudentLinks.status, "active"),
+          ))
+          .limit(1);
+        if (!link) {
+          res.status(400).json({ error: "not_your_student" });
+          return;
+        }
+      }
+
+      const startedAt = body.startedAt ? new Date(body.startedAt) : null;
+      const endedAt = body.endedAt ? new Date(body.endedAt) : null;
+      const [row] = await db
+        .insert(lessonSessions)
+        .values({
+          teacherId: me.id,
+          studentId,
+          pieceId,
+          pieceLabel,
+          startedAt: startedAt && !Number.isNaN(startedAt.getTime()) ? startedAt : null,
+          endedAt: endedAt && !Number.isNaN(endedAt.getTime()) ? endedAt : null,
+          durationSec: Number.isFinite(body.durationSec) ? Math.round(body.durationSec) : null,
+          attested: body.attested === true,
+        })
+        .returning();
+      const path = deps.lessons.blobPath(me.id, row!.id);
+      await db.update(lessonSessions).set({ audioPath: path }).where(eq(lessonSessions.id, row!.id));
+      await userAudit(deps, req, "lesson.create", { type: "lesson", id: row!.id });
+      res.status(201).json({
+        lesson: { ...row, audioPath: path },
+        uploadUrl: deps.lessons.uploadUrl(path),
+      });
+    }),
+  );
+
+  router.post(
+    "/v1/lessons/:id/submit",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      if (!deps.lessons || !deps.notesQueue) {
+        res.status(503).json({ error: "notes_pipeline_not_configured" });
+        return;
+      }
+      const [lesson] = await db
+        .select()
+        .from(lessonSessions)
+        .where(and(eq(lessonSessions.id, String(req.params.id)), eq(lessonSessions.teacherId, me.id)))
+        .limit(1);
+      if (!lesson) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (lesson.status !== "created") {
+        res.status(409).json({ error: "already_submitted" });
+        return;
+      }
+      const props = await deps.lessons.audioProps(lesson.audioPath!);
+      if (!props || props.bytes === 0) {
+        res.status(409).json({ error: "audio_missing", message: "The recording upload has not finished — retry in a moment." });
+        return;
+      }
+      if (props.bytes > MAX_AUDIO_BYTES) {
+        res.status(413).json({ error: "audio_too_large" });
+        return;
+      }
+
+      const [job] = await db
+        .insert(noteJobs)
+        .values({ lessonSessionId: lesson.id, createdBy: me.id })
+        .returning();
+      try {
+        await deps.notesQueue.send({ jobId: job!.id, reqId: req.reqId });
+      } catch (err) {
+        // Never leave a queued row with no message in flight (studio.ts pattern).
+        await db.delete(noteJobs).where(eq(noteJobs.id, job!.id));
+        console.error("lesson submit: queue send failed, job rolled back", err);
+        res.status(503).json({ error: "queue_unavailable", message: "Processing is briefly unavailable — try again in a moment." });
+        return;
+      }
+      const [updated] = await db
+        .update(lessonSessions)
+        .set({ status: "submitted", audioBytes: props.bytes, updatedAt: sql`now()` })
+        .where(eq(lessonSessions.id, lesson.id))
+        .returning();
+      await userAudit(deps, req, "lesson.submit", { type: "lesson", id: lesson.id }, { jobId: job!.id });
+      res.json({ lesson: updated, job });
+    }),
+  );
+
+  // Teacher home poll: lessons + their latest job + note ids, newest first.
+  router.get(
+    "/v1/lessons",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      const rows = await db
+        .select()
+        .from(lessonSessions)
+        .where(and(eq(lessonSessions.teacherId, me.id), sql`${lessonSessions.status} <> 'canceled'`))
+        .orderBy(desc(lessonSessions.createdAt))
+        .limit(100);
+      const ids = rows.map((r) => r.id);
+      const jobs = ids.length
+        ? await db.select().from(noteJobs).where(inArray(noteJobs.lessonSessionId, ids)).orderBy(desc(noteJobs.createdAt))
+        : [];
+      const noteRows = ids.length
+        ? await db
+            .select({
+              id: notes.id,
+              lessonSessionId: notes.lessonSessionId,
+              status: notes.status,
+              studentId: notes.studentId,
+            })
+            .from(notes)
+            .where(inArray(notes.lessonSessionId, ids))
+        : [];
+      res.json({
+        items: rows.map((lesson) => ({
+          lesson,
+          job: jobs.find((j) => j.lessonSessionId === lesson.id) ?? null,
+          notes: noteRows.filter((n) => n.lessonSessionId === lesson.id),
+        })),
+      });
+    }),
+  );
+
+  router.get(
+    "/v1/lessons/:id",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      const [lesson] = await db
+        .select()
+        .from(lessonSessions)
+        .where(and(eq(lessonSessions.id, String(req.params.id)), eq(lessonSessions.teacherId, me.id)))
+        .limit(1);
+      if (!lesson) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const jobs = await db
+        .select()
+        .from(noteJobs)
+        .where(eq(noteJobs.lessonSessionId, lesson.id))
+        .orderBy(desc(noteJobs.createdAt));
+      const noteRows = await db
+        .select({ id: notes.id, status: notes.status, studentId: notes.studentId })
+        .from(notes)
+        .where(eq(notes.lessonSessionId, lesson.id));
+      res.json({ lesson, job: jobs[0] ?? null, notes: noteRows });
+    }),
+  );
+
+  router.post(
+    "/v1/lessons/:id/retry",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      if (!deps.notesQueue) {
+        res.status(503).json({ error: "notes_pipeline_not_configured" });
+        return;
+      }
+      const [lesson] = await db
+        .select()
+        .from(lessonSessions)
+        .where(and(eq(lessonSessions.id, String(req.params.id)), eq(lessonSessions.teacherId, me.id)))
+        .limit(1);
+      if (!lesson) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const [job] = await db
+        .select()
+        .from(noteJobs)
+        .where(eq(noteJobs.lessonSessionId, lesson.id))
+        .orderBy(desc(noteJobs.createdAt))
+        .limit(1);
+      if (!job || job.status !== "failed") {
+        res.status(409).json({ error: "not_retryable" });
+        return;
+      }
+      const [requeued] = await db
+        .update(noteJobs)
+        .set({
+          status: "queued",
+          stage: null,
+          error: null,
+          failureHints: [],
+          attempts: sql`${noteJobs.attempts} + 1`,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(noteJobs.id, job.id))
+        .returning();
+      try {
+        await deps.notesQueue.send({ jobId: job.id, reqId: req.reqId });
+      } catch (err) {
+        await db
+          .update(noteJobs)
+          .set({ status: "failed", updatedAt: sql`now()` })
+          .where(eq(noteJobs.id, job.id));
+        console.error("lesson retry: queue send failed, rolled back", err);
+        res.status(503).json({ error: "queue_unavailable" });
+        return;
+      }
+      await userAudit(deps, req, "lesson.retry", { type: "lesson", id: lesson.id }, { jobId: job.id });
+      res.json({ job: requeued });
+    }),
+  );
+
+  // Cancel is pre-pipeline only: a submitted lesson is in flight, a reviewed one
+  // is a note. Deletes the uploaded blob so a dead lesson leaves no audio behind.
+  router.delete(
+    "/v1/lessons/:id",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      const [lesson] = await db
+        .select()
+        .from(lessonSessions)
+        .where(and(eq(lessonSessions.id, String(req.params.id)), eq(lessonSessions.teacherId, me.id)))
+        .limit(1);
+      if (!lesson) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (lesson.status !== "created") {
+        res.status(409).json({ error: "already_submitted" });
+        return;
+      }
+      await db
+        .update(lessonSessions)
+        .set({ status: "canceled", updatedAt: sql`now()` })
+        .where(eq(lessonSessions.id, lesson.id));
+      if (lesson.audioPath && deps.lessons) {
+        await deps.lessons.deleteAudio(lesson.audioPath);
+      }
+      await userAudit(deps, req, "lesson.cancel", { type: "lesson", id: lesson.id });
+      res.json({ ok: true });
+    }),
+  );
+
+  return router;
+}

@@ -1,0 +1,4 @@
+requests>=2.32
+azure-servicebus>=7.12
+azure-storage-blob>=12.27
+psycopg[binary]>=3.2

@@ -71,6 +71,13 @@
       "when": 1784502520884,
       "tag": "0009_sad_silver_fox",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1784512132832,
+      "tag": "0010_short_meteorite",
+      "breakpoints": true
     }
   ]
 }
