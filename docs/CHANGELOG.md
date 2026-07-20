@@ -8,9 +8,22 @@ The version shown in the sidebar (`vX.Y.Z · <sha>`) has two parts:
 
 ## Unreleased (deployed on dev, no version bump yet)
 
-Shipped 2026-07-18/19, founder-directed; sidebar stays 0.8.0 pending the next
+Shipped 2026-07-18/20, founder-directed; sidebar stays 0.8.0 pending the next
 founder-signed bump:
 
+- **Notes admin (B1-7)** — the console gains a grouped sidebar (PIECES / NOTES /
+  SYSTEM headings, no route churn). **Pairings** page: teacher-student links
+  (search/status, force-create via two user pickers, soft-remove) and invites
+  (server-derived state, revoke), with a shared read-only Notes-activity drawer.
+  **Subscriptions** page: entitlements (comp-grant with a required reason, revoke)
+  and a monetization control (reads/writes `platform_config.monetization_live_at`)
+  behind a hard confirm — checkbox + type-to-confirm — because the flip re-anchors
+  every student's trial clock. **Ops** gains a Notes Jobs lane: status facets +
+  a job panel with failure hints, metrics, failed-only requeue, and a break-glass
+  transcript viewer (reason-required, audited `transcript.view`, held only in
+  local state). Backing `/admin/notes/*` + `/admin/note-jobs/*` endpoints audit
+  every mutation. A tighter `TranscriptViewer` role, the monetization go-live
+  datetime, and DLQ redrive are deferred (founder / missing SB primitive).
 - **Composers tab** (Collections): registry of canonical composer identities —
   name, sort name, alias editor, portrait upload (square webp), birth/death
   years, bio, attribution/source. Status column reconciles every composer string

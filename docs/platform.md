@@ -18,13 +18,30 @@ Declared in `infra/main.bicep`; env differences are parameters only (SKUs, min r
 Dev API (live 2026-07-05): `https://ca-app-api-dev.graymoss-40d67a2f.centralus.azurecontainerapps.io`
 — image `acrkaraorchee.azurecr.io/karaorchee-app/api:<tag>` (built via `az acr build`), secrets
 `dburl`/`storagecs` on the container app, AUTH_* env pointed at the CIAM iOS App Registration.
-Database `karaorchee_app` on `pg-karaorchee-app-dev` (migrations applied through 0009);
+Database `karaorchee_app` on `pg-karaorchee-app-dev` (migrations applied through 0011);
 the Pieces Library is live truth (95 published pieces as of 2026-07-19 — Czerny 599, Burgmüller
 Op. 100, Hanon, flagship singles; every piece carries a first-page `thumbnail.webp` + `row_icon.webp`).
 Composers are a registry (`composers` table: canonical name + aliases + portrait + years + bio;
 writes canonicalize through it — see `api/src/composer_canon.ts`). Publish gates (worker) enforce
 anchor coverage/p90 residual/endpoint/`-rend` schema splits/audio-map clamp; `render_generation`
 stamps staff.json + SVGs against cross-generation mixing. Corpus health tool: `tools/corpus_health/`.
+
+**Notes (Phase B) is LIVE on dev** (2026-07-20). Schema (migrations 0008–0011):
+`teacher_student_links`, `invites` (code+expiry+uses), `lesson_sessions`
+(offline-first, created at send time, `client_lesson_id` idempotency key),
+`note_jobs`, `notes` (draft→sent→retracted, `superseded_by`), `note_annotations`
+(location jsonb, printed-bar-number unit), `entitlements` (source-typed),
+`devices`, `platform_config`. End-user API: invite-code linking (no user search
+by design), `POST /v1/lessons` + write-SAS direct upload, teacher
+review/send/retract/duplicate, student inbox/practiced/pin, `DELETE /v1/me`
+(Apple 5.1.1(v) — PII scrub + cascade + audio purge, CIAM Graph delete pending).
+Worker `ca-notes-worker-dev` clones the pieces loop: AssemblyAI `universal-3-5-pro`
+(SAS handoff, keyterms OFF) → claude-sonnet-5 (deepseek fallback) → gates
+(quote-verbatim drop, measure-range demote, annotation floor); transcript
+derivative to `notes-assets` (survives the 90-day audio). Admin: `/admin/notes/*`
+(pairing/subscription) + `/admin/note-jobs/*` (monitoring + break-glass transcript,
+audited). Entitlement resolver: trial = `max(trial_started_at, monetization_live_at)
++ 30d`; no config = beta-free.
 
 ## Resources (per env)
 
