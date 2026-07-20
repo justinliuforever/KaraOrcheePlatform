@@ -122,24 +122,51 @@ export function notesRouter(deps: Deps): Router {
       if ("pieceLabel" in body) {
         patch.pieceLabel = typeof body.pieceLabel === "string" && body.pieceLabel.trim() ? body.pieceLabel.trim() : null;
       }
-      const [updated] = await db.update(notes).set(patch).where(eq(notes.id, note.id)).returning();
+      // One transaction, CAS on draft: a racing send must never lose an edit to a
+      // sent note, and a crash must never leave a note with content updated but its
+      // annotations half-rewritten. Annotations are worker-authored — the client
+      // may reorder, edit instruction/category/location, or DELETE (omit an id),
+      // but NEVER create a row or alter a quote (verbatim provenance lives server-side).
+      const updated = await db.transaction(async (tx) => {
+        const [u] = await tx
+          .update(notes)
+          .set(patch)
+          .where(and(eq(notes.id, note.id), eq(notes.status, "draft")))
+          .returning();
+        if (!u) return null;
 
-      if (Array.isArray(body.annotations)) {
-        const existing = await db
-          .select()
-          .from(noteAnnotations)
-          .where(eq(noteAnnotations.noteId, note.id));
-        const quoteById = new Map(existing.map((a) => [a.id, a.quote]));
-        await db.delete(noteAnnotations).where(eq(noteAnnotations.noteId, note.id));
-        const values = (body.annotations as Record<string, unknown>[]).map((a, i) => ({
-          noteId: note.id,
-          idx: i,
-          category: typeof a.category === "string" ? a.category : "other",
-          instruction: typeof a.instruction === "string" ? a.instruction : "",
-          quote: typeof a.id === "string" && quoteById.has(a.id) ? quoteById.get(a.id)! : null,
-          location: a.location && typeof a.location === "object" ? a.location : {},
-        }));
-        if (values.length) await db.insert(noteAnnotations).values(values);
+        if (Array.isArray(body.annotations)) {
+          const existing = await tx
+            .select()
+            .from(noteAnnotations)
+            .where(eq(noteAnnotations.noteId, note.id));
+          const byId = new Map(existing.map((a) => [a.id, a]));
+          const keep = new Set<string>();
+          let idx = 0;
+          for (const a of body.annotations as Record<string, unknown>[]) {
+            const id = typeof a.id === "string" ? a.id : null;
+            const row = id ? byId.get(id) : undefined;
+            if (!row) continue; // no id / unknown id: cannot mint an unsourced annotation
+            keep.add(row.id);
+            await tx
+              .update(noteAnnotations)
+              .set({
+                idx: idx++,
+                category: typeof a.category === "string" ? a.category : row.category,
+                instruction: typeof a.instruction === "string" ? a.instruction : row.instruction,
+                location: a.location && typeof a.location === "object" ? a.location : row.location,
+                updatedAt: sql`now()`,
+              })
+              .where(eq(noteAnnotations.id, row.id));
+          }
+          const drop = existing.filter((a) => !keep.has(a.id)).map((a) => a.id);
+          if (drop.length) await tx.delete(noteAnnotations).where(inArray(noteAnnotations.id, drop));
+        }
+        return u;
+      });
+      if (!updated) {
+        res.status(409).json({ error: "not_editable", message: "Sent notes can't be edited — retract, fix, and resend." });
+        return;
       }
       const annotations = await db
         .select()
@@ -252,40 +279,45 @@ export function notesRouter(deps: Deps): Router {
         res.status(404).json({ error: "not_found" });
         return;
       }
-      const [copy] = await db
-        .insert(notes)
-        .values({
-          noteJobId: note.noteJobId,
-          lessonSessionId: note.lessonSessionId,
-          teacherId: me.id,
-          studentId: null,
-          pieceId: note.pieceId,
-          pieceLabel: note.pieceLabel,
-          contentOriginal: note.contentOriginal,
-          content: note.content,
-        })
-        .returning();
       const annotations = await db
         .select()
         .from(noteAnnotations)
         .where(eq(noteAnnotations.noteId, note.id))
         .orderBy(asc(noteAnnotations.idx));
-      if (annotations.length) {
-        await db.insert(noteAnnotations).values(
-          annotations.map((a) => ({
-            noteId: copy!.id,
-            idx: a.idx,
-            category: a.category,
-            instruction: a.instruction,
-            quote: a.quote,
-            location: a.location,
-          })),
-        );
-      }
-      if (note.status === "retracted") {
-        await db.update(notes).set({ supersededBy: copy!.id, updatedAt: sql`now()` }).where(eq(notes.id, note.id));
-      }
-      await userAudit(deps, req, "note.duplicate", { type: "note", id: note.id }, { copyId: copy!.id });
+      // One transaction: a copy that exists without its annotations (or a retracted
+      // origin pointing at a half-built successor) is worse than no copy.
+      const copy = await db.transaction(async (tx) => {
+        const [c] = await tx
+          .insert(notes)
+          .values({
+            noteJobId: note.noteJobId,
+            lessonSessionId: note.lessonSessionId,
+            teacherId: me.id,
+            studentId: null,
+            pieceId: note.pieceId,
+            pieceLabel: note.pieceLabel,
+            contentOriginal: note.contentOriginal,
+            content: note.content,
+          })
+          .returning();
+        if (annotations.length) {
+          await tx.insert(noteAnnotations).values(
+            annotations.map((a) => ({
+              noteId: c!.id,
+              idx: a.idx,
+              category: a.category,
+              instruction: a.instruction,
+              quote: a.quote,
+              location: a.location,
+            })),
+          );
+        }
+        if (note.status === "retracted") {
+          await tx.update(notes).set({ supersededBy: c!.id, updatedAt: sql`now()` }).where(eq(notes.id, note.id));
+        }
+        return c!;
+      });
+      await userAudit(deps, req, "note.duplicate", { type: "note", id: note.id }, { copyId: copy.id });
       res.status(201).json(copy);
     }),
   );
@@ -359,7 +391,9 @@ export function notesRouter(deps: Deps): Router {
         .from(notes)
         .where(and(eq(notes.id, String(req.params.id)), eq(notes.studentId, me.id)))
         .limit(1);
-      if (!note || note.status === "draft") {
+      // A never-opened note that was retracted must vanish (same rule as the list):
+      // only a note the student already read shows the "withdrawn" stub.
+      if (!note || note.status === "draft" || (note.status === "retracted" && note.readAt === null)) {
         res.status(404).json({ error: "not_found" });
         return;
       }

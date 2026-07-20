@@ -83,6 +83,35 @@ export function lessonsRouter(deps: Deps): Router {
     }),
   );
 
+  // Fresh SAS for an existing un-submitted lesson: the ~2h link minted at create
+  // can expire before an offline outbox retry fires.
+  router.post(
+    "/v1/lessons/:id/upload-url",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      if (!deps.lessons) {
+        res.status(503).json({ error: "storage_not_configured" });
+        return;
+      }
+      const [lesson] = await db
+        .select()
+        .from(lessonSessions)
+        .where(and(eq(lessonSessions.id, String(req.params.id)), eq(lessonSessions.teacherId, me.id)))
+        .limit(1);
+      if (!lesson || !lesson.audioPath) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (lesson.status !== "created") {
+        res.status(409).json({ error: "already_submitted" });
+        return;
+      }
+      res.json({ uploadUrl: deps.lessons.uploadUrl(lesson.audioPath) });
+    }),
+  );
+
   router.post(
     "/v1/lessons/:id/submit",
     ...guards,
@@ -116,6 +145,19 @@ export function lessonsRouter(deps: Deps): Router {
         return;
       }
 
+      // CAS the lesson out of 'created' FIRST so only one racing submit (and never
+      // a submit that lost to cancel) proceeds to create a job. The status guard
+      // above is only a fast, friendly early-out.
+      const [claimed] = await db
+        .update(lessonSessions)
+        .set({ status: "submitted", audioBytes: props.bytes, updatedAt: sql`now()` })
+        .where(and(eq(lessonSessions.id, lesson.id), eq(lessonSessions.status, "created")))
+        .returning();
+      if (!claimed) {
+        res.status(409).json({ error: "already_submitted" });
+        return;
+      }
+
       const [job] = await db
         .insert(noteJobs)
         .values({ lessonSessionId: lesson.id, createdBy: me.id })
@@ -123,19 +165,18 @@ export function lessonsRouter(deps: Deps): Router {
       try {
         await deps.notesQueue.send({ jobId: job!.id, reqId: req.reqId });
       } catch (err) {
-        // Never leave a queued row with no message in flight (studio.ts pattern).
+        // Roll the lesson back so a retry can re-claim it; drop the orphan job.
         await db.delete(noteJobs).where(eq(noteJobs.id, job!.id));
-        console.error("lesson submit: queue send failed, job rolled back", err);
+        await db
+          .update(lessonSessions)
+          .set({ status: "created", updatedAt: sql`now()` })
+          .where(eq(lessonSessions.id, lesson.id));
+        console.error("lesson submit: queue send failed, rolled back", err);
         res.status(503).json({ error: "queue_unavailable", message: "Processing is briefly unavailable — try again in a moment." });
         return;
       }
-      const [updated] = await db
-        .update(lessonSessions)
-        .set({ status: "submitted", audioBytes: props.bytes, updatedAt: sql`now()` })
-        .where(eq(lessonSessions.id, lesson.id))
-        .returning();
       await userAudit(deps, req, "lesson.submit", { type: "lesson", id: lesson.id }, { jobId: job!.id });
-      res.json({ lesson: updated, job });
+      res.json({ lesson: claimed, job });
     }),
   );
 
@@ -283,10 +324,17 @@ export function lessonsRouter(deps: Deps): Router {
         res.status(409).json({ error: "already_submitted" });
         return;
       }
-      await db
+      // CAS so a submit that raced this cancel cannot be overwritten (which would
+      // strand a queued job pointing at deleted audio).
+      const [canceled] = await db
         .update(lessonSessions)
         .set({ status: "canceled", updatedAt: sql`now()` })
-        .where(eq(lessonSessions.id, lesson.id));
+        .where(and(eq(lessonSessions.id, lesson.id), eq(lessonSessions.status, "created")))
+        .returning();
+      if (!canceled) {
+        res.status(409).json({ error: "already_submitted" });
+        return;
+      }
       if (lesson.audioPath && deps.lessons) {
         await deps.lessons.deleteAudio(lesson.audioPath);
       }

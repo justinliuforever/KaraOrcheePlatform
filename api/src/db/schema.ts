@@ -229,7 +229,7 @@ export const lessonSessions = pgTable("lesson_sessions", {
   language: text("language").notNull().default("en"),
   // Default-checked "student has been informed this lesson is recorded" confirm.
   attested: boolean("attested").notNull().default(false),
-  status: text("status").notNull().default("created"), // created | uploaded | submitted | canceled
+  status: text("status").notNull().default("created"), // created | submitted | canceled
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

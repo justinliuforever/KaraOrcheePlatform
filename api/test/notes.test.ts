@@ -600,6 +600,36 @@ describe("lessons", () => {
     expect(res.body.uploadUrl).toBe(`https://fake/${path}?sas`);
   });
 
+  it("upload-url re-mints a fresh SAS for an un-submitted lesson only", async () => {
+    const lesson = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ studentId: student.id });
+    const id = lesson.body.lesson.id;
+    const fresh = await request(makeApp())
+      .post(`/v1/lessons/${id}/upload-url`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({});
+    expect(fresh.status).toBe(200);
+    expect(fresh.body.uploadUrl).toBe(`https://fake/${teacher.id}/${id}.m4a?sas`);
+
+    await request(makeApp())
+      .post(`/v1/lessons/${id}/submit`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({});
+    const after = await request(makeApp())
+      .post(`/v1/lessons/${id}/upload-url`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({});
+    expect(after.status).toBe(409);
+
+    const stranger404 = await request(makeApp())
+      .post(`/v1/lessons/${id}/upload-url`)
+      .set("Authorization", `Bearer ${stranger.token}`)
+      .send({});
+    expect(stranger404.status).toBe(404);
+  });
+
   it("submit with no finished upload → 409 audio_missing", async () => {
     const lesson = await request(makeApp())
       .post("/v1/lessons")
@@ -754,10 +784,12 @@ describe("notes: teacher flow", () => {
     expect(forbidden.status).toBe(404);
   });
 
-  it("PATCH edits content and full-replaces annotations, preserving stored quotes by id", async () => {
+  it("PATCH edits annotations by stable id, deletes omitted ones, ignores unsourced new rows, and never lets a client alter a quote", async () => {
     const { note, annotations } = await seedNote({ teacherId: teacher.id, pieceId: "seed_piece" });
+    // seedNote inserts >= 2 annotations; keep the first (edited), drop the rest.
     const keepId = annotations[0]!.id;
     const originalQuote = annotations[0]!.quote;
+    const droppedId = annotations[1]!.id;
 
     const res = await request(makeApp())
       .patch(`/v1/notes/${note.id}`)
@@ -773,8 +805,9 @@ describe("notes: teacher flow", () => {
             location: { type: "absolute", measureStart: 9, grounded: true },
           },
           {
+            // No id: annotations are worker-authored, so this must be dropped, not created.
             instruction: "Brand new annotation",
-            quote: "should be nulled",
+            quote: "should never appear",
             category: "other",
             location: { type: "none", grounded: false },
           },
@@ -782,12 +815,24 @@ describe("notes: teacher flow", () => {
       });
     expect(res.status).toBe(200);
     expect(res.body.note.content.lessonSummary).toBe("Edited summary");
-    expect(res.body.annotations.length).toBe(2);
-    // Row that kept its id keeps the ORIGINAL stored quote, not the payload's.
+    // Only the kept row survives: the omitted id was deleted, the id-less row ignored.
+    expect(res.body.annotations.length).toBe(1);
+    expect(res.body.annotations[0].id).toBe(keepId);
+    // The kept row's stored quote is untouched by the client payload.
     expect(res.body.annotations[0].quote).toBe(originalQuote);
     expect(res.body.annotations[0].instruction).toBe("Revised instruction");
-    // New row has no provenance quote.
-    expect(res.body.annotations[1].quote).toBeNull();
+    expect(res.body.annotations[0].category).toBe("rhythm");
+    expect(res.body.annotations[0].location.measureStart).toBe(9);
+
+    // A second PATCH using the (still valid) id keeps the quote — no stale-id nulling.
+    const again = await request(makeApp())
+      .patch(`/v1/notes/${note.id}`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ annotations: [{ id: keepId, instruction: "Second edit" }] });
+    expect(again.status).toBe(200);
+    expect(again.body.annotations[0].quote).toBe(originalQuote);
+    expect(again.body.annotations[0].instruction).toBe("Second edit");
+    expect(droppedId).toBeDefined();
   });
 
   it("PATCH on a sent note → 409 not_editable", async () => {

@@ -78,26 +78,62 @@ def audio_read_url(storage_cs: str, path: str) -> str:
     return f"https://{account}.blob.core.windows.net/{AUDIO_CONTAINER}/{path}?{sas}"
 
 
+# A 60-min lesson polls for ~10-20 min; cap well past that so a stuck ASR job
+# fails cleanly instead of holding the message lock (3600s) until it expires.
+ASR_POLL_INTERVAL = 5
+ASR_POLL_MAX = 40 * 60
+
+
+def _get_with_retry(url: str, headers: dict, attempts: int = 4):
+    """Transient network/5xx during a long poll must not discard paid ASR work —
+    the transcript id already exists server-side, so re-GET loses nothing."""
+    last = None
+    for i in range(attempts):
+        try:
+            r = requests.get(url, headers=headers, timeout=60)
+            if r.status_code >= 500:
+                r.raise_for_status()
+            return r
+        except requests.RequestException as err:
+            last = err
+            time.sleep(min(2 ** i, 15))
+    raise last
+
+
 def run_asr(audio_url: str, api_key: str) -> dict:
     """Presigned-URL handoff (AssemblyAI's documented best practice) — the URL is
     minted immediately before submission so it cannot expire mid-queue."""
     h = {"authorization": api_key}
-    sub = requests.post(f"{ASR_BASE}/transcript", headers=h, timeout=60, json={
-        "audio_url": audio_url,
-        "speech_models": ASR_MODELS,
-        "speaker_labels": True,
-    })
+    sub = None
+    for i in range(4):
+        try:
+            sub = requests.post(f"{ASR_BASE}/transcript", headers=h, timeout=60, json={
+                "audio_url": audio_url,
+                "speech_models": ASR_MODELS,
+                "speaker_labels": True,
+            })
+            if sub.status_code >= 500:
+                sub.raise_for_status()
+            break
+        except requests.RequestException:
+            if i == 3:
+                raise
+            time.sleep(min(2 ** i, 15))
     sub.raise_for_status()
     tid = sub.json()["id"]
+    waited = 0
     while True:
-        g = requests.get(f"{ASR_BASE}/transcript/{tid}", headers=h, timeout=60)
+        g = _get_with_retry(f"{ASR_BASE}/transcript/{tid}", h)
         g.raise_for_status()
         j = g.json()
         if j["status"] == "completed":
             return j
         if j["status"] == "error":
             raise RuntimeError(j.get("error", "assemblyai error"))
-        time.sleep(5)
+        if waited >= ASR_POLL_MAX:
+            raise RuntimeError(f"assemblyai transcription did not complete within {ASR_POLL_MAX}s")
+        time.sleep(ASR_POLL_INTERVAL)
+        waited += ASR_POLL_INTERVAL
 
 
 def replace_draft(conn, job_id: str, lesson, content: dict, original: dict,
@@ -154,8 +190,9 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
     metrics["asr_secs"] = round(time.time() - t0, 1)
     metrics["language"] = asr.get("language_code")
     metrics["audio_duration"] = asr.get("audio_duration")
-    metrics.update(check_transcript(text, utterances))
 
+    # Persist the transcript BEFORE any gate — it is the durable derivative that
+    # outlives the 90-day audio and the only debug artifact for a gate failure.
     transcript_path = f"transcripts/{job_id}.json"
     blob.get_container_client(ASSETS_CONTAINER).get_blob_client(transcript_path).upload_blob(
         json.dumps({"text": text, "utterances": utterances,
@@ -163,6 +200,8 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
                     "audio_duration": asr.get("audio_duration")}),
         overwrite=True, content_settings=ContentSettings(content_type="application/json"))
     update_job(conn, job_id, stage="llm", transcript_path=transcript_path)
+
+    metrics.update(check_transcript(text, utterances))
 
     measure_count = None
     if isinstance(piece_facts, dict):
@@ -236,16 +275,26 @@ def main() -> None:
                     receiver.complete_message(msg)
                 except Exception:
                     traceback.print_exc()
+                    marked_failed = False
                     if job_id and not processed:
                         try:
                             with psycopg.connect(db_url) as conn:
                                 update_job(conn, job_id, status="failed",
                                            error="worker_crash: see worker logs")
+                            marked_failed = True
                         except Exception:
                             traceback.print_exc()
                     if not processed:
                         try:
-                            receiver.complete_message(msg)  # row state is truth; don't redeliver
+                            if marked_failed:
+                                # Row now says failed (retry can recover) — settle it.
+                                receiver.complete_message(msg)
+                            else:
+                                # DB unreachable: we could NOT record a terminal state, so
+                                # completing would strand the job forever. Abandon → the
+                                # broker redelivers (idempotent) or dead-letters after
+                                # maxDelivery, which fires the DLQ alert.
+                                receiver.abandon_message(msg)
                         except Exception:
                             traceback.print_exc()
 

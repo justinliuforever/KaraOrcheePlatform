@@ -131,12 +131,31 @@ export function linksRouter(deps: Deps): Router {
         .from(teacherStudentLinks)
         .where(and(eq(teacherStudentLinks.teacherId, invite.teacherId), eq(teacherStudentLinks.studentId, me.id)))
         .limit(1);
+      if (existing && existing.status === "active") {
+        res.status(409).json({ error: "already_linked" });
+        return;
+      }
+      // Claim a use-count slot atomically BEFORE creating the link — two students
+      // racing a single-use code must not both succeed.
+      const [claimed] = await db
+        .update(invites)
+        .set({
+          usedCount: sql`${invites.usedCount} + 1`,
+          redeemedBy: sql`${invites.redeemedBy} || ${JSON.stringify([me.id])}::jsonb`,
+        })
+        .where(and(
+          eq(invites.id, invite.id),
+          sql`${invites.usedCount} < ${invites.maxUses}`,
+          sql`${invites.revokedAt} IS NULL`,
+          sql`${invites.expiresAt} > now()`,
+        ))
+        .returning();
+      if (!claimed) {
+        res.status(404).json({ error: "invalid_code", message: "That code is invalid or has expired — ask your teacher for a new one." });
+        return;
+      }
       let link;
       if (existing) {
-        if (existing.status === "active") {
-          res.status(409).json({ error: "already_linked" });
-          return;
-        }
         [link] = await db
           .update(teacherStudentLinks)
           .set({ status: "active", consentAt: sql`now()`, removedAt: null, updatedAt: sql`now()` })
@@ -153,13 +172,6 @@ export function linksRouter(deps: Deps): Router {
           })
           .returning();
       }
-      await db
-        .update(invites)
-        .set({
-          usedCount: sql`${invites.usedCount} + 1`,
-          redeemedBy: sql`${invites.redeemedBy} || ${JSON.stringify([me.id])}::jsonb`,
-        })
-        .where(eq(invites.id, invite.id));
       // Redeeming makes you a student; the trial clock starts at first student grant.
       if (!me.isStudent) {
         await db
