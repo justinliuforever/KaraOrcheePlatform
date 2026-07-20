@@ -1,0 +1,679 @@
+import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import request from "supertest";
+import { and, eq } from "drizzle-orm";
+import {
+  generateKeyPair,
+  exportJWK,
+  createLocalJWKSet,
+  SignJWT,
+  type JWK,
+} from "jose";
+import { createServer } from "../src/server";
+import { createJoseVerifier, type AuthVerifier } from "../src/auth";
+import { createTestDb } from "./testdb";
+import {
+  users,
+  teacherStudentLinks,
+  invites,
+  entitlements,
+  platformConfig,
+  lessonSessions,
+  noteJobs,
+  notes,
+  auditEvents,
+} from "../src/db/schema";
+import type { Db } from "../src/db/client";
+import type { NotesQueue } from "../src/queue";
+import type { NotesAssetsStore } from "../src/notes/assets_store";
+
+const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
+const AUDIENCE = "api://karaorchee";
+const KID = "test-key";
+
+let verifier: AuthVerifier;
+let db: Db;
+let privateKey: CryptoKey;
+let adminToken: string;
+let plainToken: string;
+
+interface FakeQueue extends NotesQueue {
+  sent: Record<string, unknown>[];
+  throwNext: boolean;
+}
+function makeFakeQueue(): FakeQueue {
+  const q: FakeQueue = {
+    sent: [],
+    throwNext: false,
+    async send(body) {
+      if (q.throwNext) throw new Error("service bus unavailable");
+      q.sent.push(body);
+    },
+  };
+  return q;
+}
+
+interface FakeAssets extends NotesAssetsStore {
+  body: unknown;
+  reads: string[];
+}
+function makeFakeAssets(): FakeAssets {
+  const a: FakeAssets = {
+    body: { text: "so let's fix the left hand in bars 3 to 5" },
+    reads: [],
+    async readTranscript(path) {
+      a.reads.push(path);
+      return a.body;
+    },
+  };
+  return a;
+}
+
+let fakeQueue: FakeQueue;
+let fakeAssets: FakeAssets;
+
+function app(over: Record<string, unknown> = {}) {
+  return createServer({ db, auth: verifier, notesQueue: fakeQueue, notesAssets: fakeAssets, ...over });
+}
+
+async function sign(claims: Record<string, unknown>): Promise<string> {
+  return new SignJWT(claims)
+    .setProtectedHeader({ alg: "RS256", kid: KID })
+    .setIssuer(ISSUER)
+    .setAudience(AUDIENCE)
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(privateKey);
+}
+
+let seq = 0;
+async function mkUser(over: Partial<typeof users.$inferInsert> = {}) {
+  seq += 1;
+  const [u] = await db.orm
+    .insert(users)
+    .values({ entraOid: `an-oid-${seq}`, email: `u${seq}@k.com`, displayName: `User ${seq}`, ...over })
+    .returning();
+  return u!;
+}
+
+function daysAgo(n: number): Date {
+  return new Date(Date.now() - n * 24 * 60 * 60 * 1000);
+}
+function daysFromNow(n: number): Date {
+  return new Date(Date.now() + n * 24 * 60 * 60 * 1000);
+}
+
+async function seedJob(teacherId: string, jobOver: Partial<typeof noteJobs.$inferInsert> = {}, lessonOver: Partial<typeof lessonSessions.$inferInsert> = {}) {
+  const [lesson] = await db.orm
+    .insert(lessonSessions)
+    .values({ teacherId, ...lessonOver })
+    .returning();
+  const [job] = await db.orm
+    .insert(noteJobs)
+    .values({ lessonSessionId: lesson!.id, createdBy: teacherId, ...jobOver })
+    .returning();
+  return { lesson: lesson!, job: job! };
+}
+
+async function seedSentNote(teacherId: string, studentId: string, pieceLabel: string) {
+  const { lesson, job } = await seedJob(teacherId, {}, { studentId, pieceLabel });
+  const content = { lessonSummary: "x", practicePlan: [] };
+  const [note] = await db.orm
+    .insert(notes)
+    .values({
+      noteJobId: job.id,
+      lessonSessionId: lesson.id,
+      teacherId,
+      studentId,
+      pieceLabel,
+      status: "sent",
+      sentAt: new Date(),
+      contentOriginal: content,
+      content,
+    })
+    .returning();
+  return { lesson, job, note: note! };
+}
+
+async function auditFor(action: string) {
+  const rows = await db.orm.select().from(auditEvents).where(eq(auditEvents.action, action));
+  return rows;
+}
+
+beforeAll(async () => {
+  const pair = await generateKeyPair("RS256");
+  privateKey = pair.privateKey;
+  const jwk: JWK = { ...(await exportJWK(pair.publicKey)), kid: KID, alg: "RS256", use: "sig" };
+  verifier = createJoseVerifier({ issuer: ISSUER, audience: AUDIENCE, jwks: createLocalJWKSet({ keys: [jwk] }) });
+  db = await createTestDb();
+  fakeQueue = makeFakeQueue();
+  fakeAssets = makeFakeAssets();
+
+  await db.orm.insert(users).values([
+    { entraOid: "an-admin-oid", email: "admin@karaorchee.com", displayName: "Notes Admin", isAdmin: true },
+    { entraOid: "an-plain-oid", email: "plain@example.com", displayName: "Plain" },
+  ]);
+  adminToken = await sign({ oid: "an-admin-oid" });
+  plainToken = await sign({ oid: "an-plain-oid" });
+});
+
+beforeEach(() => {
+  fakeQueue.throwNext = false;
+});
+
+// ── Auth gate ──────────────────────────────────────────────────────────────────────
+
+describe("adminNotes gate", () => {
+  it("401s without a token", async () => {
+    const res = await request(app()).get("/admin/notes/links");
+    expect(res.status).toBe(401);
+  });
+
+  it("403s a signed-in non-admin on a sample route", async () => {
+    const res = await request(app()).get("/admin/notes/links").set("Authorization", `Bearer ${plainToken}`);
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "forbidden" });
+  });
+});
+
+// ── Pairings ─────────────────────────────────────────────────────────────────────
+
+describe("notes links", () => {
+  let teacher: typeof users.$inferSelect;
+  let studentActive: typeof users.$inferSelect;
+  let studentRemoved: typeof users.$inferSelect;
+
+  beforeAll(async () => {
+    teacher = await mkUser({ displayName: "Link Teacher", email: "linkteach@k.com", isTeacher: true });
+    studentActive = await mkUser({ displayName: "Active Student", email: "activestu@k.com", isStudent: true });
+    studentRemoved = await mkUser({ displayName: "Removed Student", email: "removedstu@k.com", isStudent: true });
+    await db.orm.insert(teacherStudentLinks).values([
+      { teacherId: teacher.id, studentId: studentActive.id, status: "active", consentAt: new Date() },
+      { teacherId: teacher.id, studentId: studentRemoved.id, status: "removed", removedAt: new Date(), consentAt: new Date() },
+    ]);
+  });
+
+  it("lists links joined to both parties' identity", async () => {
+    const res = await request(app()).get("/admin/notes/links").set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    const row = res.body.items.find((r: { teacherId: string; studentId: string }) => r.teacherId === teacher.id && r.studentId === studentActive.id);
+    expect(row.teacherEmail).toBe("linkteach@k.com");
+    expect(row.studentName).toBe("Active Student");
+    expect(row.status).toBe("active");
+  });
+
+  it("filters by status", async () => {
+    const removed = await request(app())
+      .get("/admin/notes/links?status=removed")
+      .set("Authorization", `Bearer ${adminToken}`);
+    const ids = removed.body.items.map((r: { studentId: string }) => r.studentId);
+    expect(ids).toContain(studentRemoved.id);
+    expect(ids).not.toContain(studentActive.id);
+  });
+
+  it("searches by either party's email or name", async () => {
+    const byStudent = await request(app())
+      .get("/admin/notes/links?q=activestu")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(byStudent.body.items.every((r: { studentEmail: string }) => r.studentEmail === "activestu@k.com")).toBe(true);
+    const byTeacher = await request(app())
+      .get("/admin/notes/links?q=Link Teacher")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(byTeacher.body.items.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("force-creates a new link and grows both role flags", async () => {
+    const t = await mkUser({ displayName: "Fresh Teacher" }); // no role flags
+    const s = await mkUser({ displayName: "Fresh Student" });
+    const res = await request(app())
+      .post("/admin/notes/links")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ teacherId: t.id, studentId: s.id });
+    expect(res.status).toBe(201);
+    expect(res.body.link.status).toBe("active");
+    expect(res.body.link.createdVia).toBe("admin");
+    expect(res.body.link.consentAt).not.toBeNull();
+
+    const [tr] = await db.orm.select().from(users).where(eq(users.id, t.id));
+    const [sr] = await db.orm.select().from(users).where(eq(users.id, s.id));
+    expect(tr!.isTeacher).toBe(true);
+    expect(sr!.isStudent).toBe(true);
+
+    const audits = await auditFor("link.admin_create");
+    expect(audits.some((a) => a.subjectId === res.body.link.id)).toBe(true);
+  });
+
+  it("reactivates a removed pair in place (same row id)", async () => {
+    const t = await mkUser({ isTeacher: true });
+    const s = await mkUser({ isStudent: true });
+    const [removed] = await db.orm
+      .insert(teacherStudentLinks)
+      .values({ teacherId: t.id, studentId: s.id, status: "removed", removedAt: new Date(), createdVia: "invite_code" })
+      .returning();
+    const res = await request(app())
+      .post("/admin/notes/links")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ teacherId: t.id, studentId: s.id });
+    expect(res.status).toBe(200);
+    expect(res.body.link.id).toBe(removed!.id);
+    expect(res.body.link.status).toBe("active");
+    expect(res.body.link.removedAt).toBeNull();
+  });
+
+  it("rejects a non-distinct pair", async () => {
+    const t = await mkUser();
+    const res = await request(app())
+      .post("/admin/notes/links")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ teacherId: t.id, studentId: t.id });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("same_user");
+  });
+
+  it("rejects an unknown user", async () => {
+    const t = await mkUser();
+    const res = await request(app())
+      .post("/admin/notes/links")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ teacherId: t.id, studentId: "00000000-0000-0000-0000-000000000000" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("unknown_user");
+  });
+
+  it("soft-removes a link and audits; 404 on unknown", async () => {
+    const t = await mkUser({ isTeacher: true });
+    const s = await mkUser({ isStudent: true });
+    const [link] = await db.orm
+      .insert(teacherStudentLinks)
+      .values({ teacherId: t.id, studentId: s.id, status: "active", consentAt: new Date() })
+      .returning();
+    const res = await request(app())
+      .delete(`/admin/notes/links/${link!.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.link.status).toBe("removed");
+    expect(res.body.link.removedAt).not.toBeNull();
+    const audits = await auditFor("link.admin_remove");
+    expect(audits.some((a) => a.subjectId === link!.id)).toBe(true);
+
+    const missing = await request(app())
+      .delete("/admin/notes/links/00000000-0000-0000-0000-000000000000")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(missing.status).toBe(404);
+  });
+});
+
+// ── Invites ──────────────────────────────────────────────────────────────────────
+
+describe("notes invites", () => {
+  let teacher: typeof users.$inferSelect;
+  let activeInvite: typeof invites.$inferSelect;
+
+  beforeAll(async () => {
+    teacher = await mkUser({ displayName: "Invite Teacher", email: "inviteteach@k.com", isTeacher: true });
+    const rows = await db.orm
+      .insert(invites)
+      .values([
+        { code: "ANACT1", teacherId: teacher.id, expiresAt: daysFromNow(7) },
+        { code: "ANEXP1", teacherId: teacher.id, expiresAt: daysAgo(1) },
+        { code: "ANREV1", teacherId: teacher.id, expiresAt: daysFromNow(7), revokedAt: new Date() },
+        { code: "ANUSE1", teacherId: teacher.id, expiresAt: daysFromNow(7), maxUses: 1, usedCount: 1 },
+      ])
+      .returning();
+    activeInvite = rows[0]!;
+  });
+
+  it("derives active | expired | exhausted | revoked", async () => {
+    const res = await request(app())
+      .get("/admin/notes/invites?q=inviteteach")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    const byCode = new Map(res.body.items.map((r: { code: string; state: string }) => [r.code, r.state]));
+    expect(byCode.get("ANACT1")).toBe("active");
+    expect(byCode.get("ANEXP1")).toBe("expired");
+    expect(byCode.get("ANREV1")).toBe("revoked");
+    expect(byCode.get("ANUSE1")).toBe("exhausted");
+    const active = res.body.items.find((r: { code: string }) => r.code === "ANACT1");
+    expect(active.teacherEmail).toBe("inviteteach@k.com");
+  });
+
+  it("filters by state", async () => {
+    const res = await request(app())
+      .get("/admin/notes/invites?q=inviteteach&state=expired")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.body.items.map((r: { code: string }) => r.code)).toEqual(["ANEXP1"]);
+  });
+
+  it("revokes an invite and audits; 404 on unknown", async () => {
+    const res = await request(app())
+      .post(`/admin/notes/invites/${activeInvite.id}/revoke`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.invite.revokedAt).not.toBeNull();
+    const [row] = await db.orm.select().from(invites).where(eq(invites.id, activeInvite.id));
+    expect(row!.revokedAt).not.toBeNull();
+    const audits = await auditFor("invite.admin_revoke");
+    expect(audits.some((a) => a.subjectId === activeInvite.id)).toBe(true);
+
+    const missing = await request(app())
+      .post("/admin/notes/invites/00000000-0000-0000-0000-000000000000/revoke")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({});
+    expect(missing.status).toBe(404);
+  });
+});
+
+// ── Entitlements ─────────────────────────────────────────────────────────────────
+
+describe("notes entitlements", () => {
+  let target: typeof users.$inferSelect;
+
+  beforeAll(async () => {
+    target = await mkUser({ displayName: "Ent Target", email: "enttarget@k.com", isStudent: true });
+    await db.orm.insert(entitlements).values([
+      { userId: target.id, source: "apple_iap", status: "active", appleOriginalTransactionId: "an-txn-1" },
+      { userId: target.id, source: "trial", status: "expired" },
+    ]);
+  });
+
+  it("lists entitlements joined to the user with filters", async () => {
+    const res = await request(app())
+      .get("/admin/notes/entitlements?q=enttarget&source=apple_iap")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.items).toHaveLength(1);
+    expect(res.body.items[0].userEmail).toBe("enttarget@k.com");
+    expect(res.body.items[0].appleOriginalTransactionId).toBe("an-txn-1");
+  });
+
+  it("rejects a grant with a missing/short reason", async () => {
+    const res = await request(app())
+      .post("/admin/notes/entitlements/grant")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ userId: target.id, days: 30, reason: "too short" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("reason_required");
+  });
+
+  it("grants an admin entitlement with correct expiry math and audits", async () => {
+    const before = Date.now();
+    const res = await request(app())
+      .post("/admin/notes/entitlements/grant")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ userId: target.id, days: 30, reason: "Comped for launch beta feedback." });
+    expect(res.status).toBe(201);
+    expect(res.body.source).toBe("admin_grant");
+    expect(res.body.status).toBe("active");
+    expect(res.body.note).toBe("Comped for launch beta feedback.");
+    const expiresMs = new Date(res.body.expiresAt).getTime();
+    const expected = before + 30 * 24 * 60 * 60 * 1000;
+    expect(Math.abs(expiresMs - expected)).toBeLessThan(60_000);
+
+    const audits = await auditFor("entitlement.grant");
+    const evt = audits.find((a) => a.subjectId === res.body.id);
+    expect((evt!.detail as { days: number }).days).toBe(30);
+    expect((evt!.detail as { userId: string }).userId).toBe(target.id);
+  });
+
+  it("revokes an entitlement (reason required) and audits", async () => {
+    const [ent] = await db.orm
+      .insert(entitlements)
+      .values({ userId: target.id, source: "admin_grant", status: "active", note: "grant reason kept" })
+      .returning();
+
+    const short = await request(app())
+      .post(`/admin/notes/entitlements/${ent!.id}/revoke`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ reason: "nope" });
+    expect(short.status).toBe(400);
+    expect(short.body.error).toBe("reason_required");
+
+    const res = await request(app())
+      .post(`/admin/notes/entitlements/${ent!.id}/revoke`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ reason: "Refund processed via Apple." });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("revoked");
+    // Grant reason is preserved, not clobbered by the revoke reason.
+    expect(res.body.note).toBe("grant reason kept");
+    const audits = await auditFor("entitlement.revoke");
+    expect(audits.some((a) => a.subjectId === ent!.id)).toBe(true);
+  });
+});
+
+// ── Monetization config ──────────────────────────────────────────────────────────
+
+describe("monetization config", () => {
+  it("reads beta_free by default, flips to paid_after, then clears, auditing from/to", async () => {
+    const initial = await request(app())
+      .get("/admin/notes/config/monetization")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(initial.status).toBe(200);
+    expect(initial.body.value).toBeNull();
+    expect(initial.body.state).toBe("beta_free");
+
+    const iso = daysAgo(5).toISOString();
+    const set = await request(app())
+      .put("/admin/notes/config/monetization")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ value: iso });
+    expect(set.status).toBe(200);
+    expect(set.body.value).toBe(iso);
+    expect(set.body.state).toBe("paid_after");
+
+    const get = await request(app())
+      .get("/admin/notes/config/monetization")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(get.body.value).toBe(iso);
+
+    const cleared = await request(app())
+      .put("/admin/notes/config/monetization")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ value: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.value).toBeNull();
+    expect(cleared.body.state).toBe("beta_free");
+
+    const audits = await auditFor("config.monetization.set");
+    const setEvt = audits.find((a) => (a.detail as { to?: string }).to === iso);
+    expect((setEvt!.detail as { from: string | null }).from).toBeNull();
+    const clearEvt = audits.find((a) => (a.detail as { from?: string }).from === iso && (a.detail as { to: string | null }).to === null);
+    expect(clearEvt).toBeTruthy();
+  });
+
+  it("rejects a malformed value", async () => {
+    const res = await request(app())
+      .put("/admin/notes/config/monetization")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ value: "not-a-date" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("invalid_value");
+  });
+});
+
+// ── Notes-jobs monitoring ────────────────────────────────────────────────────────
+
+describe("note-jobs monitoring", () => {
+  let teacher: typeof users.$inferSelect;
+  let readyJob: string;
+
+  beforeAll(async () => {
+    teacher = await mkUser({ displayName: "Job Teacher", email: "jobteach@k.com", isTeacher: true });
+    const { job } = await seedJob(
+      teacher.id,
+      { status: "ready_for_review", stage: "gates", transcriptPath: `${teacher.id}/lesson-1/transcript.json`, metrics: { reqId: "req-abc" } },
+      { pieceLabel: "Minuet in G" },
+    );
+    readyJob = job.id;
+    // A note produced by that job.
+    const content = { lessonSummary: "y", practicePlan: [] };
+    await db.orm.insert(notes).values({
+      noteJobId: job.id,
+      lessonSessionId: job.lessonSessionId,
+      teacherId: teacher.id,
+      status: "draft",
+      contentOriginal: content,
+      content,
+    });
+  });
+
+  it("lists jobs joined to lesson/teacher with status facets", async () => {
+    const res = await request(app())
+      .get("/admin/note-jobs?q=jobteach")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    const row = res.body.items.find((r: { id: string }) => r.id === readyJob);
+    expect(row.teacherEmail).toBe("jobteach@k.com");
+    expect(row.pieceLabel).toBe("Minuet in G");
+    expect(row.reqId).toBe("req-abc");
+    expect(Array.isArray(res.body.facets.status)).toBe(true);
+    expect(res.body.facets.status.some((f: { value: string }) => f.value === "ready_for_review")).toBe(true);
+  });
+
+  it("filters by status", async () => {
+    const res = await request(app())
+      .get("/admin/note-jobs?status=ready_for_review&q=jobteach")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.body.items.every((r: { status: string }) => r.status === "ready_for_review")).toBe(true);
+  });
+
+  it("returns detail with lesson summary and produced note ids (no transcript body)", async () => {
+    const res = await request(app())
+      .get(`/admin/note-jobs/${readyJob}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.job.id).toBe(readyJob);
+    expect(res.body.lesson.pieceLabel).toBe("Minuet in G");
+    expect(res.body.lesson.teacher.email).toBe("jobteach@k.com");
+    expect(res.body.notes.length).toBe(1);
+    expect(res.body).not.toHaveProperty("transcript");
+  });
+
+  it("404s an unknown job", async () => {
+    const res = await request(app())
+      .get("/admin/note-jobs/00000000-0000-0000-0000-000000000000")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("requeue is failed-only; sends to the queue; audits", async () => {
+    const notFailed = await request(app())
+      .post(`/admin/note-jobs/${readyJob}/requeue`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({});
+    expect(notFailed.status).toBe(409);
+    expect(notFailed.body.error).toBe("not_failed");
+
+    const { job } = await seedJob(teacher.id, { status: "failed", stage: "asr", error: "asr boom", failureHints: ["retry"], attempts: 1 });
+    const res = await request(app())
+      .post(`/admin/note-jobs/${job.id}/requeue`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.job.status).toBe("queued");
+    expect(res.body.job.stage).toBeNull();
+    expect(res.body.job.error).toBeNull();
+    expect(res.body.job.attempts).toBe(2);
+    expect(fakeQueue.sent.some((m) => m.jobId === job.id)).toBe(true);
+    const audits = await auditFor("note_job.requeue");
+    expect(audits.some((a) => a.subjectId === job.id)).toBe(true);
+  });
+
+  it("rolls the job back to failed if the queue send throws", async () => {
+    const { job } = await seedJob(teacher.id, { status: "failed", stage: "llm", error: "llm boom", attempts: 2 });
+    fakeQueue.throwNext = true;
+    const res = await request(app())
+      .post(`/admin/note-jobs/${job.id}/requeue`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({});
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe("queue_unavailable");
+    const [row] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job.id));
+    expect(row!.status).toBe("failed");
+  });
+});
+
+// ── Transcript break-glass ───────────────────────────────────────────────────────
+
+describe("transcript break-glass", () => {
+  let teacher: typeof users.$inferSelect;
+  let jobWithTranscript: string;
+  let jobNoTranscript: string;
+
+  beforeAll(async () => {
+    teacher = await mkUser({ displayName: "Transcript Teacher", isTeacher: true });
+    const a = await seedJob(teacher.id, { status: "ready_for_review", transcriptPath: `${teacher.id}/lesson-x/transcript.json` });
+    jobWithTranscript = a.job.id;
+    const b = await seedJob(teacher.id, { status: "processing" });
+    jobNoTranscript = b.job.id;
+  });
+
+  it("requires a reason of at least 10 chars", async () => {
+    const res = await request(app())
+      .get(`/admin/note-jobs/${jobWithTranscript}/transcript?reason=short`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("reason_required");
+  });
+
+  it("returns the transcript body and writes a transcript.view audit with the reason", async () => {
+    const reason = "Investigating a parent complaint about the tone of a note.";
+    const res = await request(app())
+      .get(`/admin/note-jobs/${jobWithTranscript}/transcript?reason=${encodeURIComponent(reason)}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.transcript).toEqual(fakeAssets.body);
+    expect(fakeAssets.reads).toContain(`${teacher.id}/lesson-x/transcript.json`);
+    const audits = await auditFor("transcript.view");
+    const evt = audits.find((a) => a.subjectId === jobWithTranscript);
+    expect((evt!.detail as { reason: string }).reason).toBe(reason);
+  });
+
+  it("409s when the job has no transcript yet", async () => {
+    const res = await request(app())
+      .get(`/admin/note-jobs/${jobNoTranscript}/transcript?reason=Looking into a stuck job for support.`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("transcript_not_ready");
+  });
+});
+
+// ── User activity ────────────────────────────────────────────────────────────────
+
+describe("user notes-activity", () => {
+  it("aggregates links, invites, lessons, note counts, and effective entitlement", async () => {
+    const teacher = await mkUser({ displayName: "Activity Teacher", email: "actteach@k.com", isTeacher: true });
+    const s1 = await mkUser({ isStudent: true });
+    const s2 = await mkUser({ isStudent: true });
+    await db.orm.insert(teacherStudentLinks).values([
+      { teacherId: teacher.id, studentId: s1.id, status: "active", consentAt: new Date() },
+      { teacherId: teacher.id, studentId: s2.id, status: "removed", removedAt: new Date() },
+    ]);
+    await db.orm.insert(invites).values({ code: "ANACTV", teacherId: teacher.id, expiresAt: daysFromNow(7) });
+    await seedSentNote(teacher.id, s1.id, "Sonatina");
+    await seedSentNote(teacher.id, s2.id, "Arabesque");
+
+    const res = await request(app())
+      .get(`/admin/users/${teacher.id}/notes-activity`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.user.email).toBe("actteach@k.com");
+    expect(res.body.links.asTeacher.length).toBe(2);
+    expect(res.body.links.asStudent.length).toBe(0);
+    expect(res.body.invitesIssued.length).toBe(1);
+    expect(res.body.invitesIssued[0].state).toBe("active");
+    expect(res.body.lessons.count).toBe(2);
+    expect(res.body.lessons.recentPieceLabels).toEqual(expect.arrayContaining(["Sonatina", "Arabesque"]));
+    expect(res.body.notes.sent).toBe(2);
+    expect(res.body.notes.received).toBe(0);
+    // Teachers bypass entitlements.
+    expect(res.body.access.status).toBe("teacher_free");
+  });
+
+  it("404s an unknown user", async () => {
+    const res = await request(app())
+      .get("/admin/users/00000000-0000-0000-0000-000000000000/notes-activity")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(404);
+  });
+});

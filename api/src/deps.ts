@@ -6,6 +6,7 @@ import type { JobQueue, NotesQueue } from "./queue";
 import type { OpsLogsStore } from "./opslogs";
 import type { OpsQueueStore } from "./opsqueue";
 import type { LessonStore } from "./notes/lessons_store";
+import type { NotesAssetsStore } from "./notes/assets_store";
 
 export interface Deps {
   db?: Db;
@@ -14,6 +15,7 @@ export interface Deps {
   piecesQueue?: JobQueue;
   notesQueue?: NotesQueue;
   lessons?: LessonStore;
+  notesAssets?: NotesAssetsStore;
   auth?: AuthVerifier;
   corsOrigins?: string[];
   opsLogs?: OpsLogsStore;

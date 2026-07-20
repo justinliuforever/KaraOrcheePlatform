@@ -12,6 +12,7 @@ import { linksRouter } from "./routes/links";
 import { lessonsRouter } from "./routes/lessons";
 import { notesRouter } from "./routes/notes";
 import { adminRouter } from "./routes/admin";
+import { adminNotesRouter } from "./routes/adminNotes";
 import { composersRouter } from "./routes/composers";
 import { studioRouter } from "./routes/studio";
 import { opsRouter } from "./routes/ops";
@@ -44,6 +45,7 @@ export function createServer(deps: Deps = {}): Express {
   app.use(opsRouter(deps));
   app.use(composersRouter(deps));
   app.use(adminRouter(deps));
+  app.use(adminNotesRouter(deps));
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: "not_found" });

@@ -2,6 +2,7 @@ import { loadConfig } from "./config";
 import { createPool, createDb } from "./db/client";
 import { createBlobCatalogStore, createBlobStudioStore } from "./storage";
 import { createBlobLessonStore } from "./notes/lessons_store";
+import { createBlobNotesAssetsStore } from "./notes/assets_store";
 import { createServiceBusQueue, createServiceBusNotesQueue } from "./queue";
 import { verifierFromConfig } from "./auth";
 import { createServer } from "./server";
@@ -29,12 +30,15 @@ function main(): void {
   const lessons = config.storage
     ? createBlobLessonStore(config.storage.connectionString)
     : undefined;
+  const notesAssets = config.storage
+    ? createBlobNotesAssetsStore(config.storage.connectionString)
+    : undefined;
   const auth = config.auth ? verifierFromConfig(config.auth) : undefined;
   const opsLogs = config.logAnalyticsWorkspaceId
     ? createLogAnalyticsOpsStore(config.logAnalyticsWorkspaceId)
     : undefined;
   const opsQueue = config.serviceBus
-    ? createServiceBusOpsStore(config.serviceBus.connectionString, ["pieces-jobs", "pieces-preflight"])
+    ? createServiceBusOpsStore(config.serviceBus.connectionString, ["pieces-jobs", "pieces-preflight", "notes-jobs"])
     : undefined;
 
   const app = createServer({
@@ -44,6 +48,7 @@ function main(): void {
     piecesQueue,
     notesQueue,
     lessons,
+    notesAssets,
     auth,
     corsOrigins: config.adminOrigins,
     opsLogs,
