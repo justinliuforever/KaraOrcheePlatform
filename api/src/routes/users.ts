@@ -1,9 +1,20 @@
 import { Router } from "express";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
-import { notes, users } from "../db/schema";
+import { requireUser, userAudit } from "../notes/user";
+import {
+  devices,
+  entitlements,
+  invites,
+  lessonSessions,
+  noteAnnotations,
+  noteJobs,
+  notes,
+  teacherStudentLinks,
+  users,
+} from "../db/schema";
 import { notesAccess } from "../notes/entitlement";
 
 export function usersRouter(deps: Deps): Router {
@@ -58,6 +69,101 @@ export function usersRouter(deps: Deps): Router {
         .where(and(eq(notes.studentId, user.id), eq(notes.status, "sent"), isNull(notes.readAt)));
 
       res.status(200).json({ ...user, access, unreadNotes: unread?.count ?? 0 });
+    }),
+  );
+
+  // Apple 5.1.1(v): in-app account deletion. Full erase, not deactivation. The row
+  // survives as a PII-scrubbed tombstone so notes ALREADY DELIVERED to the other
+  // party keep their FK integrity (a student's received notes are their record; a
+  // teacher's sent notes stay with their students). Everything private to the
+  // deleting user is destroyed here; the raw lesson audio blob is purged now, not
+  // left to the 90-day lifecycle. NOTE: CIAM (Auth-tenant) identity deletion via
+  // Graph is a follow-up (needs the app registration's User.ReadWrite.All) — until
+  // then the scrubbed row + released entra_oid prevents re-link, and the client
+  // signs out; document this gap.
+  router.delete(
+    "/v1/me",
+    requireAuth(deps.auth),
+    requireUser(deps),
+    wrap(async (req, res) => {
+      const db = deps.db!.orm;
+      const me = req.notesUser!;
+
+      // Collect this user's own lesson audio to purge from blob after the tx commits.
+      const myLessons = await db
+        .select({ id: lessonSessions.id, audioPath: lessonSessions.audioPath })
+        .from(lessonSessions)
+        .where(eq(lessonSessions.teacherId, me.id));
+      const audioPaths = myLessons.map((l) => l.audioPath).filter((p): p is string => !!p);
+
+      await db.transaction(async (tx) => {
+        // End every relationship on both sides.
+        await tx
+          .update(teacherStudentLinks)
+          .set({ status: "removed", removedAt: sql`now()`, updatedAt: sql`now()` })
+          .where(and(
+            sql`(${teacherStudentLinks.teacherId} = ${me.id} OR ${teacherStudentLinks.studentId} = ${me.id})`,
+            eq(teacherStudentLinks.status, "active"),
+          ));
+        await tx.update(invites).set({ revokedAt: sql`now()` })
+          .where(and(eq(invites.teacherId, me.id), isNull(invites.revokedAt)));
+
+        // As STUDENT: the received-note copies are the student's data — delete them.
+        const received = await tx.select({ id: notes.id }).from(notes).where(eq(notes.studentId, me.id));
+        const receivedIds = received.map((n) => n.id);
+        if (receivedIds.length) {
+          await tx.delete(noteAnnotations).where(inArray(noteAnnotations.noteId, receivedIds));
+          await tx.delete(notes).where(inArray(notes.id, receivedIds));
+        }
+
+        // As TEACHER: destroy DRAFT notes (never delivered); SENT notes stay with
+        // their students, attribution collapsing to this tombstone row.
+        const drafts = await tx
+          .select({ id: notes.id })
+          .from(notes)
+          .where(and(eq(notes.teacherId, me.id), eq(notes.status, "draft")));
+        const draftIds = drafts.map((n) => n.id);
+        if (draftIds.length) {
+          await tx.delete(noteAnnotations).where(inArray(noteAnnotations.noteId, draftIds));
+          await tx.delete(notes).where(inArray(notes.id, draftIds));
+        }
+        // Lessons + their jobs are the teacher's private capture — remove entirely.
+        const lessonIds = myLessons.map((l) => l.id);
+        if (lessonIds.length) {
+          await tx.delete(noteJobs).where(inArray(noteJobs.lessonSessionId, lessonIds));
+          await tx.delete(lessonSessions).where(inArray(lessonSessions.id, lessonIds));
+        }
+
+        await tx.delete(devices).where(eq(devices.userId, me.id));
+        await tx.delete(entitlements).where(eq(entitlements.userId, me.id));
+
+        // Scrub PII, release the entra_oid, mark deleted.
+        await tx
+          .update(users)
+          .set({
+            status: "deleted",
+            email: null,
+            displayName: null,
+            entraOid: null,
+            trialStartedAt: null,
+            notesConsentAt: null,
+            deletedAt: sql`now()`,
+            updatedAt: sql`now()`,
+          })
+          .where(eq(users.id, me.id));
+      });
+
+      await userAudit(deps, req, "account.delete", { type: "user", id: me.id });
+      if (deps.lessons) {
+        for (const path of audioPaths) {
+          try {
+            await deps.lessons.deleteAudio(path);
+          } catch (err) {
+            console.error("account.delete: audio purge failed", path, err);
+          }
+        }
+      }
+      res.json({ ok: true });
     }),
   );
 

@@ -1250,6 +1250,55 @@ describe("devices", () => {
 
 // ── 9. Auth ───────────────────────────────────────────────────────────────────────
 
+describe("account deletion", () => {
+  it("scrubs the deleting user, ends links, deletes their private data, and purges audio", async () => {
+    // Fresh users so this test doesn't collide with the shared fixtures' links.
+    const dt = await makeUser({ oid: "del-teacher", name: "Del Teacher", email: "dt@k.com", role: "teacher" });
+    const ds = await makeUser({ oid: "del-student", name: "Del Student", email: "dsx@k.com", role: "student" });
+    await linkActive(dt.id, ds.id);
+    const sent = await seedNote({
+      teacherId: dt.id, studentId: ds.id, status: "sent", sentAt: new Date(), pieceId: "seed_piece",
+    });
+    const lessonRes = await request(makeApp())
+      .post("/v1/lessons").set("Authorization", `Bearer ${dt.token}`).send({ studentId: ds.id });
+    const audioPath = lessonRes.body.lesson.audioPath as string;
+
+    // The STUDENT deletes their account.
+    const del = await request(makeApp()).delete("/v1/me").set("Authorization", `Bearer ${ds.token}`);
+    expect(del.status).toBe(200);
+
+    const [srow] = await db.orm.select().from(users).where(eq(users.id, ds.id));
+    expect(srow!.status).toBe("deleted");
+    expect(srow!.email).toBeNull();
+    expect(srow!.displayName).toBeNull();
+    expect(srow!.entraOid).toBeNull();
+
+    // Received note gone; link removed.
+    const remaining = await db.orm.select().from(notes).where(eq(notes.id, sent.note.id));
+    expect(remaining.length).toBe(0);
+    const [link] = await db.orm.select().from(teacherStudentLinks)
+      .where(and(eq(teacherStudentLinks.teacherId, dt.id), eq(teacherStudentLinks.studentId, ds.id)));
+    expect(link!.status).toBe("removed");
+
+    // The deleted user's token no longer resolves to an active account.
+    const reuse = await request(makeApp()).get("/v1/notes").set("Authorization", `Bearer ${ds.token}`);
+    expect(reuse.status).toBe(403);
+
+    // TEACHER deletes: lesson + audio purged.
+    const delT = await request(makeApp()).delete("/v1/me").set("Authorization", `Bearer ${dt.token}`);
+    expect(delT.status).toBe(200);
+    expect(fakeLessons.deleted).toContain(audioPath);
+    const lessons = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.teacherId, dt.id));
+    expect(lessons.length).toBe(0);
+  });
+
+  it("delete requires a synced user", async () => {
+    const token = await mkToken("never-synced-del", "Ghost");
+    const res = await request(makeApp()).delete("/v1/me").set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(403);
+  });
+});
+
 describe("auth", () => {
   it("no token → 401", async () => {
     const res = await request(makeApp()).get("/v1/notes");
