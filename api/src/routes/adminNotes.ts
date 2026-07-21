@@ -550,6 +550,14 @@ export function adminNotesRouter(deps: Deps): Router {
     wrap(async (req, res) => {
       const db = deps.db!.orm;
       const id = String(req.params.id);
+      // Transcripts are verbatim lesson content, often minors'. Admin alone is not
+      // enough — the DB capability flag gates it (settled 2026-07-20; a claim-based
+      // Entra role would be the API's first token-trusted authorization and is
+      // stale until re-login, so authorization stays in Postgres like requireAdmin).
+      if (!req.adminUser!.canViewTranscripts) {
+        res.status(403).json({ error: "transcript_forbidden", message: "Your account doesn't have transcript access. An existing holder can grant it from Users." });
+        return;
+      }
       const reason = typeof req.query.reason === "string" ? req.query.reason.trim() : "";
       // Break-glass read: the reason is the accountability record, so it is mandatory.
       if (reason.length < 10) {
@@ -565,8 +573,6 @@ export function adminNotesRouter(deps: Deps): Router {
         res.status(409).json({ error: "transcript_not_ready", message: "This job has not produced a transcript." });
         return;
       }
-      // SECURITY: gated on requireAdmin today. Transcripts are verbatim lesson content;
-      // a narrower TranscriptViewer role (founder decision #3) can layer on here later.
       // Audit BEFORE the read so the break-glass access is recorded even if the read fails.
       await audit(deps, req, "transcript.view", { type: "note_job", id }, { reason, jobId: id });
       if (!deps.notesAssets) {

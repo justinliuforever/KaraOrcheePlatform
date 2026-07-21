@@ -74,7 +74,8 @@ export default function UsersPage() {
                       {u.isAdmin && <ToneBadge tone="brand">admin</ToneBadge>}
                       {u.isTeacher && <ToneBadge tone="ok">teacher</ToneBadge>}
                       {u.isStudent && <ToneBadge tone="muted">student</ToneBadge>}
-                      {!u.isAdmin && !u.isTeacher && !u.isStudent && (
+                      {u.canViewTranscripts && <ToneBadge tone="warn">transcripts</ToneBadge>}
+                      {!u.isAdmin && !u.isTeacher && !u.isStudent && !u.canViewTranscripts && (
                         <span className="text-ink-faint text-sm">—</span>
                       )}
                     </div>

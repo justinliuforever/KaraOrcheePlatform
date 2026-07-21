@@ -4,10 +4,12 @@ import { Copy, X } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "react-router-dom";
 import {
+  api,
   ApiError,
   getNoteJob,
   getNoteTranscript,
   requeueNoteJob,
+  type AdminUser,
   type NoteJobDetail,
   type NoteTranscript,
 } from "../api";
@@ -44,13 +46,16 @@ function person(p: { email: string | null; displayName: string | null } | null):
   return p.email ?? p.displayName ?? "—";
 }
 
-// transcript_missing / notes_assets_not_configured carry no server detail, so ApiError.message
-// is the bare code slug — map them here (reason_required / transcript_not_ready ship a message).
+// transcript_missing / notes_assets_not_configured / transcript_forbidden carry no server detail,
+// so ApiError.message is the bare code slug — map them here (reason_required / transcript_not_ready
+// ship a message).
 function transcriptErrorMessage(e: Error): string {
   if (e instanceof ApiError && e.code === "transcript_missing")
     return "No transcript found for this job — it may have failed before transcription.";
   if (e instanceof ApiError && e.code === "notes_assets_not_configured")
     return "Transcript storage isn't configured on this environment.";
+  if (e instanceof ApiError && e.code === "transcript_forbidden")
+    return "Transcript access required — an existing holder can grant it from Users.";
   return e.message;
 }
 
@@ -60,6 +65,14 @@ export default function NoteJobPanel({ id, onClose }: { id: string; onClose: () 
     queryKey: ["note-job", id],
     queryFn: () => getNoteJob(id),
   });
+  // Cache-shared with the app-level /admin/me query (Shell blocks until it resolves,
+  // so data is already present); staleTime keeps this observer from refetching.
+  const me = useQuery<AdminUser, Error>({
+    queryKey: ["me"],
+    queryFn: () => api<AdminUser>("/admin/me"),
+    staleTime: Infinity,
+  });
+  const canViewTranscripts = me.data?.canViewTranscripts ?? false;
 
   const [confirmRequeue, setConfirmRequeue] = useState(false);
   const [reasonOpen, setReasonOpen] = useState(false);
@@ -142,12 +155,19 @@ export default function NoteJobPanel({ id, onClose }: { id: string; onClose: () 
               Requeue
             </Button>
             {/* SECURITY: transcript is verbatim lesson content; the backend audits transcript.view.
-                Gated on admin for now — a narrower TranscriptViewer role is a founder decision. */}
+                Access = per-admin canViewTranscripts DB capability flag (settled 2026-07-20).
+                The server is the authority (403 transcript_forbidden) — this disable is UX only. */}
             <Button
               variant="outline"
               size="sm"
-              disabled={!job.transcriptPath}
-              title={job.transcriptPath ? undefined : "No transcript produced yet"}
+              disabled={!job.transcriptPath || !canViewTranscripts}
+              title={
+                !canViewTranscripts
+                  ? "Transcript access required — an existing holder can grant it from Users."
+                  : job.transcriptPath
+                    ? undefined
+                    : "No transcript produced yet"
+              }
               onClick={() => setReasonOpen(true)}
             >
               View transcript

@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "can_view_transcripts" boolean DEFAULT false NOT NULL;

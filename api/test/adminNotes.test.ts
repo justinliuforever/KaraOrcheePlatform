@@ -34,6 +34,7 @@ let verifier: AuthVerifier;
 let db: Db;
 let privateKey: CryptoKey;
 let adminToken: string;
+let admin2Token: string;
 let plainToken: string;
 
 interface FakeQueue extends NotesQueue {
@@ -149,10 +150,14 @@ beforeAll(async () => {
   fakeAssets = makeFakeAssets();
 
   await db.orm.insert(users).values([
-    { entraOid: "an-admin-oid", email: "admin@karaorchee.com", displayName: "Notes Admin", isAdmin: true },
+    // The main test admin holds transcript access (the founder case).
+    { entraOid: "an-admin-oid", email: "admin@karaorchee.com", displayName: "Notes Admin", isAdmin: true, canViewTranscripts: true },
+    // A second admin WITHOUT the flag (the colleague case).
+    { entraOid: "an-admin2-oid", email: "admin2@karaorchee.com", displayName: "Pieces Admin", isAdmin: true },
     { entraOid: "an-plain-oid", email: "plain@example.com", displayName: "Plain" },
   ]);
   adminToken = await sign({ oid: "an-admin-oid" });
+  admin2Token = await sign({ oid: "an-admin2-oid" });
   plainToken = await sign({ oid: "an-plain-oid" });
 });
 
@@ -614,6 +619,53 @@ describe("transcript break-glass", () => {
       .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("reason_required");
+  });
+
+  it("an admin WITHOUT the capability flag gets 403 and NO transcript.view audit", async () => {
+    const before = (await auditFor("transcript.view")).length;
+    const reason = "A perfectly valid reason that is long enough.";
+    const res = await request(app())
+      .get(`/admin/note-jobs/${jobWithTranscript}/transcript?reason=${encodeURIComponent(reason)}`)
+      .set("Authorization", `Bearer ${admin2Token}`);
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("transcript_forbidden");
+    expect((await auditFor("transcript.view")).length).toBe(before);
+    expect(fakeAssets.reads).not.toContain("never-read");
+  });
+
+  it("only a flag holder can change canViewTranscripts, and never on their own row", async () => {
+    const [admin2] = await db.orm.select().from(users).where(eq(users.entraOid, "an-admin2-oid"));
+    const [admin1] = await db.orm.select().from(users).where(eq(users.entraOid, "an-admin-oid"));
+    // Non-holder cannot self-grant (or grant at all).
+    const selfGrant = await request(app())
+      .patch(`/admin/users/${admin2!.id}/roles`)
+      .set("Authorization", `Bearer ${admin2Token}`)
+      .send({ canViewTranscripts: true });
+    expect(selfGrant.status).toBe(403);
+    expect(selfGrant.body.error).toBe("transcript_grant_forbidden");
+    // Holder cannot change their own row.
+    const own = await request(app())
+      .patch(`/admin/users/${admin1!.id}/roles`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ canViewTranscripts: false });
+    expect(own.status).toBe(409);
+    expect(own.body.error).toBe("cannot_change_own_transcript_access");
+    // Holder grants to another admin — audited with the dedicated action.
+    const grant = await request(app())
+      .patch(`/admin/users/${admin2!.id}/roles`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ canViewTranscripts: true });
+    expect(grant.status).toBe(200);
+    expect(grant.body.canViewTranscripts).toBe(true);
+    const audits = await auditFor("user.set_transcript_access");
+    expect(audits.length).toBeGreaterThan(0);
+    // Revoke it back so other tests keep the colleague-without-flag fixture.
+    const revoke = await request(app())
+      .patch(`/admin/users/${admin2!.id}/roles`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ canViewTranscripts: false });
+    expect(revoke.status).toBe(200);
+    expect(revoke.body.canViewTranscripts).toBe(false);
   });
 
   it("returns the transcript body and writes a transcript.view audit with the reason", async () => {

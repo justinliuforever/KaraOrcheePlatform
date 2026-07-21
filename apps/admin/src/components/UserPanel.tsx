@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { api, type AdminUser, type AdminUserDetail, type RolePatch } from "../api";
+import { toast } from "sonner";
+import { api, ApiError, type AdminUser, type AdminUserDetail, type RolePatch } from "../api";
 import { ErrorNote, Spinner, statusTone, AuditTrail } from "./ui";
 import ToneBadge from "./ToneBadge";
 import { Button } from "@/components/ui-kit/button";
@@ -63,6 +64,16 @@ function RoleToggle({
   );
 }
 
+// The two transcript-access rejections arrive as bare code slugs — map them to
+// human messages (all other role-patch errors ship a server message).
+function roleErrorMessage(e: Error): string {
+  if (e instanceof ApiError && e.code === "transcript_grant_forbidden")
+    return "Only an existing transcript-access holder can change this.";
+  if (e instanceof ApiError && e.code === "cannot_change_own_transcript_access")
+    return "You can't change your own transcript access.";
+  return e.message;
+}
+
 export default function UserPanel({ userId, onClose }: { userId: string; onClose: () => void }) {
   const qc = useQueryClient();
   const me = qc.getQueryData<AdminUser>(["me"]);
@@ -78,6 +89,9 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["user", userId] });
       qc.invalidateQueries({ queryKey: ["users"] });
+    },
+    onError: (e) => {
+      toast.error(roleErrorMessage(e));
     },
   });
 
@@ -144,7 +158,22 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
                 disabled={roles.isPending}
                 onChange={(v) => roles.mutate({ isStudent: v })}
               />
-              {roles.isError && <ErrorNote message={roles.error.message} />}
+              {/* Capability, not a role — set apart below the three role toggles.
+                  Server enforces both rules; the self-disable mirrors the admin toggle. */}
+              <div className="mt-3 pt-3 border-t border-line">
+                <RoleToggle
+                  label="Transcript access"
+                  hint={
+                    isSelf
+                      ? "You can't change your own transcript access"
+                      : "Break-glass access to lesson transcripts (minors' data). Only an existing holder can change this."
+                  }
+                  value={u.canViewTranscripts}
+                  disabled={roles.isPending || isSelf}
+                  onChange={(v) => roles.mutate({ canViewTranscripts: v })}
+                />
+              </div>
+              {roles.isError && <ErrorNote message={roleErrorMessage(roles.error)} />}
             </Section>
 
             <Section title="Account">

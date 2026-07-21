@@ -6,10 +6,11 @@ The version shown in the sidebar (`vX.Y.Z · <sha>`) has two parts:
 - **sha** — the git commit the running build was made from (injected by
   `scripts/deploy.sh`); changes on every deploy, needs no ceremony.
 
-## Unreleased (deployed on dev, no version bump yet)
+## 0.9.0 — 2026-07-20 · The Notes era
 
-Shipped 2026-07-18/20, founder-directed; sidebar stays 0.8.0 pending the next
-founder-signed bump:
+Founder-signed bump (2026-07-20: decisions on the B1-7 memo delegated to and
+settled by Claude — IA = grouped sidebar, transcript gate = DB capability flag,
+monetization stays beta-free, version 0.9.0). Shipped 2026-07-18/20:
 
 - **Notes admin (B1-7)** — the console gains a grouped sidebar (PIECES / NOTES /
   SYSTEM headings, no route churn). **Pairings** page: teacher-student links

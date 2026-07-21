@@ -107,6 +107,7 @@ const rolesSchema = z
     isAdmin: z.boolean().optional(),
     isTeacher: z.boolean().optional(),
     isStudent: z.boolean().optional(),
+    canViewTranscripts: z.boolean().optional(),
   })
   .refine((v) => Object.values(v).some((x) => x !== undefined), {
     message: "no role fields given",
@@ -255,6 +256,20 @@ export function adminRouter(deps: Deps): Router {
         res.status(409).json({ error: "cannot_demote_self" });
         return;
       }
+      // Transcript access guards minors' lesson content: only an existing holder
+      // may change it, and never on their own row (no self-grant path — the UI is
+      // curl-bypassable, so this lives server-side).
+      if (parsed.data.canViewTranscripts !== undefined &&
+          parsed.data.canViewTranscripts !== target.canViewTranscripts) {
+        if (!req.adminUser!.canViewTranscripts) {
+          res.status(403).json({ error: "transcript_grant_forbidden", message: "Only an existing transcript-access holder can change this." });
+          return;
+        }
+        if (target.id === req.adminUser!.id) {
+          res.status(409).json({ error: "cannot_change_own_transcript_access" });
+          return;
+        }
+      }
       const [updated] = await db
         .update(users)
         .set({ ...parsed.data, updatedAt: sql`now()` })
@@ -264,6 +279,13 @@ export function adminRouter(deps: Deps): Router {
         changes: parsed.data,
         email: target.email,
       });
+      if (parsed.data.canViewTranscripts !== undefined &&
+          parsed.data.canViewTranscripts !== target.canViewTranscripts) {
+        await audit(deps, req, "user.set_transcript_access", { type: "user", id }, {
+          granted: parsed.data.canViewTranscripts,
+          email: target.email,
+        });
+      }
       res.json(updated);
     }),
   );

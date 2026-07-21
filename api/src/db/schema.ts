@@ -22,6 +22,10 @@ export const users = pgTable("users", {
   isTeacher: boolean("is_teacher").notNull().default(false),
   isStudent: boolean("is_student").notNull().default(false),
   isAdmin: boolean("is_admin").notNull().default(false),
+  // Break-glass transcript access (minors' lesson content). Held ON TOP of admin;
+  // grantable only by an existing holder, never to yourself — enforced in the
+  // roles PATCH, not the UI.
+  canViewTranscripts: boolean("can_view_transcripts").notNull().default(false),
   status: text("status").notNull().default("active"), // active | deleted
   referredBy: uuid("referred_by").references((): AnyPgColumn => users.id),
   // Trial expiry is computed as max(trial_started_at, monetization_live_at) + 30d so

@@ -54,6 +54,9 @@ export interface AdminUser {
   isTeacher: boolean;
   isStudent: boolean;
   isAdmin: boolean;
+  // Break-glass capability: view lesson transcripts (minors' data). Grantable only
+  // by an existing holder; never changeable on your own row (server-enforced).
+  canViewTranscripts: boolean;
   status: string;
   referredBy: string | null;
   createdAt: string;
@@ -73,7 +76,9 @@ export interface AdminUserDetail {
   recentAudit: AuditEntry[];
 }
 
-export type RolePatch = Partial<Pick<AdminUser, "isAdmin" | "isTeacher" | "isStudent">>;
+export type RolePatch = Partial<
+  Pick<AdminUser, "isAdmin" | "isTeacher" | "isStudent" | "canViewTranscripts">
+>;
 
 export interface AdminPiece {
   id: string;
