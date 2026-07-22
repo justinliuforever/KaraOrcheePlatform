@@ -1,6 +1,7 @@
 """Notes worker — consumes notes-jobs, runs ASR (AssemblyAI) + LLM (claude-sonnet-5)
-+ gates, writes the transcript derivative to notes-assets, and inserts the draft
-note + annotations for teacher review.
++ gates, writes the transcript derivative to notes-assets, and inserts the note +
+annotations: a draft for teacher review on teacher-recorded lessons, or a note born
+'sent' to the owner on solo (student-recorded) lessons.
 
 The note_jobs row is the source of truth; queue messages are only triggers, so
 redelivered messages re-process idempotently (draft output is wiped and rebuilt).
@@ -52,7 +53,7 @@ def fetch_job(conn, job_id: str):
         cur.execute(
             """SELECT j.id, j.status, j.attempts, l.id, l.teacher_id, l.student_id,
                       l.piece_id, l.piece_label, l.audio_path, l.duration_sec,
-                      p.title, p.composer, p.facts
+                      l.owner_role, p.title, p.composer, p.facts
                FROM note_jobs j
                JOIN lesson_sessions l ON l.id = j.lesson_session_id
                LEFT JOIN pieces p ON p.id = l.piece_id
@@ -138,21 +139,64 @@ def run_asr(audio_url: str, api_key: str) -> dict:
 
 def replace_draft(conn, job_id: str, lesson, content: dict, original: dict,
                   annotations: list[dict]) -> str:
-    """Idempotent output: a redelivered job wipes its own draft and rebuilds."""
-    lesson_id, teacher_id, student_id, piece_id, piece_label = lesson
+    """Idempotent output. Teacher lessons: a redelivered job wipes its own draft and
+    rebuilds. Solo lessons: the note is born 'sent' to the owner, so the wipe can't
+    apply — an insert-guard makes redelivery/requeue a no-op instead (a rebuild
+    would silently drop pins the student may already have placed)."""
+    lesson_id, teacher_id, student_id, piece_id, piece_label, owner_role = lesson
     with conn.cursor() as cur:
-        cur.execute(
-            """DELETE FROM note_annotations WHERE note_id IN
-               (SELECT id FROM notes WHERE note_job_id = %s AND status = 'draft')""",
-            (job_id,))
-        cur.execute("DELETE FROM notes WHERE note_job_id = %s AND status = 'draft'", (job_id,))
-        cur.execute(
-            """INSERT INTO notes (note_job_id, lesson_session_id, teacher_id, student_id,
-                                  piece_id, piece_label, content_original, content)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-               RETURNING id""",
-            (job_id, lesson_id, teacher_id, student_id, piece_id, piece_label,
-             json.dumps(original), json.dumps(content)))
+        if owner_role == "student":
+            cur.execute(
+                """SELECT id FROM notes WHERE note_job_id = %s
+                   AND origin = 'self' AND status = 'sent' LIMIT 1""",
+                (job_id,))
+            existing = cur.fetchone()
+            if existing:
+                conn.commit()
+                return existing[0]
+            piece_version = None
+            if piece_id:
+                cur.execute("SELECT published_version FROM pieces WHERE id = %s", (piece_id,))
+                row = cur.fetchone()
+                piece_version = row[0] if row else None
+            try:
+                cur.execute(
+                    """INSERT INTO notes (note_job_id, lesson_session_id, teacher_id, student_id,
+                                          piece_id, piece_label, piece_version, origin,
+                                          status, sent_at, content_original, content)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, 'self', 'sent', now(), %s, %s)
+                       RETURNING id""",
+                    (job_id, lesson_id, teacher_id, teacher_id, piece_id, piece_label,
+                     piece_version, json.dumps(original), json.dumps(content)))
+            except psycopg.errors.UniqueViolation:
+                # uq_note_self_per_job race loser (concurrent delivery via deploy
+                # drain / redelivery): the winner's note IS the note — converge as
+                # success instead of crashing this job into 'failed' and inviting a
+                # paid re-run.
+                conn.rollback()
+                with conn.cursor() as cur2:
+                    cur2.execute(
+                        """SELECT id FROM notes WHERE note_job_id = %s
+                           AND origin = 'self' AND status = 'sent' LIMIT 1""",
+                        (job_id,))
+                    winner = cur2.fetchone()
+                conn.commit()
+                if winner:
+                    return winner[0]
+                raise
+        else:
+            cur.execute(
+                """DELETE FROM note_annotations WHERE note_id IN
+                   (SELECT id FROM notes WHERE note_job_id = %s AND status = 'draft')""",
+                (job_id,))
+            cur.execute("DELETE FROM notes WHERE note_job_id = %s AND status = 'draft'", (job_id,))
+            cur.execute(
+                """INSERT INTO notes (note_job_id, lesson_session_id, teacher_id, student_id,
+                                      piece_id, piece_label, origin, content_original, content)
+                   VALUES (%s, %s, %s, %s, %s, %s, 'teacher', %s, %s)
+                   RETURNING id""",
+                (job_id, lesson_id, teacher_id, student_id, piece_id, piece_label,
+                 json.dumps(original), json.dumps(content)))
         note_id = cur.fetchone()[0]
         for idx, a in enumerate(annotations):
             cur.execute(
@@ -172,7 +216,7 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
         jlog(job=job_id, event="drop", reason="no such job")
         return
     (_, status, attempts, lesson_id, teacher_id, student_id, piece_id, piece_label,
-     audio_path, duration_sec, piece_title, piece_composer, piece_facts) = row
+     audio_path, duration_sec, owner_role, piece_title, piece_composer, piece_facts) = row
     if status not in ("queued", "processing"):
         jlog(job=job_id, event="skip", status=status)
         return
@@ -180,7 +224,9 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
         update_job(conn, job_id, status="failed", error="lesson has no audio")
         return
 
-    metrics: dict = {}
+    # Mic-proximity watch: solo recordings put the phone near the STUDENT, flipping
+    # which voice is far-field. Recorded per job; never pre-tuned on.
+    metrics: dict = {"owner_role": owner_role}
     t0 = time.time()
     update_job(conn, job_id, status="processing", stage="asr", error=None)
 
@@ -233,7 +279,7 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
     })
 
     update_job(conn, job_id, stage="gates")
-    lesson = (lesson_id, teacher_id, student_id, piece_id, piece_label)
+    lesson = (lesson_id, teacher_id, student_id, piece_id, piece_label, owner_role)
     note_id = replace_draft(conn, job_id, lesson, content, obj, annotations)
     update_job(conn, job_id, status="ready_for_review", stage=None,
                metrics=json.dumps(metrics))
@@ -279,8 +325,19 @@ def main() -> None:
                     if job_id and not processed:
                         try:
                             with psycopg.connect(db_url) as conn:
-                                update_job(conn, job_id, status="failed",
-                                           error="worker_crash: see worker logs")
+                                # Never relabel a terminal success: a transient error
+                                # AFTER the note committed (final update_job blip, or
+                                # a duplicate-delivery race loser) must not flip a
+                                # delivered job to 'failed' and invite a paid re-run.
+                                with conn.cursor() as cur:
+                                    cur.execute(
+                                        """UPDATE note_jobs
+                                           SET status = 'failed',
+                                               error = 'worker_crash: see worker logs',
+                                               updated_at = now()
+                                           WHERE id = %s AND status <> 'ready_for_review'""",
+                                        (job_id,))
+                                conn.commit()
                             marked_failed = True
                         except Exception:
                             traceback.print_exc()

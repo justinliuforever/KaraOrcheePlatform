@@ -32,11 +32,20 @@ export function linksRouter(deps: Deps): Router {
     ...guards,
     wrap(async (req, res) => {
       const me = req.notesUser!;
-      if (!me.isTeacher) {
-        res.status(403).json({ error: "teacher_only" });
+      if (!me.isTeacher && !me.isStudent) {
+        res.status(403).json({ error: "notes_role_required" });
         return;
       }
       const db = deps.db!.orm;
+      // Direction follows the acting role (teacher wins for dual-role). A reverse
+      // code is the solo student inviting THEIR teacher: the student's recording
+      // consent is captured here at mint (createdAt = consent timestamp) because
+      // the redeemer is the teacher, who only acknowledges.
+      const direction = me.isTeacher ? "teacher_to_student" : "student_to_teacher";
+      if (direction === "student_to_teacher" && req.body?.consent !== true) {
+        res.status(400).json({ error: "consent_required", message: "Please accept the recording notice to invite your teacher." });
+        return;
+      }
       const sentToEmail =
         typeof req.body?.email === "string" && req.body.email.includes("@")
           ? (req.body.email as string).trim().toLowerCase()
@@ -49,11 +58,12 @@ export function linksRouter(deps: Deps): Router {
             .values({
               code,
               teacherId: me.id,
+              direction,
               expiresAt: new Date(Date.now() + INVITE_DAYS * 24 * 60 * 60 * 1000),
               sentToEmail,
             })
             .returning();
-          await userAudit(deps, req, "invite.create", { type: "invite", id: row!.id });
+          await userAudit(deps, req, "invite.create", { type: "invite", id: row!.id }, { direction });
           res.status(201).json(row);
           return;
         } catch (err) {
@@ -98,8 +108,11 @@ export function linksRouter(deps: Deps): Router {
     }),
   );
 
-  // Redeeming IS the acceptance: the confirmation card in the app shows the
-  // teacher's name plus the recording-consent checkbox before this fires.
+  // Redeeming IS the acceptance. Forward codes: the app's confirmation card shows
+  // the teacher's name plus the recording-consent checkbox before this fires.
+  // Reverse codes: the issuing student consented at mint; the redeeming teacher
+  // must explicitly confirm becoming this student's teacher (a mis-redeem grants
+  // isTeacher — a deliberate action, never a default).
   router.post(
     "/v1/invites/redeem",
     ...guards,
@@ -107,35 +120,43 @@ export function linksRouter(deps: Deps): Router {
       const me = req.notesUser!;
       const db = deps.db!.orm;
       const code = typeof req.body?.code === "string" ? req.body.code.trim().toUpperCase() : "";
-      const consent = req.body?.consent === true;
       if (!code) {
         res.status(400).json({ error: "code_required" });
         return;
       }
-      if (!consent) {
-        res.status(400).json({ error: "consent_required", message: "Please accept the recording notice to link with your teacher." });
-        return;
-      }
       const [invite] = await db.select().from(invites).where(eq(invites.code, code)).limit(1);
       if (!invite || invite.revokedAt || invite.expiresAt < new Date() || invite.usedCount >= invite.maxUses) {
-        res.status(404).json({ error: "invalid_code", message: "That code is invalid or has expired — ask your teacher for a new one." });
+        res.status(404).json({ error: "invalid_code", message: "That code is invalid or has expired — ask for a new one." });
         return;
       }
       if (invite.teacherId === me.id) {
         res.status(400).json({ error: "own_code" });
         return;
       }
+      const reverse = invite.direction === "student_to_teacher";
+      if (reverse) {
+        if (req.body?.acceptTeacherRole !== true) {
+          res.status(400).json({ error: "teacher_confirm_required", message: "Confirm you are this student's teacher to accept the invite." });
+          return;
+        }
+      } else if (req.body?.consent !== true) {
+        res.status(400).json({ error: "consent_required", message: "Please accept the recording notice to link with your teacher." });
+        return;
+      }
 
+      // The link pair, keyed by who ends up on which side of it.
+      const linkTeacherId = reverse ? me.id : invite.teacherId;
+      const linkStudentId = reverse ? invite.teacherId : me.id;
       const [existing] = await db
         .select()
         .from(teacherStudentLinks)
-        .where(and(eq(teacherStudentLinks.teacherId, invite.teacherId), eq(teacherStudentLinks.studentId, me.id)))
+        .where(and(eq(teacherStudentLinks.teacherId, linkTeacherId), eq(teacherStudentLinks.studentId, linkStudentId)))
         .limit(1);
       if (existing && existing.status === "active") {
         res.status(409).json({ error: "already_linked" });
         return;
       }
-      // Claim a use-count slot atomically BEFORE creating the link — two students
+      // Claim a use-count slot atomically BEFORE creating the link — two redeemers
       // racing a single-use code must not both succeed.
       const [claimed] = await db
         .update(invites)
@@ -151,29 +172,41 @@ export function linksRouter(deps: Deps): Router {
         ))
         .returning();
       if (!claimed) {
-        res.status(404).json({ error: "invalid_code", message: "That code is invalid or has expired — ask your teacher for a new one." });
+        res.status(404).json({ error: "invalid_code", message: "That code is invalid or has expired — ask for a new one." });
         return;
       }
+      // Reverse consent lives at mint: the invite's createdAt is the student's
+      // recorded consent timestamp, carried onto the link verbatim.
+      const consentAt = reverse ? invite.createdAt : sql`now()`;
       let link;
       if (existing) {
         [link] = await db
           .update(teacherStudentLinks)
-          .set({ status: "active", consentAt: sql`now()`, removedAt: null, updatedAt: sql`now()` })
+          .set({ status: "active", consentAt, removedAt: null, updatedAt: sql`now()` })
           .where(eq(teacherStudentLinks.id, existing.id))
           .returning();
       } else {
         [link] = await db
           .insert(teacherStudentLinks)
           .values({
-            teacherId: invite.teacherId,
-            studentId: me.id,
-            createdVia: invite.sentToEmail ? "email_invite" : "invite_code",
-            consentAt: sql`now()`,
+            teacherId: linkTeacherId,
+            studentId: linkStudentId,
+            createdVia: reverse ? "student_invite" : invite.sentToEmail ? "email_invite" : "invite_code",
+            consentAt,
           })
           .returning();
       }
-      // Redeeming makes you a student; the trial clock starts at first student grant.
-      if (!me.isStudent) {
+      if (reverse) {
+        // Accepting makes you a teacher (grow-only). NO trial clock: teachers are
+        // free-side and must never start a subscription countdown by accepting.
+        if (!me.isTeacher) {
+          await db
+            .update(users)
+            .set({ isTeacher: true, updatedAt: sql`now()` })
+            .where(eq(users.id, me.id));
+        }
+      } else if (!me.isStudent) {
+        // Redeeming makes you a student; the trial clock starts at first student grant.
         await db
           .update(users)
           .set({
@@ -183,12 +216,13 @@ export function linksRouter(deps: Deps): Router {
           })
           .where(eq(users.id, me.id));
       }
-      const [teacher] = await db.select().from(users).where(eq(users.id, invite.teacherId)).limit(1);
-      await userAudit(deps, req, "invite.redeem", { type: "link", id: link!.id }, { inviteId: invite.id });
-      res.status(201).json({
-        link,
-        teacher: { id: teacher!.id, displayName: teacher!.displayName },
-      });
+      const [issuer] = await db.select().from(users).where(eq(users.id, invite.teacherId)).limit(1);
+      await userAudit(deps, req, "invite.redeem", { type: "link", id: link!.id }, { inviteId: invite.id, direction: invite.direction });
+      res.status(201).json(
+        reverse
+          ? { link, student: { id: issuer!.id, displayName: issuer!.displayName } }
+          : { link, teacher: { id: issuer!.id, displayName: issuer!.displayName } },
+      );
     }),
   );
 

@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { listNoteJobs, type NoteJobMetrics, type NoteJobsResponse } from "../api";
 import { ErrorNote, Spinner, thCls } from "../components/ui";
 import StatusTag from "../components/StatusTag";
+import ToneBadge from "../components/ToneBadge";
 import { Button } from "@/components/ui-kit/button";
 import { Card } from "@/components/ui-kit/card";
 import { Input } from "@/components/ui-kit/input";
@@ -36,6 +37,53 @@ function metricSummary(m: NoteJobMetrics): string {
   return bits.join(" · ");
 }
 
+function FacetGroup({
+  title,
+  facets,
+  selected,
+  onSelect,
+}: {
+  title: string;
+  facets: { value: string; count: number }[];
+  selected: string;
+  onSelect: (value: string | null) => void;
+}) {
+  return (
+    <div>
+      <p className="px-1.5 pb-1 text-[11px] font-medium uppercase tracking-wide text-ink-faint">{title}</p>
+      <button
+        className={cn(
+          "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+          selected === "" ? "bg-brand-soft text-brand font-medium" : "text-ink-soft hover:bg-paper",
+        )}
+        onClick={() => onSelect(null)}
+      >
+        <span className="min-w-0 flex-1 truncate">all</span>
+        <span className="tabular-nums text-ink-faint">
+          {facets.reduce((a, f) => a + f.count, 0)}
+        </span>
+      </button>
+      {facets.length === 0 && <p className="px-1.5 py-1 text-xs text-ink-faint">—</p>}
+      {facets.map((f) => {
+        const active = selected === f.value;
+        return (
+          <button
+            key={f.value}
+            className={cn(
+              "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+              active ? "bg-brand-soft text-brand font-medium" : "text-ink-soft hover:bg-paper",
+            )}
+            onClick={() => onSelect(active ? null : f.value)}
+          >
+            <span className="min-w-0 flex-1 truncate">{f.value.replaceAll("_", " ")}</span>
+            <span className={cn("tabular-nums", active ? "text-brand/70" : "text-ink-faint")}>{f.count}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Self-contained notes-jobs lane inside /ops. It does NOT ride the OpsState machine
  * (no time-range / histogram / severity): status + stage + q are its own query state,
  * with the selected job id in ?sel for a shareable deep link. */
@@ -43,6 +91,7 @@ export default function NotesJobsView() {
   const [params, setParams] = useSearchParams();
   const status = params.get("status") ?? "";
   const stage = params.get("stage") ?? "";
+  const ownerRole = params.get("ownerRole") ?? "";
   const sel = params.get("sel");
   const q = params.get("q") ?? "";
 
@@ -67,8 +116,8 @@ export default function NotesJobsView() {
   }, [search, setParams]);
 
   const query = useQuery<NoteJobsResponse, Error>({
-    queryKey: ["note-jobs", status, stage, q],
-    queryFn: () => listNoteJobs({ status, stage, q }),
+    queryKey: ["note-jobs", status, stage, ownerRole, q],
+    queryFn: () => listNoteJobs({ status, stage, ownerRole, q }),
     placeholderData: keepPreviousData,
     staleTime: 0,
   });
@@ -83,14 +132,15 @@ export default function NotesJobsView() {
     setParams(next);
   };
 
-  const facets = query.data?.facets.status ?? [];
+  const statusFacets = query.data?.facets.status ?? [];
+  const ownerRoleFacets = query.data?.facets.ownerRole ?? [];
 
   return (
     <>
       <div className="mb-4 flex items-center gap-3 flex-wrap">
         <Input
           className="w-72"
-          placeholder="Search teacher email / name or job id…"
+          placeholder="Search recorder email / name or job id…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -117,36 +167,20 @@ export default function NotesJobsView() {
 
       <div className="flex items-start gap-4">
         <div className="w-52 shrink-0 rounded-xl border border-line bg-card p-2">
-          <p className="px-1.5 pb-1 text-[11px] font-medium uppercase tracking-wide text-ink-faint">Status</p>
-          <button
-            className={cn(
-              "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-              status === "" ? "bg-brand-soft text-brand font-medium" : "text-ink-soft hover:bg-paper",
-            )}
-            onClick={() => set({ status: null, sel: null })}
-          >
-            <span className="min-w-0 flex-1 truncate">all</span>
-            <span className="tabular-nums text-ink-faint">
-              {facets.reduce((a, f) => a + f.count, 0)}
-            </span>
-          </button>
-          {facets.length === 0 && <p className="px-1.5 py-1 text-xs text-ink-faint">—</p>}
-          {facets.map((f) => {
-            const active = status === f.value;
-            return (
-              <button
-                key={f.value}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-                  active ? "bg-brand-soft text-brand font-medium" : "text-ink-soft hover:bg-paper",
-                )}
-                onClick={() => set({ status: active ? null : f.value, sel: null })}
-              >
-                <span className="min-w-0 flex-1 truncate">{f.value.replaceAll("_", " ")}</span>
-                <span className={cn("tabular-nums", active ? "text-brand/70" : "text-ink-faint")}>{f.count}</span>
-              </button>
-            );
-          })}
+          <FacetGroup
+            title="Status"
+            facets={statusFacets}
+            selected={status}
+            onSelect={(v) => set({ status: v, sel: null })}
+          />
+          <div className="mt-2 border-t border-line/50 pt-2">
+            <FacetGroup
+              title="Recorder"
+              facets={ownerRoleFacets}
+              selected={ownerRole}
+              onSelect={(v) => set({ ownerRole: v, sel: null })}
+            />
+          </div>
         </div>
 
         <div className="min-w-0 flex-1">
@@ -161,7 +195,7 @@ export default function NotesJobsView() {
                     <TableHead className={thCls}>Status</TableHead>
                     <TableHead className={thCls}>Stage</TableHead>
                     <TableHead className={`${thCls} text-right`}>Attempts</TableHead>
-                    <TableHead className={thCls}>Teacher</TableHead>
+                    <TableHead className={thCls}>Recorder</TableHead>
                     <TableHead className={thCls}>Piece</TableHead>
                     <TableHead className={thCls}>Timings</TableHead>
                     <TableHead className={`${thCls} text-right`}>Annot.</TableHead>
@@ -186,8 +220,13 @@ export default function NotesJobsView() {
                         {j.attempts}
                       </TableCell>
                       <TableCell className="px-4 py-2.5 text-xs text-ink-soft">
-                        <span className="block truncate max-w-40" title={j.teacherEmail ?? undefined}>
-                          {j.teacherEmail ?? "—"}
+                        <span className="flex items-center gap-1.5">
+                          <span className="min-w-0 truncate max-w-40" title={j.ownerEmail ?? undefined}>
+                            {j.ownerEmail ?? "—"}
+                          </span>
+                          {j.ownerRole && (
+                            <ToneBadge tone={j.ownerRole === "teacher" ? "ok" : "muted"}>{j.ownerRole}</ToneBadge>
+                          )}
                         </span>
                       </TableCell>
                       <TableCell className="px-4 py-2.5 text-xs text-ink-soft">
@@ -213,7 +252,7 @@ export default function NotesJobsView() {
                       <TableCell className="px-4 py-10 text-center whitespace-normal" colSpan={9}>
                         <p className="text-sm font-medium text-ink">No note jobs found</p>
                         <p className="text-sm text-ink-soft mt-1">
-                          Jobs appear when a teacher submits a recorded lesson for processing.
+                          Jobs appear when a lesson is submitted for notes.
                         </p>
                       </TableCell>
                     </TableRow>

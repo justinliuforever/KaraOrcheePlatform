@@ -22,6 +22,7 @@ const ENTITLEMENT_SOURCES = ["trial", "apple_iap", "admin_grant", "org"];
 const ENTITLEMENT_STATUSES = ["active", "grace", "expired", "revoked"];
 const NOTE_JOB_STATUSES = ["queued", "processing", "failed", "ready_for_review"];
 const NOTE_JOB_STAGES = ["asr", "llm", "gates"];
+const OWNER_ROLES = ["teacher", "student"];
 
 // Server-derived invite lifecycle. An invite can be several of these at once;
 // precedence is revoked > exhausted > expired > active (most-terminal wins).
@@ -185,6 +186,7 @@ export function adminNotesRouter(deps: Deps): Router {
           maxUses: invites.maxUses,
           usedCount: invites.usedCount,
           sentToEmail: invites.sentToEmail,
+          direction: invites.direction,
           revokedAt: invites.revokedAt,
           createdAt: invites.createdAt,
           teacherEmail: users.email,
@@ -386,14 +388,15 @@ export function adminNotesRouter(deps: Deps): Router {
       const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
       const status = typeof req.query.status === "string" ? req.query.status : "";
       const stage = typeof req.query.stage === "string" ? req.query.stage : "";
+      const ownerRole = typeof req.query.ownerRole === "string" ? req.query.ownerRole : "";
       const conds = [];
-      // Facets reflect every filter EXCEPT status itself, so switching status stays
-      // meaningful (the count shows how many are in each status under q/stage).
-      const facetConds = [];
+      // Each facet reflects every filter EXCEPT its own, so switching within a facet
+      // stays meaningful (the count shows how many are in each value under the others).
+      const sharedConds = [];
       if (NOTE_JOB_STAGES.includes(stage)) {
         const c = eq(noteJobs.stage, stage);
         conds.push(c);
-        facetConds.push(c);
+        sharedConds.push(c);
       }
       if (q) {
         const c = or(
@@ -402,9 +405,14 @@ export function adminNotesRouter(deps: Deps): Router {
           sql`${noteJobs.id}::text ILIKE ${`%${q}%`}`,
         );
         conds.push(c);
-        facetConds.push(c);
+        sharedConds.push(c);
       }
-      if (NOTE_JOB_STATUSES.includes(status)) conds.push(eq(noteJobs.status, status));
+      const statusCond = NOTE_JOB_STATUSES.includes(status) ? eq(noteJobs.status, status) : null;
+      const ownerRoleCond = OWNER_ROLES.includes(ownerRole) ? eq(lessonSessions.ownerRole, ownerRole) : null;
+      if (statusCond) conds.push(statusCond);
+      if (ownerRoleCond) conds.push(ownerRoleCond);
+      const statusFacetConds = ownerRoleCond ? [...sharedConds, ownerRoleCond] : sharedConds;
+      const ownerRoleFacetConds = statusCond ? [...sharedConds, statusCond] : sharedConds;
       const rows = await db
         .select({
           id: noteJobs.id,
@@ -419,10 +427,15 @@ export function adminNotesRouter(deps: Deps): Router {
           updatedAt: noteJobs.updatedAt,
           lessonSessionId: noteJobs.lessonSessionId,
           teacherId: lessonSessions.teacherId,
+          ownerRole: lessonSessions.ownerRole,
           pieceId: lessonSessions.pieceId,
           pieceLabel: lessonSessions.pieceLabel,
+          // teacherEmail/teacherName kept for compat; ownerEmail/ownerName are the
+          // recorder-identity aliases (lesson.teacherId = owner, solo included).
           teacherEmail: users.email,
           teacherName: users.displayName,
+          ownerEmail: users.email,
+          ownerName: users.displayName,
         })
         .from(noteJobs)
         .leftJoin(lessonSessions, eq(noteJobs.lessonSessionId, lessonSessions.id))
@@ -440,9 +453,24 @@ export function adminNotesRouter(deps: Deps): Router {
         .from(noteJobs)
         .leftJoin(lessonSessions, eq(noteJobs.lessonSessionId, lessonSessions.id))
         .leftJoin(users, eq(lessonSessions.teacherId, users.id))
-        .where(facetConds.length ? and(...facetConds) : undefined)
+        .where(statusFacetConds.length ? and(...statusFacetConds) : undefined)
         .groupBy(noteJobs.status);
-      res.json({ items, facets: { status: statusCounts.map((c) => ({ value: c.status, count: c.count })) } });
+      const ownerRoleCounts = await db
+        .select({ ownerRole: lessonSessions.ownerRole, count: sql<number>`count(*)::int` })
+        .from(noteJobs)
+        .leftJoin(lessonSessions, eq(noteJobs.lessonSessionId, lessonSessions.id))
+        .leftJoin(users, eq(lessonSessions.teacherId, users.id))
+        .where(ownerRoleFacetConds.length ? and(...ownerRoleFacetConds) : undefined)
+        .groupBy(lessonSessions.ownerRole);
+      res.json({
+        items,
+        facets: {
+          status: statusCounts.map((c) => ({ value: c.status, count: c.count })),
+          ownerRole: ownerRoleCounts
+            .filter((c): c is { ownerRole: string; count: number } => c.ownerRole !== null)
+            .map((c) => ({ value: c.ownerRole, count: c.count })),
+        },
+      });
     }),
   );
 
@@ -480,6 +508,10 @@ export function adminNotesRouter(deps: Deps): Router {
               status: lesson.status,
               teacherId: lesson.teacherId,
               teacher: teacher ?? null,
+              // Recorder-identity aliases: owner = who held the phone (teacherId row;
+              // solo lessons record themselves). teacher/teacherId kept for compat.
+              ownerRole: lesson.ownerRole,
+              owner: teacher ?? null,
               studentId: lesson.studentId,
               student: studentRow ?? null,
               pieceId: lesson.pieceId,
@@ -642,7 +674,12 @@ export function adminNotesRouter(deps: Deps): Router {
         state: inviteState(r),
       }));
       const [lessonCount] = await db
-        .select({ count: sql<number>`count(*)::int` })
+        .select({
+          count: sql<number>`count(*)::int`,
+          // owner_role split: 'teacher' = recorded teaching someone, 'student' = solo self-recording.
+          recordedAsTeacher: sql<number>`count(*) filter (where ${lessonSessions.ownerRole} = 'teacher')::int`,
+          recordedAsSelf: sql<number>`count(*) filter (where ${lessonSessions.ownerRole} = 'student')::int`,
+        })
         .from(lessonSessions)
         .where(eq(lessonSessions.teacherId, id));
       // Piece labels only — never transcript or audio.
@@ -656,7 +693,13 @@ export function adminNotesRouter(deps: Deps): Router {
         ...new Set(recentLessons.map((l) => l.pieceLabel ?? l.pieceId).filter((x): x is string => Boolean(x))),
       ].slice(0, 8);
       const [sent] = await db
-        .select({ count: sql<number>`count(*)::int` })
+        .select({
+          count: sql<number>`count(*)::int`,
+          // origin split: self notes have teacherId = studentId = owner, so `count`
+          // (kept as-is for compat) includes them — the annotations disambiguate.
+          sentAsTeacher: sql<number>`count(*) filter (where ${notes.origin} = 'teacher')::int`,
+          selfNotes: sql<number>`count(*) filter (where ${notes.origin} = 'self')::int`,
+        })
         .from(notes)
         .where(and(eq(notes.teacherId, id), eq(notes.status, "sent")));
       const [received] = await db
@@ -676,8 +719,18 @@ export function adminNotesRouter(deps: Deps): Router {
         },
         links: { asTeacher: linksAsTeacher, asStudent: linksAsStudent },
         invitesIssued,
-        lessons: { count: lessonCount?.count ?? 0, recentPieceLabels },
-        notes: { sent: sent?.count ?? 0, received: received?.count ?? 0 },
+        lessons: {
+          count: lessonCount?.count ?? 0,
+          recordedAsTeacher: lessonCount?.recordedAsTeacher ?? 0,
+          recordedAsSelf: lessonCount?.recordedAsSelf ?? 0,
+          recentPieceLabels,
+        },
+        notes: {
+          sent: sent?.count ?? 0,
+          received: received?.count ?? 0,
+          sentAsTeacher: sent?.sentAsTeacher ?? 0,
+          selfNotes: sent?.selfNotes ?? 0,
+        },
         access,
       });
     }),

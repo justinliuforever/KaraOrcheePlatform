@@ -136,7 +136,12 @@ export default function NotesActivitySheet({ userId, onClose }: { userId: string
             ))}
           </PanelSection>
 
-          <PanelSection title="Lessons taught" badge={`${d.lessons.count}`}>
+          <PanelSection title="Lessons recorded" badge={`${d.lessons.count}`}>
+            {d.lessons.count > 0 && (
+              <p className="mb-2 text-xs text-ink-soft tabular-nums">
+                {d.lessons.recordedAsTeacher} as teacher · {d.lessons.recordedAsSelf} self-recorded
+              </p>
+            )}
             {d.lessons.recentPieceLabels.length === 0 ? (
               <p className="text-xs text-ink-faint">No lessons recorded.</p>
             ) : (
@@ -154,7 +159,11 @@ export default function NotesActivitySheet({ userId, onClose }: { userId: string
             <div className="flex gap-8">
               <div>
                 <p className="text-[11px] text-ink-faint">sent as teacher</p>
-                <p className="text-lg font-semibold tabular-nums">{d.notes.sent}</p>
+                <p className="text-lg font-semibold tabular-nums">{d.notes.sentAsTeacher}</p>
+              </div>
+              <div>
+                <p className="text-[11px] text-ink-faint">self notes</p>
+                <p className="text-lg font-semibold tabular-nums">{d.notes.selfNotes}</p>
               </div>
               <div>
                 <p className="text-[11px] text-ink-faint">received as student</p>

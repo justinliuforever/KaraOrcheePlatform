@@ -6,12 +6,15 @@ import {
 
 const CONTAINER = "notes-assets"; // durable: transcripts survive the 90d lesson-audio delete
 
-// Read-only access to the durable notes-assets container. Today the sole caller is
-// the break-glass transcript viewer in the Notes admin console. Connection-string /
-// shared-key auth only (project rule: never credential-based — avoids token expiry).
+// Access to the durable notes-assets container: the break-glass transcript viewer
+// reads, and account deletion purges (transcripts outlive the 90d audio lifecycle,
+// so "full erase" must delete them explicitly). Connection-string / shared-key auth
+// only (project rule: never credential-based — avoids token expiry).
 export interface NotesAssetsStore {
   // Parsed transcript JSON, or null when the blob is absent.
   readTranscript(path: string): Promise<unknown | null>;
+  // Idempotent: deleting an absent blob is a no-op.
+  deleteAsset(path: string): Promise<void>;
 }
 
 function parseConnectionString(cs: string): { accountName: string; accountKey: string } {
@@ -47,6 +50,9 @@ export function createBlobNotesAssetsStore(connectionString: string): NotesAsset
         if (err instanceof RestError && err.statusCode === 404) return null;
         throw err;
       }
+    },
+    async deleteAsset(path) {
+      await container.getBlockBlobClient(path).deleteIfExists();
     },
   };
 }

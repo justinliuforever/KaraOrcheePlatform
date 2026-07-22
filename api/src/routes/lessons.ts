@@ -4,6 +4,7 @@ import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireUser, userAudit } from "../notes/user";
+import { notesAccess } from "../notes/entitlement";
 import { lessonSessions, noteJobs, notes, pieces, teacherStudentLinks } from "../db/schema";
 
 const MAX_AUDIO_BYTES = 200 * 1024 * 1024; // ~6h at 64kbps; anything bigger is a client bug
@@ -19,8 +20,8 @@ export function lessonsRouter(deps: Deps): Router {
     ...guards,
     wrap(async (req, res) => {
       const me = req.notesUser!;
-      if (!me.isTeacher) {
-        res.status(403).json({ error: "teacher_only" });
+      if (!me.isTeacher && !me.isStudent) {
+        res.status(403).json({ error: "notes_role_required" });
         return;
       }
       if (!deps.lessons) {
@@ -29,6 +30,9 @@ export function lessonsRouter(deps: Deps): Router {
       }
       const db = deps.db!.orm;
       const body = req.body ?? {};
+      // Snapshot of who held the phone; teacher wins for dual-role accounts. Never
+      // re-derived later — a role granted after the fact must not rewrite history.
+      const ownerRole = me.isTeacher ? "teacher" : "student";
       const pieceId = typeof body.pieceId === "string" ? body.pieceId : null;
       const pieceLabel = typeof body.pieceLabel === "string" && body.pieceLabel.trim()
         ? body.pieceLabel.trim()
@@ -36,8 +40,9 @@ export function lessonsRouter(deps: Deps): Router {
       const studentId = typeof body.studentId === "string" ? body.studentId : null;
       const clientLessonId = typeof body.clientLessonId === "string" ? body.clientLessonId : null;
 
-      // Idempotent create: a retried outbox POST with the same client id returns the
-      // existing row (+ a fresh SAS) instead of a duplicate orphan.
+      // Idempotent create FIRST — before any gate: a retried outbox POST for a row
+      // that already exists must return it even if the trial lapsed in between
+      // (mirrors submit ordering 409-before-402), never paywall an existing row.
       if (clientLessonId) {
         const [dup] = await db
           .select()
@@ -49,6 +54,24 @@ export function lessonsRouter(deps: Deps): Router {
             lesson: dup,
             uploadUrl: dup.audioPath ? deps.lessons.uploadUrl(dup.audioPath) : null,
           });
+          return;
+        }
+      }
+
+      if (ownerRole === "student") {
+        // Solo recordings are always the recorder's own; the paywall moment is
+        // create (UX) — submit re-checks as the cost guarantee. Dormant in beta.
+        if (studentId) {
+          res.status(400).json({ error: "solo_lesson_no_student" });
+          return;
+        }
+        if (body.attested !== true) {
+          res.status(400).json({ error: "attestation_required", message: "Confirm your teacher knows this lesson is being recorded." });
+          return;
+        }
+        const access = await notesAccess(deps, me);
+        if (access.status === "lapsed") {
+          res.status(402).json({ error: "entitlement_required", access });
           return;
         }
       }
@@ -82,6 +105,7 @@ export function lessonsRouter(deps: Deps): Router {
         .insert(lessonSessions)
         .values({
           teacherId: me.id,
+          ownerRole,
           clientLessonId,
           studentId,
           pieceId,
@@ -154,6 +178,15 @@ export function lessonsRouter(deps: Deps): Router {
         res.status(409).json({ error: "already_submitted" });
         return;
       }
+      // The ASR+LLM cost moment: solo submissions re-check entitlement even though
+      // create already did — the trial can lapse between recording and sending.
+      if (lesson.ownerRole === "student") {
+        const access = await notesAccess(deps, me);
+        if (access.status === "lapsed") {
+          res.status(402).json({ error: "entitlement_required", access });
+          return;
+        }
+      }
       const props = await deps.lessons.audioProps(lesson.audioPath!);
       if (!props || props.bytes === 0) {
         res.status(409).json({ error: "audio_missing", message: "The recording upload has not finished — retry in a moment." });
@@ -199,17 +232,24 @@ export function lessonsRouter(deps: Deps): Router {
     }),
   );
 
-  // Teacher home poll: lessons + their latest job + note ids, newest first.
+  // Home poll (feeds the teacher home AND the student recordings shelf): lessons +
+  // their latest job + note ids, newest first. ownerRole filter keeps a dual-role
+  // account's solo recordings out of its teacher pipeline and vice versa.
   router.get(
     "/v1/lessons",
     ...guards,
     wrap(async (req, res) => {
       const me = req.notesUser!;
       const db = deps.db!.orm;
+      const conds = [eq(lessonSessions.teacherId, me.id), sql`${lessonSessions.status} <> 'canceled'`];
+      const ownerRole = typeof req.query.ownerRole === "string" ? req.query.ownerRole : undefined;
+      if (ownerRole === "teacher" || ownerRole === "student") {
+        conds.push(eq(lessonSessions.ownerRole, ownerRole));
+      }
       const rows = await db
         .select()
         .from(lessonSessions)
-        .where(and(eq(lessonSessions.teacherId, me.id), sql`${lessonSessions.status} <> 'canceled'`))
+        .where(and(...conds))
         .orderBy(desc(lessonSessions.createdAt))
         .limit(100);
       const ids = rows.map((r) => r.id);

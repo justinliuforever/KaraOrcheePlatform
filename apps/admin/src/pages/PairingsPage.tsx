@@ -18,6 +18,7 @@ import UserPicker from "../components/UserPicker";
 import NotesActivitySheet from "../components/NotesActivitySheet";
 import { timeAgo } from "../studio/gateInfo";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui-kit/badge";
 import { Button } from "@/components/ui-kit/button";
 import { Card } from "@/components/ui-kit/card";
 import { Input } from "@/components/ui-kit/input";
@@ -367,7 +368,7 @@ function InvitesTab({ onOpenActivity }: { onOpenActivity: (id: string) => void }
       <div className="mb-4 flex items-center gap-3 flex-wrap">
         <Input
           className="w-72"
-          placeholder="Search issuing teacher email / name…"
+          placeholder="Search issuer email / name…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -393,7 +394,8 @@ function InvitesTab({ onOpenActivity }: { onOpenActivity: (id: string) => void }
             <TableHeader>
               <TableRow>
                 <TableHead className={thCls}>Code</TableHead>
-                <TableHead className={thCls}>Teacher</TableHead>
+                <TableHead className={thCls}>Issuer</TableHead>
+                <TableHead className={thCls}>Direction</TableHead>
                 <TableHead className={thCls}>State</TableHead>
                 <TableHead className={`${thCls} text-right`}>Used</TableHead>
                 <TableHead className={thCls}>Expires</TableHead>
@@ -406,6 +408,11 @@ function InvitesTab({ onOpenActivity }: { onOpenActivity: (id: string) => void }
                   <TableCell className="px-4 py-2.5 font-mono text-sm">{inv.code}</TableCell>
                   <TableCell className="px-4 py-2.5">
                     <PartyCell email={inv.teacherEmail} name={inv.teacherName} id={inv.teacherId} onOpen={onOpenActivity} />
+                  </TableCell>
+                  <TableCell className="px-4 py-2.5">
+                    <Badge variant="outline" className="font-normal text-ink-soft">
+                      {inv.direction === "student_to_teacher" ? "student → teacher" : "teacher → student"}
+                    </Badge>
                   </TableCell>
                   <TableCell className="px-4 py-2.5">
                     <ToneBadge tone={inviteTone[inv.state] ?? "muted"}>{inv.state}</ToneBadge>
@@ -434,10 +441,10 @@ function InvitesTab({ onOpenActivity }: { onOpenActivity: (id: string) => void }
               ))}
               {query.data.items.length === 0 && (
                 <TableRow className="hover:bg-transparent">
-                  <TableCell className="px-4 py-10 text-center whitespace-normal" colSpan={6}>
+                  <TableCell className="px-4 py-10 text-center whitespace-normal" colSpan={7}>
                     <p className="text-sm font-medium text-ink">No invites found</p>
                     <p className="text-sm text-ink-soft mt-1">
-                      Teachers generate invite codes in the app to link students.
+                      Invite codes appear when a teacher or student generates one in the app.
                     </p>
                   </TableCell>
                 </TableRow>

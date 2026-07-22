@@ -68,7 +68,9 @@ export function usersRouter(deps: Deps): Router {
         .from(notes)
         .where(and(eq(notes.studentId, user.id), eq(notes.status, "sent"), isNull(notes.readAt)));
 
-      res.status(200).json({ ...user, access, unreadNotes: unread?.count ?? 0 });
+      // canRecord lets the app warn a lapsed student BEFORE they record two hours
+      // of audio (the hard 402 still lives at lesson create/submit).
+      res.status(200).json({ ...user, access, canRecord: access.status !== "lapsed", unreadNotes: unread?.count ?? 0 });
     }),
   );
 
@@ -89,12 +91,22 @@ export function usersRouter(deps: Deps): Router {
       const db = deps.db!.orm;
       const me = req.notesUser!;
 
-      // Collect this user's own lesson audio to purge from blob after the tx commits.
+      // Collect this user's own lesson audio AND transcript derivatives to purge
+      // from blob after the tx commits — transcripts live in the durable container
+      // (no lifecycle rule), so "full erase" must delete them explicitly.
       const myLessons = await db
         .select({ id: lessonSessions.id, audioPath: lessonSessions.audioPath })
         .from(lessonSessions)
         .where(eq(lessonSessions.teacherId, me.id));
       const audioPaths = myLessons.map((l) => l.audioPath).filter((p): p is string => !!p);
+      const lessonIdsForAssets = myLessons.map((l) => l.id);
+      const myJobs = lessonIdsForAssets.length
+        ? await db
+            .select({ transcriptPath: noteJobs.transcriptPath })
+            .from(noteJobs)
+            .where(inArray(noteJobs.lessonSessionId, lessonIdsForAssets))
+        : [];
+      const transcriptPaths = myJobs.map((j) => j.transcriptPath).filter((p): p is string => !!p);
 
       await db.transaction(async (tx) => {
         // End every relationship on both sides.
@@ -127,9 +139,16 @@ export function usersRouter(deps: Deps): Router {
           await tx.delete(noteAnnotations).where(inArray(noteAnnotations.noteId, draftIds));
           await tx.delete(notes).where(inArray(notes.id, draftIds));
         }
-        // Lessons + their jobs are the teacher's private capture — remove entirely.
+        // Lessons + their jobs are the recorder's private capture — remove entirely.
+        // Surviving SENT notes to other students still reference them: detach those
+        // refs first (the tombstone contract — the note outlives its provenance) or
+        // the NO ACTION FKs abort the whole transaction with a 500.
         const lessonIds = myLessons.map((l) => l.id);
         if (lessonIds.length) {
+          await tx
+            .update(notes)
+            .set({ noteJobId: null, lessonSessionId: null, updatedAt: sql`now()` })
+            .where(inArray(notes.lessonSessionId, lessonIds));
           await tx.delete(noteJobs).where(inArray(noteJobs.lessonSessionId, lessonIds));
           await tx.delete(lessonSessions).where(inArray(lessonSessions.id, lessonIds));
         }
@@ -160,6 +179,15 @@ export function usersRouter(deps: Deps): Router {
             await deps.lessons.deleteAudio(path);
           } catch (err) {
             console.error("account.delete: audio purge failed", path, err);
+          }
+        }
+      }
+      if (deps.notesAssets) {
+        for (const path of transcriptPaths) {
+          try {
+            await deps.notesAssets.deleteAsset(path);
+          } catch (err) {
+            console.error("account.delete: transcript purge failed", path, err);
           }
         }
       }

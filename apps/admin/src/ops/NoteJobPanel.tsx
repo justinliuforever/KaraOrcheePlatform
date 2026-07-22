@@ -15,6 +15,7 @@ import {
 } from "../api";
 import { ErrorNote, PanelSection, Spinner } from "../components/ui";
 import StatusTag from "../components/StatusTag";
+import ToneBadge from "../components/ToneBadge";
 import SlideOver from "../components/SlideOver";
 import { Button } from "@/components/ui-kit/button";
 import { Label } from "@/components/ui-kit/label";
@@ -185,8 +186,13 @@ export default function NoteJobPanel({ id, onClose }: { id: string; onClose: () 
 
           <PanelSection title="Lesson" defaultOpen>
             <div className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-              <span className="text-xs text-ink-faint pt-0.5">Teacher</span>
-              <span>{person(lesson?.teacher ?? null)}</span>
+              <span className="text-xs text-ink-faint pt-0.5">Recorder</span>
+              <span className="flex items-center gap-1.5">
+                {person(lesson?.owner ?? null)}
+                {lesson && (
+                  <ToneBadge tone={lesson.ownerRole === "teacher" ? "ok" : "muted"}>{lesson.ownerRole}</ToneBadge>
+                )}
+              </span>
               <span className="text-xs text-ink-faint pt-0.5">Student</span>
               <span>{person(lesson?.student ?? null)}</span>
               <span className="text-xs text-ink-faint pt-0.5">Piece</span>

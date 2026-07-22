@@ -19,16 +19,26 @@ export function notesRouter(deps: Deps): Router {
   const guards = [requireAuth(deps.auth), requireUser(deps)];
 
   // ── Teacher side ──────────────────────────────────────────────────────────────
+  // Every teacher-side surface is HARD-scoped to origin='teacher' AND isTeacher:
+  // a dual-role account's solo self-notes (teacher_id = student_id = them) must
+  // never surface in review/retract/duplicate — they live exclusively behind
+  // /v1/me/notes — and a pure-student token gets 403, never an empty-but-real list.
+  const requireTeacher = (me: { isTeacher: boolean }, res: { status(n: number): { json(b: unknown): unknown } }): boolean => {
+    if (me.isTeacher) return true;
+    res.status(403).json({ error: "teacher_only" });
+    return false;
+  };
 
   router.get(
     "/v1/notes",
     ...guards,
     wrap(async (req, res) => {
       const me = req.notesUser!;
+      if (!requireTeacher(me, res)) return;
       const db = deps.db!.orm;
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
       const studentId = typeof req.query.studentId === "string" ? req.query.studentId : undefined;
-      const conds = [eq(notes.teacherId, me.id)];
+      const conds = [eq(notes.teacherId, me.id), eq(notes.origin, "teacher")];
       if (status) conds.push(eq(notes.status, status));
       if (studentId) conds.push(eq(notes.studentId, studentId));
       const rows = await db
@@ -46,11 +56,12 @@ export function notesRouter(deps: Deps): Router {
     ...guards,
     wrap(async (req, res) => {
       const me = req.notesUser!;
+      if (!requireTeacher(me, res)) return;
       const db = deps.db!.orm;
       const [note] = await db
         .select()
         .from(notes)
-        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id)))
+        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id), eq(notes.origin, "teacher")))
         .limit(1);
       if (!note) {
         res.status(404).json({ error: "not_found" });
@@ -72,11 +83,12 @@ export function notesRouter(deps: Deps): Router {
     ...guards,
     wrap(async (req, res) => {
       const me = req.notesUser!;
+      if (!requireTeacher(me, res)) return;
       const db = deps.db!.orm;
       const [note] = await db
         .select()
         .from(notes)
-        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id)))
+        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id), eq(notes.origin, "teacher")))
         .limit(1);
       if (!note) {
         res.status(404).json({ error: "not_found" });
@@ -182,11 +194,12 @@ export function notesRouter(deps: Deps): Router {
     ...guards,
     wrap(async (req, res) => {
       const me = req.notesUser!;
+      if (!requireTeacher(me, res)) return;
       const db = deps.db!.orm;
       const [note] = await db
         .select()
         .from(notes)
-        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id)))
+        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id), eq(notes.origin, "teacher")))
         .limit(1);
       if (!note) {
         res.status(404).json({ error: "not_found" });
@@ -247,11 +260,17 @@ export function notesRouter(deps: Deps): Router {
     ...guards,
     wrap(async (req, res) => {
       const me = req.notesUser!;
+      if (!requireTeacher(me, res)) return;
       const db = deps.db!.orm;
       const [updated] = await db
         .update(notes)
         .set({ status: "retracted", retractedAt: sql`now()`, updatedAt: sql`now()` })
-        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id), eq(notes.status, "sent")))
+        .where(and(
+          eq(notes.id, String(req.params.id)),
+          eq(notes.teacherId, me.id),
+          eq(notes.origin, "teacher"),
+          eq(notes.status, "sent"),
+        ))
         .returning();
       if (!updated) {
         res.status(409).json({ error: "not_retractable" });
@@ -269,11 +288,12 @@ export function notesRouter(deps: Deps): Router {
     ...guards,
     wrap(async (req, res) => {
       const me = req.notesUser!;
+      if (!requireTeacher(me, res)) return;
       const db = deps.db!.orm;
       const [note] = await db
         .select()
         .from(notes)
-        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id)))
+        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id), eq(notes.origin, "teacher")))
         .limit(1);
       if (!note) {
         res.status(404).json({ error: "not_found" });
@@ -339,7 +359,9 @@ export function notesRouter(deps: Deps): Router {
         .where(and(eq(notes.studentId, me.id), inArray(notes.status, ["sent", "retracted"])))
         .orderBy(desc(notes.sentAt));
       const visible = rows.filter((n) => n.status === "sent" || n.readAt !== null);
-      const teacherIds = [...new Set(visible.map((n) => n.teacherId))];
+      // Self-notes never resolve a teacher identity: the author IS the student and
+      // the app renders "your recording", not a name.
+      const teacherIds = [...new Set(visible.filter((n) => n.origin !== "self").map((n) => n.teacherId))];
       const teacherRows = teacherIds.length
         ? await db.select().from(users).where(inArray(users.id, teacherIds))
         : [];
@@ -364,8 +386,9 @@ export function notesRouter(deps: Deps): Router {
           return {
             id: n.id,
             status: n.status,
+            origin: n.origin,
             teacherId: n.teacherId,
-            teacherName: teacherRows.find((u) => u.id === n.teacherId)?.displayName ?? null,
+            teacherName: n.origin === "self" ? null : teacherRows.find((u) => u.id === n.teacherId)?.displayName ?? null,
             pieceId: n.pieceId,
             pieceLabel: n.pieceLabel,
             pieceVersion: n.pieceVersion,
@@ -411,12 +434,48 @@ export function notesRouter(deps: Deps): Router {
         .from(noteAnnotations)
         .where(eq(noteAnnotations.noteId, note.id))
         .orderBy(asc(noteAnnotations.idx));
-      const [teacher] = await db.select().from(users).where(eq(users.id, note.teacherId)).limit(1);
+      // MC-6: a self-note's "teacher" is the student themselves — never byline it.
+      const [teacher] = note.origin === "self"
+        ? [null]
+        : await db.select().from(users).where(eq(users.id, note.teacherId)).limit(1);
       res.json({
-        note,
+        // Tombstoned notes (author deleted their account) carry null job/lesson
+        // refs — coalesce to "" because fielded B1 clients decode these as
+        // non-optional strings and a null (or absent) key bricks the note forever.
+        note: { ...note, noteJobId: note.noteJobId ?? "", lessonSessionId: note.lessonSessionId ?? "" },
         annotations,
         teacher: { id: note.teacherId, displayName: teacher?.displayName ?? null },
       });
+    }),
+  );
+
+  // A solo note is the owner's own data end to end — deletable outright (no second
+  // party holds a copy). Teacher-sent notes are the shared record and stay.
+  router.delete(
+    "/v1/me/notes/:id",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      const [note] = await db
+        .select()
+        .from(notes)
+        .where(and(eq(notes.id, String(req.params.id)), eq(notes.studentId, me.id)))
+        .limit(1);
+      if (!note) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (note.origin !== "self") {
+        res.status(403).json({ error: "self_note_only", message: "Notes from your teacher can't be deleted." });
+        return;
+      }
+      await db.transaction(async (tx) => {
+        await tx.delete(noteAnnotations).where(eq(noteAnnotations.noteId, note.id));
+        await tx.delete(notes).where(eq(notes.id, note.id));
+      });
+      await userAudit(deps, req, "note.self_delete", { type: "note", id: note.id });
+      res.json({ ok: true });
     }),
   );
 

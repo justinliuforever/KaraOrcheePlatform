@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "uq_note_self_per_job" ON "notes" USING btree ("note_job_id") WHERE "notes"."origin" = 'self';

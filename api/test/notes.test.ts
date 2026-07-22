@@ -372,13 +372,13 @@ describe("invites", () => {
     invS = await makeUser({ oid: "inv-student", name: "Invite Student" });
   });
 
-  it("create is teacher-only", async () => {
+  it("create requires a Notes role; teacher mint is teacher_to_student", async () => {
     const forbidden = await request(makeApp())
       .post("/v1/invites")
       .set("Authorization", `Bearer ${invS.token}`)
       .send({});
     expect(forbidden.status).toBe(403);
-    expect(forbidden.body.error).toBe("teacher_only");
+    expect(forbidden.body.error).toBe("notes_role_required");
 
     const ok = await request(makeApp())
       .post("/v1/invites")
@@ -386,6 +386,7 @@ describe("invites", () => {
       .send({});
     expect(ok.status).toBe(201);
     expect(typeof ok.body.code).toBe("string");
+    expect(ok.body.direction).toBe("teacher_to_student");
     inviteA = { id: ok.body.id, code: ok.body.code };
   });
 
@@ -564,13 +565,28 @@ describe("roster", () => {
 // ── 5. Lessons ─────────────────────────────────────────────────────────────────────
 
 describe("lessons", () => {
-  it("POST is teacher-only", async () => {
-    const res = await request(makeApp())
+  it("POST requires a Notes role; solo student path validates its own contract", async () => {
+    const noRole = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${stranger.token}`)
+      .send({});
+    expect(noRole.status).toBe(403);
+    expect(noRole.body.error).toBe("notes_role_required");
+
+    // Solo recordings are always the recorder's own and must be attested.
+    const withStudent = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${student.token}`)
+      .send({ studentId: teacher.id, attested: true });
+    expect(withStudent.status).toBe(400);
+    expect(withStudent.body.error).toBe("solo_lesson_no_student");
+
+    const unattested = await request(makeApp())
       .post("/v1/lessons")
       .set("Authorization", `Bearer ${student.token}`)
       .send({});
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe("teacher_only");
+    expect(unattested.status).toBe(400);
+    expect(unattested.body.error).toBe("attestation_required");
   });
 
   it("rejects an unknown pieceId and an unlinked studentId", async () => {
@@ -787,7 +803,7 @@ describe("lessons", () => {
 // ── 6. Notes: teacher flow ──────────────────────────────────────────────────────────
 
 describe("notes: teacher flow", () => {
-  it("list and detail are scoped to the owning teacher; strangers get 404", async () => {
+  it("list and detail are scoped to the owning teacher; non-teachers 403, other teachers 404", async () => {
     const { note } = await seedNote({ teacherId: teacher.id, pieceId: "seed_piece" });
     const list = await request(makeApp()).get("/v1/notes").set("Authorization", `Bearer ${teacher.token}`);
     expect(list.status).toBe(200);
@@ -799,9 +815,16 @@ describe("notes: teacher flow", () => {
     expect(detail.status).toBe(200);
     expect(detail.body.annotations.length).toBe(2);
 
-    const forbidden = await request(makeApp())
+    const noRole = await request(makeApp())
       .get(`/v1/notes/${note.id}`)
       .set("Authorization", `Bearer ${stranger.token}`);
+    expect(noRole.status).toBe(403);
+    expect(noRole.body.error).toBe("teacher_only");
+
+    const otherTeacher = await makeUser({ oid: "scoping-other-teacher", role: "teacher" });
+    const forbidden = await request(makeApp())
+      .get(`/v1/notes/${note.id}`)
+      .set("Authorization", `Bearer ${otherTeacher.token}`);
     expect(forbidden.status).toBe(404);
   });
 

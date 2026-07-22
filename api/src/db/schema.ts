@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   uuid,
@@ -8,6 +9,8 @@ import {
   timestamp,
   primaryKey,
   unique,
+  uniqueIndex,
+  check,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
@@ -201,12 +204,17 @@ export const teacherStudentLinks = pgTable(
   (t) => [unique("uq_link_pair").on(t.teacherId, t.studentId)],
 );
 
-// Teacher-generated linking codes (no global user search exists by design — minors).
-// The code may be redeemed by a student who signs up AFTER it was issued.
+// Linking codes (no global user search exists by design — minors). teacherId is
+// the ISSUER: the teacher on a teacher_to_student code, the student on a
+// student_to_teacher one (a solo student inviting their teacher in). The code may
+// be redeemed by someone who signs up AFTER it was issued. For reverse codes the
+// issuing student's recording consent is captured at MINT (createdAt is the
+// consent timestamp) — the redeeming teacher only acknowledges.
 export const invites = pgTable("invites", {
   id: uuid("id").primaryKey().defaultRandom(),
   code: text("code").notNull().unique(), // 6-char Crockford base32, no ambiguous chars
   teacherId: uuid("teacher_id").notNull().references(() => users.id),
+  direction: text("direction").notNull().default("teacher_to_student"), // teacher_to_student | student_to_teacher
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   maxUses: integer("max_uses").notNull().default(1),
   usedCount: integer("used_count").notNull().default(0),
@@ -215,13 +223,19 @@ export const invites = pgTable("invites", {
   sentToEmail: text("sent_to_email"),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  check("ck_invite_direction", sql`${t.direction} IN ('teacher_to_student', 'student_to_teacher')`),
+]);
 
 // One recorded lesson. The row is created at SEND time (recording is fully local
 // and offline-first); piece/student stay nullable — both are fixable at review.
+// teacherId is the RECORDER/owner (the student themselves on a solo recording);
+// owner_role snapshots who held the phone at create and is never re-derived from
+// the grow-only role flags — a later role grant must not rewrite history.
 export const lessonSessions = pgTable("lesson_sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
   teacherId: uuid("teacher_id").notNull().references(() => users.id),
+  ownerRole: text("owner_role").notNull().default("teacher"), // teacher | student
   // Client-chosen idempotency key (the app's local session UUID): a lost create
   // response must not double-create when the outbox retries. NULLs never collide.
   clientLessonId: text("client_lesson_id"),
@@ -239,7 +253,10 @@ export const lessonSessions = pgTable("lesson_sessions", {
   status: text("status").notNull().default("created"), // created | submitted | canceled
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [unique("uq_lesson_client_id").on(t.teacherId, t.clientLessonId)]);
+}, (t) => [
+  unique("uq_lesson_client_id").on(t.teacherId, t.clientLessonId),
+  check("ck_lesson_owner_role", sql`${t.ownerRole} IN ('teacher', 'student')`),
+]);
 
 // One ASR+LLM run per submitted lesson. Worker owns status/stage; SB message is
 // {jobId, reqId} only — this row is the source of truth (idempotent redelivery).
@@ -261,12 +278,17 @@ export const noteJobs = pgTable("note_jobs", {
 // A note delivered (or to be delivered) to ONE student. Group lessons duplicate the
 // reviewed note per student. No in-place edit after send: retract + duplicate + resend
 // (superseded_by chains versions) so the student always holds one truthful copy.
+// teacherId is the AUTHOR; origin='self' marks a solo student's note where
+// teacher_id = student_id = owner (born 'sent', never reviewed, invisible to every
+// teacher-side surface). job/lesson refs go null when the author deletes their
+// account and the sent note survives as the student's tombstoned record.
 export const notes = pgTable("notes", {
   id: uuid("id").primaryKey().defaultRandom(),
-  noteJobId: uuid("note_job_id").notNull().references(() => noteJobs.id),
-  lessonSessionId: uuid("lesson_session_id").notNull().references(() => lessonSessions.id),
+  noteJobId: uuid("note_job_id").references(() => noteJobs.id),
+  lessonSessionId: uuid("lesson_session_id").references(() => lessonSessions.id),
   teacherId: uuid("teacher_id").notNull().references(() => users.id),
   studentId: uuid("student_id").references(() => users.id), // nullable until assigned
+  origin: text("origin").notNull().default("teacher"), // teacher | self
   pieceId: text("piece_id").references(() => pieces.id),
   pieceLabel: text("piece_label"),
   // Anchors pin to the piece version live at send — republish can renumber measures.
@@ -281,7 +303,13 @@ export const notes = pgTable("notes", {
   readAt: timestamp("read_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  check("ck_note_origin", sql`${t.origin} IN ('teacher', 'self')`),
+  // Airtight backstop for the worker's solo insert-guard: a deploy-drain window
+  // can run two workers on the same delivery (draining ACA replica steals SB
+  // messages) — the race loser hits this instead of double-inserting.
+  uniqueIndex("uq_note_self_per_job").on(t.noteJobId).where(sql`${t.origin} = 'self'`),
+]);
 
 // Annotations are rows (not embedded JSON): per-item student done_at and future
 // FOLLOW practice receipts attach here. Quotes are verbatim transcript evidence —

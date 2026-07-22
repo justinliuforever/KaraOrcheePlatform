@@ -693,15 +693,18 @@ export interface NoteLink {
 }
 
 export type InviteState = "active" | "expired" | "exhausted" | "revoked";
+export type InviteDirection = "teacher_to_student" | "student_to_teacher";
 
 export interface NoteInvite {
   id: string;
   code: string;
+  // Issuer of the code (named teacherId for compat; a student for reverse codes).
   teacherId: string;
   expiresAt: string;
   maxUses: number;
   usedCount: number;
   sentToEmail: string | null;
+  direction: InviteDirection;
   revokedAt: string | null;
   createdAt: string;
   teacherEmail: string | null;
@@ -745,6 +748,8 @@ export interface NotesAccess {
 }
 
 export type NoteJobStatus = "queued" | "processing" | "failed" | "ready_for_review";
+/** Who held the phone during the lesson: 'teacher' = taught lesson, 'student' = solo self-recording. */
+export type OwnerRole = "teacher" | "student";
 
 export interface NoteJobMetrics {
   asr_secs?: number;
@@ -773,16 +778,23 @@ export interface NoteJobRow {
   updatedAt: string;
   lessonSessionId: string;
   teacherId: string | null;
+  ownerRole: OwnerRole | null;
   pieceId: string | null;
   pieceLabel: string | null;
+  // teacherEmail/teacherName kept for compat; ownerEmail/ownerName = recorder identity.
   teacherEmail: string | null;
   teacherName: string | null;
+  ownerEmail: string | null;
+  ownerName: string | null;
   reqId: string | null;
 }
 
 export interface NoteJobsResponse {
   items: NoteJobRow[];
-  facets: { status: { value: string; count: number }[] };
+  facets: {
+    status: { value: string; count: number }[];
+    ownerRole: { value: string; count: number }[];
+  };
 }
 
 export interface NoteJobDetail {
@@ -805,6 +817,9 @@ export interface NoteJobDetail {
     status: string;
     teacherId: string;
     teacher: { id: string; email: string | null; displayName: string | null } | null;
+    ownerRole: OwnerRole;
+    // Recorder identity (alias of teacher — lesson.teacherId is the owner, solo included).
+    owner: { id: string; email: string | null; displayName: string | null } | null;
     studentId: string | null;
     student: { id: string; email: string | null; displayName: string | null } | null;
     pieceId: string | null;
@@ -870,8 +885,15 @@ export interface NotesActivity {
     createdAt: string;
     state: InviteState;
   }[];
-  lessons: { count: number; recentPieceLabels: string[] };
-  notes: { sent: number; received: number };
+  lessons: {
+    count: number;
+    recordedAsTeacher: number;
+    recordedAsSelf: number;
+    recentPieceLabels: string[];
+  };
+  // sent/received are unsplit totals (self notes count in both, since a self note
+  // has teacherId = studentId = owner); the annotations disambiguate.
+  notes: { sent: number; received: number; sentAsTeacher: number; selfNotes: number };
   access: NotesAccess;
 }
 
@@ -921,7 +943,7 @@ export function putMonetization(value: string | null): Promise<MonetizationConfi
 }
 
 // Note-jobs (Ops lane)
-export function listNoteJobs(params: { status?: string; stage?: string; q?: string }): Promise<NoteJobsResponse> {
+export function listNoteJobs(params: { status?: string; stage?: string; ownerRole?: string; q?: string }): Promise<NoteJobsResponse> {
   return api(`/admin/note-jobs${notesQs(params)}`);
 }
 export function getNoteJob(id: string): Promise<NoteJobDetail> {
