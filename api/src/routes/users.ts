@@ -52,6 +52,11 @@ export function usersRouter(deps: Deps): Router {
         if (!row.trialStartedAt) patch.trialStartedAt = sql`now()`;
       }
       if (body.notesConsent === true && !row.notesConsentAt) patch.notesConsentAt = sql`now()`;
+      // Optional studio/school from teacher sign-up. Write-once: sign-up sets it,
+      // nothing overwrites it (admin-only surface in beta — "Not shown publicly").
+      if (typeof body.organization === "string" && body.organization.trim() && !row.organization) {
+        patch.organization = body.organization.trim().slice(0, 200);
+      }
       let user = row;
       if (Object.keys(patch).length) {
         const updated = await deps.db.orm
@@ -164,6 +169,7 @@ export function usersRouter(deps: Deps): Router {
             email: null,
             displayName: null,
             entraOid: null,
+            organization: null,
             trialStartedAt: null,
             notesConsentAt: null,
             deletedAt: sql`now()`,

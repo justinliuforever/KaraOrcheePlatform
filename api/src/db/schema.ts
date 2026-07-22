@@ -16,6 +16,9 @@ import {
 
 // Deletion is soft (GDPR): erase scrubs email/display_name/entra_oid, keeps the row
 // so financial and referral history stays intact.
+// organization: optional studio/school line collected at teacher sign-up
+// (write-once via users/sync). Admin-only in beta — the sign-up copy promises
+// "Not shown publicly", so no student-facing payload may carry it (founder-gated).
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   entraOid: text("entra_oid").unique(),
@@ -29,6 +32,7 @@ export const users = pgTable("users", {
   // grantable only by an existing holder, never to yourself — enforced in the
   // roles PATCH, not the UI.
   canViewTranscripts: boolean("can_view_transcripts").notNull().default(false),
+  organization: text("organization"),
   status: text("status").notNull().default("active"), // active | deleted
   referredBy: uuid("referred_by").references((): AnyPgColumn => users.id),
   // Trial expiry is computed as max(trial_started_at, monetization_live_at) + 30d so

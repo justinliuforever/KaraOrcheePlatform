@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   createNoteLink,
+  getTrustWatch,
   listNoteInvites,
   listNoteLinks,
   removeNoteLink,
@@ -11,6 +12,7 @@ import {
   type AdminUser,
   type NoteInvite,
   type NoteLink,
+  type TrustWatchResponse,
 } from "../api";
 import { ErrorNote, PageHeader, Spinner, thCls } from "../components/ui";
 import ToneBadge from "../components/ToneBadge";
@@ -79,7 +81,8 @@ function fmtDate(iso: string | null): string {
 
 export default function PairingsPage() {
   const [params, setParams] = useSearchParams();
-  const tab = params.get("tab") === "invites" ? "invites" : "links";
+  const tabParam = params.get("tab");
+  const tab = tabParam === "invites" || tabParam === "watch" ? tabParam : "links";
   // Which account's activity sheet is open (opened from a teacher / student cell).
   const [activity, setActivity] = useState<string | null>(null);
 
@@ -96,15 +99,14 @@ export default function PairingsPage() {
           <TabsList>
             <TabsTrigger value="links">Links</TabsTrigger>
             <TabsTrigger value="invites">Invites</TabsTrigger>
+            <TabsTrigger value="watch">Watch</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
 
-      {tab === "links" ? (
-        <LinksTab onOpenActivity={setActivity} />
-      ) : (
-        <InvitesTab onOpenActivity={setActivity} />
-      )}
+      {tab === "links" && <LinksTab onOpenActivity={setActivity} />}
+      {tab === "invites" && <InvitesTab onOpenActivity={setActivity} />}
+      {tab === "watch" && <WatchTab onOpenActivity={setActivity} />}
 
       {activity && <NotesActivitySheet key={activity} userId={activity} onClose={() => setActivity(null)} />}
     </>
@@ -495,5 +497,93 @@ function RevokeInviteDialog({ target, onDone }: { target: NoteInvite | null; onD
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  );
+}
+
+// ── Watch ─────────────────────────────────────────────────────────────────────
+
+// Read-only in B1.5 — no action buttons by design: the list is derived live and
+// most entries are legitimate; outreach is a human emailing manually.
+function WatchTab({ onOpenActivity }: { onOpenActivity: (id: string) => void }) {
+  const query = useQuery<TrustWatchResponse, Error>({
+    queryKey: ["trust-watch"],
+    queryFn: getTrustWatch,
+  });
+
+  return (
+    <>
+      <p className="mb-4 text-sm text-ink-soft">
+        Teachers with processed lessons but no students yet. Most are just trying Notes out — reach
+        out kindly before anything else.
+      </p>
+
+      {query.isPending && <Spinner />}
+      {query.isError && <ErrorNote message={query.error.message} />}
+      {query.data && (
+        <Card className="overflow-hidden p-0 gap-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className={thCls}>Teacher</TableHead>
+                <TableHead className={thCls}>Organization</TableHead>
+                <TableHead className={thCls}>Signed up</TableHead>
+                <TableHead className={`${thCls} text-right`}>
+                  Lessons {query.data.windowDays}d
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {query.data.items.map((w) => (
+                <TableRow
+                  key={w.userId}
+                  className="cursor-pointer"
+                  onClick={() => onOpenActivity(w.userId)}
+                >
+                  <TableCell className="px-4 py-2.5">
+                    <span className="block text-sm font-medium">
+                      {w.email ?? <span className="text-ink-faint">—</span>}
+                    </span>
+                    {w.displayName && (
+                      <span className="block text-xs text-ink-faint">{w.displayName}</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="px-4 py-2.5 text-ink-soft">
+                    {w.organization ? (
+                      <span
+                        className="inline-block max-w-44 truncate align-bottom"
+                        title={w.organization}
+                      >
+                        {w.organization}
+                      </span>
+                    ) : (
+                      <span className="text-ink-faint">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="px-4 py-2.5 text-xs text-ink-soft tabular-nums">
+                    <span title={new Date(w.createdAt).toLocaleString()}>{fmtDate(w.createdAt)}</span>
+                  </TableCell>
+                  <TableCell className="px-4 py-2.5 text-right">
+                    <span className="inline-flex items-center gap-2">
+                      {w.highVolume && <ToneBadge tone="warn">High volume</ToneBadge>}
+                      <span className="text-sm tabular-nums">{w.lessons28d}</span>
+                    </span>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {query.data.items.length === 0 && (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell className="px-4 py-10 text-center whitespace-normal" colSpan={4}>
+                    <p className="text-sm font-medium text-ink">No one to watch</p>
+                    <p className="text-sm text-ink-soft mt-1">
+                      Every active teacher is connected to students.
+                    </p>
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
+    </>
   );
 }

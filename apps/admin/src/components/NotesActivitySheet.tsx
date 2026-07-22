@@ -56,6 +56,7 @@ export default function NotesActivitySheet({ userId, onClose }: { userId: string
           <div className="min-w-0">
             <p className="text-sm font-semibold truncate">{u?.email ?? "Notes activity"}</p>
             {u?.displayName && <p className="text-[11px] text-ink-faint truncate">{u.displayName}</p>}
+            {u?.organization && <p className="text-[11px] text-ink-faint truncate">{u.organization}</p>}
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {u?.isTeacher && <ToneBadge tone="ok">teacher</ToneBadge>}

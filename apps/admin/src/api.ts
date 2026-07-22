@@ -51,6 +51,9 @@ export interface AdminUser {
   entraOid: string | null;
   email: string | null;
   displayName: string | null;
+  // Optional self-reported studio/school from teacher sign-up. Admin-only context —
+  // never student-facing.
+  organization: string | null;
   isTeacher: boolean;
   isStudent: boolean;
   isAdmin: boolean;
@@ -850,6 +853,8 @@ export interface NotesActivity {
     id: string;
     email: string | null;
     displayName: string | null;
+    // Not in the server payload yet — renders in the sheet header once the API sends it.
+    organization?: string | null;
     isTeacher: boolean;
     isStudent: boolean;
     isAdmin: boolean;
@@ -921,6 +926,25 @@ export function listNoteInvites(q: string, state: string): Promise<{ items: Note
 }
 export function revokeNoteInvite(id: string): Promise<{ ok: boolean; invite: NoteInvite }> {
   return api(`/admin/notes/invites/${id}/revoke`, { method: "POST" });
+}
+
+// Pairings — teacher-trust watch. Read-only in B1.5: outreach is a human emailing
+// manually, so no mutation fetchers exist for this surface.
+export interface TrustWatchItem {
+  userId: string;
+  email: string | null;
+  displayName: string | null;
+  organization: string | null;
+  createdAt: string;
+  lessons28d: number;
+  highVolume: boolean;
+}
+export interface TrustWatchResponse {
+  items: TrustWatchItem[];
+  windowDays: number;
+}
+export function getTrustWatch(): Promise<TrustWatchResponse> {
+  return api("/admin/notes/trust/watch");
 }
 
 // Subscriptions — entitlements

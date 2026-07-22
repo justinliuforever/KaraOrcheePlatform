@@ -189,6 +189,8 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
               <Row label="User ID">
                 <span className="font-mono text-xs">{u.id}</span>
               </Row>
+              {/* Self-reported at teacher sign-up; admin-only context, no edit surface. */}
+              <Row label="Organization">{u.organization ?? "—"}</Row>
               <Row label="Entra OID">
                 <span className="font-mono text-xs">{u.entraOid ?? "— (scrubbed)"}</span>
               </Row>

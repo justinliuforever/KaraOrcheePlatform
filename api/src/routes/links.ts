@@ -6,7 +6,7 @@ import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireUser, userAudit } from "../notes/user";
 import { notesAccess } from "../notes/entitlement";
-import { invites, notes, teacherStudentLinks, users } from "../db/schema";
+import { invites, lessonSessions, noteAnnotations, notes, teacherStudentLinks, users } from "../db/schema";
 
 // No ambiguous chars (Crockford base32 minus vowel-lookalikes) — codes get read
 // aloud across a piano.
@@ -73,19 +73,55 @@ export function linksRouter(deps: Deps): Router {
     }),
   );
 
+  // Default = live codes only (B1 shape, untouched). include=history returns every
+  // code the caller ever minted with a derived state + resolved redeemers ("Code
+  // history: who redeemed what"). redeemedBy is a legacy array of user ids — no
+  // per-redemption timestamp exists, so redeemers carry identity only.
   router.get(
     "/v1/invites",
     ...guards,
     wrap(async (req, res) => {
       const me = req.notesUser!;
       const db = deps.db!.orm;
+      const history = req.query.include === "history";
       const rows = await db
         .select()
         .from(invites)
-        .where(and(eq(invites.teacherId, me.id), sql`${invites.revokedAt} IS NULL`))
+        .where(history
+          ? eq(invites.teacherId, me.id)
+          : and(eq(invites.teacherId, me.id), sql`${invites.revokedAt} IS NULL`))
         .orderBy(desc(invites.createdAt));
       const now = new Date();
-      res.json(rows.filter((r) => r.expiresAt > now && r.usedCount < r.maxUses));
+      if (!history) {
+        res.json(rows.filter((r) => r.expiresAt > now && r.usedCount < r.maxUses));
+        return;
+      }
+      const redeemerIds = [...new Set(rows.flatMap((r) => (Array.isArray(r.redeemedBy) ? (r.redeemedBy as string[]) : [])))];
+      const userRows = redeemerIds.length
+        ? await db
+            .select({ id: users.id, displayName: users.displayName, status: users.status })
+            .from(users)
+            .where(inArray(users.id, redeemerIds))
+        : [];
+      const byId = new Map(userRows.map((u) => [u.id, u]));
+      res.json(rows.map((r) => ({
+        ...r,
+        state: r.revokedAt
+          ? "revoked"
+          : r.usedCount >= r.maxUses
+            ? "used"
+            : r.expiresAt < now
+              ? "expired"
+              : "active",
+        redeemers: (Array.isArray(r.redeemedBy) ? (r.redeemedBy as string[]) : []).map((uid) => {
+          const u = byId.get(uid);
+          return {
+            userId: uid,
+            displayName: u?.status === "deleted" ? null : u?.displayName ?? null,
+            deleted: u?.status === "deleted",
+          };
+        }),
+      })));
     }),
   );
 
@@ -226,6 +262,9 @@ export function linksRouter(deps: Deps): Router {
     }),
   );
 
+  // include=removed adds ended links (Past students): status/removedAt flow, and
+  // counterpartDeleted marks a scrubbed account so the UI shows a placeholder
+  // instead of a null-name row. Email stays OFF the list (founder: detail only).
   router.get(
     "/v1/me/students",
     ...guards,
@@ -236,10 +275,16 @@ export function linksRouter(deps: Deps): Router {
         return;
       }
       const db = deps.db!.orm;
+      const includeRemoved = req.query.include === "removed";
       const links = await db
         .select()
         .from(teacherStudentLinks)
-        .where(and(eq(teacherStudentLinks.teacherId, me.id), eq(teacherStudentLinks.status, "active")))
+        .where(and(
+          eq(teacherStudentLinks.teacherId, me.id),
+          includeRemoved
+            ? inArray(teacherStudentLinks.status, ["active", "removed"])
+            : eq(teacherStudentLinks.status, "active"),
+        ))
         .orderBy(desc(teacherStudentLinks.createdAt));
       const studentIds = links.map((l) => l.studentId);
       const studentRows = studentIds.length
@@ -256,18 +301,54 @@ export function linksRouter(deps: Deps): Router {
             .groupBy(notes.studentId)
         : [];
       const lastByStudent = new Map(lastNotes.map((r) => [r.studentId, r.lastSentAt]));
+      const lastLessons = studentIds.length
+        ? await db
+            .select({
+              studentId: lessonSessions.studentId,
+              lastAt: sql<string>`max(coalesce(${lessonSessions.startedAt}, ${lessonSessions.createdAt}))`,
+            })
+            .from(lessonSessions)
+            .where(and(
+              eq(lessonSessions.teacherId, me.id),
+              inArray(lessonSessions.studentId, studentIds),
+              sql`${lessonSessions.status} <> 'canceled'`,
+            ))
+            .groupBy(lessonSessions.studentId)
+        : [];
+      const lessonByStudent = new Map(lastLessons.map((r) => [r.studentId, r.lastAt]));
+      const practiced = studentIds.length
+        ? await db
+            .select({
+              studentId: notes.studentId,
+              total: sql<number>`count(${noteAnnotations.id})::int`,
+              done: sql<number>`count(${noteAnnotations.doneAt})::int`,
+            })
+            .from(noteAnnotations)
+            .innerJoin(notes, eq(noteAnnotations.noteId, notes.id))
+            .where(and(eq(notes.teacherId, me.id), eq(notes.status, "sent"), inArray(notes.studentId, studentIds)))
+            .groupBy(notes.studentId)
+        : [];
+      const practicedByStudent = new Map(practiced.map((r) => [r.studentId, r]));
       const items = await Promise.all(
         links.map(async (l) => {
           const student = studentRows.find((u) => u.id === l.studentId);
           // Delivery capability, deliberately NOT billing wording — the teacher
           // never sees a family's payment state.
-          const access = student ? await notesAccess(deps, student) : null;
+          const access = student && student.status !== "deleted" ? await notesAccess(deps, student) : null;
+          const p = practicedByStudent.get(l.studentId);
           return {
             linkId: l.id,
             studentId: l.studentId,
             displayName: student?.displayName ?? null,
             linkedAt: l.createdAt,
+            consentAt: l.consentAt,
+            status: l.status,
+            removedAt: l.removedAt,
+            counterpartDeleted: student?.status === "deleted",
             lastNoteAt: lastByStudent.get(l.studentId) ?? null,
+            lastLessonAt: lessonByStudent.get(l.studentId) ?? null,
+            practicedTotal: p?.total ?? 0,
+            practicedDone: p?.done ?? 0,
             canReceiveNotes: access ? access.status !== "lapsed" : false,
           };
         }),
@@ -276,6 +357,8 @@ export function linksRouter(deps: Deps): Router {
     }),
   );
 
+  // Serves removed links too (Past-student detail: history stays readable, Invite
+  // again lives here). Email surfaces ONLY on this detail view (founder-gated).
   router.get(
     "/v1/me/students/:id",
     ...guards,
@@ -288,7 +371,6 @@ export function linksRouter(deps: Deps): Router {
         .where(and(
           eq(teacherStudentLinks.teacherId, me.id),
           eq(teacherStudentLinks.studentId, String(req.params.id)),
-          eq(teacherStudentLinks.status, "active"),
         ))
         .limit(1);
       if (!link) {
@@ -296,6 +378,7 @@ export function linksRouter(deps: Deps): Router {
         return;
       }
       const [student] = await db.select().from(users).where(eq(users.id, link.studentId)).limit(1);
+      const counterpartDeleted = student?.status === "deleted";
       const timeline = await db
         .select({
           id: notes.id,
@@ -312,13 +395,19 @@ export function linksRouter(deps: Deps): Router {
           inArray(notes.status, ["sent", "retracted"]),
         ))
         .orderBy(desc(notes.sentAt));
-      const access = await notesAccess(deps, student!);
+      const access = counterpartDeleted ? null : await notesAccess(deps, student!);
       res.json({
         linkId: link.id,
         studentId: student!.id,
         displayName: student!.displayName,
+        email: counterpartDeleted ? null : student!.email,
         linkedAt: link.createdAt,
-        canReceiveNotes: access.status !== "lapsed",
+        consentAt: link.consentAt,
+        createdVia: link.createdVia,
+        status: link.status,
+        removedAt: link.removedAt,
+        counterpartDeleted,
+        canReceiveNotes: access ? access.status !== "lapsed" : false,
         notes: timeline,
       });
     }),
@@ -349,28 +438,63 @@ export function linksRouter(deps: Deps): Router {
     }),
   );
 
+  // include=removed adds ended links (Past teachers). NO organization and NO email
+  // here — the sign-up copy promises "Not shown publicly" (founder-gated).
   router.get(
     "/v1/me/teachers",
     ...guards,
     wrap(async (req, res) => {
       const me = req.notesUser!;
       const db = deps.db!.orm;
+      const includeRemoved = req.query.include === "removed";
       const links = await db
         .select()
         .from(teacherStudentLinks)
-        .where(and(eq(teacherStudentLinks.studentId, me.id), eq(teacherStudentLinks.status, "active")))
+        .where(and(
+          eq(teacherStudentLinks.studentId, me.id),
+          includeRemoved
+            ? inArray(teacherStudentLinks.status, ["active", "removed"])
+            : eq(teacherStudentLinks.status, "active"),
+        ))
         .orderBy(desc(teacherStudentLinks.createdAt));
       const teacherIds = links.map((l) => l.teacherId);
       const teacherRows = teacherIds.length
         ? await db.select().from(users).where(inArray(users.id, teacherIds))
         : [];
+      const noteAgg = teacherIds.length
+        ? await db
+            .select({
+              teacherId: notes.teacherId,
+              count: sql<number>`count(*)::int`,
+              lastAt: sql<string>`max(${notes.sentAt})`,
+            })
+            .from(notes)
+            .where(and(
+              eq(notes.studentId, me.id),
+              eq(notes.status, "sent"),
+              eq(notes.origin, "teacher"),
+              inArray(notes.teacherId, teacherIds),
+            ))
+            .groupBy(notes.teacherId)
+        : [];
+      const aggByTeacher = new Map(noteAgg.map((r) => [r.teacherId, r]));
       res.json({
-        items: links.map((l) => ({
-          linkId: l.id,
-          teacherId: l.teacherId,
-          displayName: teacherRows.find((u) => u.id === l.teacherId)?.displayName ?? null,
-          linkedAt: l.createdAt,
-        })),
+        items: links.map((l) => {
+          const teacher = teacherRows.find((u) => u.id === l.teacherId);
+          const agg = aggByTeacher.get(l.teacherId);
+          return {
+            linkId: l.id,
+            teacherId: l.teacherId,
+            displayName: teacher?.displayName ?? null,
+            linkedAt: l.createdAt,
+            consentAt: l.consentAt,
+            status: l.status,
+            removedAt: l.removedAt,
+            counterpartDeleted: teacher?.status === "deleted",
+            noteCount: agg?.count ?? 0,
+            lastNoteAt: agg?.lastAt ?? null,
+          };
+        }),
       });
     }),
   );

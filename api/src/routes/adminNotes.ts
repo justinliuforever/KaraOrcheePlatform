@@ -712,6 +712,7 @@ export function adminNotesRouter(deps: Deps): Router {
           id: user.id,
           email: user.email,
           displayName: user.displayName,
+          organization: user.organization,
           isTeacher: user.isTeacher,
           isStudent: user.isStudent,
           isAdmin: user.isAdmin,
@@ -732,6 +733,56 @@ export function adminNotesRouter(deps: Deps): Router {
           selfNotes: sent?.selfNotes ?? 0,
         },
         access,
+      });
+    }),
+  );
+
+  // Teacher-trust watch list — DERIVED LIVE, never a sticky flag. A teacher lists
+  // only while ALL hold in the trailing 28 days: active account + isTeacher, zero
+  // active student links, zero lifetime sent notes, zero teacher_to_student codes
+  // minted, and >=1 submitted teacher-owned lesson. Minting any invite in-window
+  // exits the list; one lifetime send exits forever — the "student hasn't
+  // installed the app yet" teacher can never appear here. Read-only in B1.5:
+  // outreach is a human emailing from a human mailbox, never automated.
+  router.get(
+    "/admin/notes/trust/watch",
+    wrap(async (_req, res) => {
+      const db = deps.db!.orm;
+      const rows = await db
+        .select({
+          userId: users.id,
+          email: users.email,
+          displayName: users.displayName,
+          organization: users.organization,
+          createdAt: users.createdAt,
+          // "users"."id" is hardcoded: drizzle renders a ${users.id} interpolation
+          // UNQUALIFIED in select-field position, and the bare "id" resolves to
+          // lesson_sessions.id inside the subquery (count was silently always 0).
+          lessons28d: sql<number>`(
+            SELECT count(*)::int FROM lesson_sessions l
+            WHERE l.teacher_id = "users"."id" AND l.owner_role = 'teacher'
+              AND l.status = 'submitted' AND l.created_at >= now() - interval '28 days'
+          )`,
+        })
+        .from(users)
+        .where(and(
+          eq(users.isTeacher, true),
+          eq(users.status, "active"),
+          sql`NOT EXISTS (SELECT 1 FROM teacher_student_links tl
+                          WHERE tl.teacher_id = ${users.id} AND tl.status = 'active')`,
+          sql`NOT EXISTS (SELECT 1 FROM notes n
+                          WHERE n.teacher_id = ${users.id} AND n.status IN ('sent', 'retracted') AND n.origin = 'teacher')`,
+          sql`NOT EXISTS (SELECT 1 FROM invites i
+                          WHERE i.teacher_id = ${users.id} AND i.direction = 'teacher_to_student'
+                            AND i.created_at >= now() - interval '28 days')`,
+          sql`EXISTS (SELECT 1 FROM lesson_sessions l
+                      WHERE l.teacher_id = ${users.id} AND l.owner_role = 'teacher'
+                        AND l.status = 'submitted' AND l.created_at >= now() - interval '28 days')`,
+        ))
+        .orderBy(desc(users.createdAt));
+      res.json({
+        items: rows.map((r) => ({ ...r, highVolume: r.lessons28d >= 8 })),
+        windowDays: 28,
       });
     }),
   );

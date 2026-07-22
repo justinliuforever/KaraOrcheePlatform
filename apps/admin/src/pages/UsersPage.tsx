@@ -55,6 +55,7 @@ export default function UsersPage() {
               <TableRow>
                 <TableHead className={thCls}>Email</TableHead>
                 <TableHead className={thCls}>Name</TableHead>
+                <TableHead className={thCls}>Organization</TableHead>
                 <TableHead className={thCls}>Roles</TableHead>
                 <TableHead className={thCls}>Status</TableHead>
                 <TableHead className={`${thCls} text-right`}>Joined</TableHead>
@@ -68,6 +69,15 @@ export default function UsersPage() {
                   </TableCell>
                   <TableCell className="px-4 py-3">
                     {u.displayName ?? <span className="text-ink-faint">—</span>}
+                  </TableCell>
+                  <TableCell className="px-4 py-3 text-ink-soft">
+                    {u.organization ? (
+                      <span className="inline-block max-w-44 truncate align-bottom" title={u.organization}>
+                        {u.organization}
+                      </span>
+                    ) : (
+                      <span className="text-ink-faint">—</span>
+                    )}
                   </TableCell>
                   <TableCell className="px-4 py-3">
                     <div className="flex gap-1.5">
@@ -90,7 +100,7 @@ export default function UsersPage() {
               ))}
               {query.data.items.length === 0 && (
                 <TableRow className="hover:bg-transparent">
-                  <TableCell className="px-4 py-10 text-center whitespace-normal" colSpan={5}>
+                  <TableCell className="px-4 py-10 text-center whitespace-normal" colSpan={6}>
                     <p className="text-sm font-medium text-ink">
                       {q ? "No accounts match" : "No accounts yet"}
                     </p>

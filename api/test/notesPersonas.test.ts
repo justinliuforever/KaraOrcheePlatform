@@ -857,3 +857,73 @@ describe("sync canRecord", () => {
     }
   });
 });
+
+// ── 8. Wave-2 review fixes (declared ownerRole · canceled terminality) ─────────
+
+describe("review fixes: ownerRole declaration and canceled lessons", () => {
+  it("declared student ownerRole beats teacher-wins for a dual-role account; mismatch 400s", async () => {
+    const dual = await makeUser({ oid: "np-rf-dual", name: "Dual Dana", role: "teacher" });
+    await sync(dual.token, { role: "student" });
+
+    const solo = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", auth(dual))
+      .send({ ownerRole: "student", attested: true, pieceLabel: "Hanon 1" });
+    expect(solo.status).toBe(201);
+    expect(solo.body.lesson.ownerRole).toBe("student");
+
+    const pure = await makeUser({ oid: "np-rf-student", name: "Pure Pia", role: "student" });
+    const mismatch = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", auth(pure))
+      .send({ ownerRole: "teacher" });
+    expect(mismatch.status).toBe(400);
+    expect(mismatch.body.error).toBe("role_mismatch");
+
+    // Absent ownerRole keeps the old derivation (teacher wins for dual-role).
+    const derived = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", auth(dual))
+      .send({});
+    expect(derived.status).toBe(201);
+    expect(derived.body.lesson.ownerRole).toBe("teacher");
+  });
+
+  it("submit on a canceled lesson → 409 lesson_canceled, never already_submitted", async () => {
+    const t = await makeUser({ oid: "np-rf-cancel-t", name: "Cancel Cal", role: "teacher" });
+    const created = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", auth(t))
+      .send({ clientLessonId: "np-rf-c1" });
+    expect(created.status).toBe(201);
+    const id = created.body.lesson.id as string;
+    const del = await request(makeApp()).delete(`/v1/lessons/${id}`).set("Authorization", auth(t));
+    expect(del.status).toBe(200);
+
+    const submit = await request(makeApp())
+      .post(`/v1/lessons/${id}/submit`)
+      .set("Authorization", auth(t))
+      .send({});
+    expect(submit.status).toBe(409);
+    expect(submit.body.error).toBe("lesson_canceled");
+  });
+
+  it("cancel releases the clientLessonId — a re-record with the same local id gets a fresh row", async () => {
+    const t = await makeUser({ oid: "np-rf-release-t", name: "Release Rae", role: "teacher" });
+    const first = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", auth(t))
+      .send({ clientLessonId: "np-rf-r1" });
+    expect(first.status).toBe(201);
+    const firstId = first.body.lesson.id as string;
+    await request(makeApp()).delete(`/v1/lessons/${firstId}`).set("Authorization", auth(t));
+
+    const second = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", auth(t))
+      .send({ clientLessonId: "np-rf-r1" });
+    expect(second.status).toBe(201);
+    expect(second.body.lesson.id).not.toBe(firstId);
+    expect(second.body.uploadUrl).toBeTruthy();
+  });
+});

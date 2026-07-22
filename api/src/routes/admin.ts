@@ -160,7 +160,7 @@ export function adminRouter(deps: Deps): Router {
       const offset = Math.max(Number(req.query.offset) || 0, 0);
       const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
       const filter = q
-        ? or(ilike(users.email, `%${q}%`), ilike(users.displayName, `%${q}%`))
+        ? or(ilike(users.email, `%${q}%`), ilike(users.displayName, `%${q}%`), ilike(users.organization, `%${q}%`))
         : undefined;
 
       const items = await db

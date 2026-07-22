@@ -30,9 +30,10 @@ export function lessonsRouter(deps: Deps): Router {
       }
       const db = deps.db!.orm;
       const body = req.body ?? {};
-      // Snapshot of who held the phone; teacher wins for dual-role accounts. Never
-      // re-derived later — a role granted after the fact must not rewrite history.
-      const ownerRole = me.isTeacher ? "teacher" : "student";
+      // Snapshot of who held the phone; teacher wins for dual-role accounts unless
+      // the client explicitly declares (below). Never re-derived later — a role
+      // granted after the fact must not rewrite history.
+      let ownerRole = me.isTeacher ? "teacher" : "student";
       const pieceId = typeof body.pieceId === "string" ? body.pieceId : null;
       const pieceLabel = typeof body.pieceLabel === "string" && body.pieceLabel.trim()
         ? body.pieceLabel.trim()
@@ -40,19 +41,45 @@ export function lessonsRouter(deps: Deps): Router {
       const studentId = typeof body.studentId === "string" ? body.studentId : null;
       const clientLessonId = typeof body.clientLessonId === "string" ? body.clientLessonId : null;
 
+      // Client-declared recorder role (B1.5 app sends the local snapshot). An
+      // explicit "student" beats the teacher-wins default — the beta view-as
+      // override records solo on a dual-role account. Absent = old derivation.
+      const requested = body.ownerRole;
+      if (requested === "teacher" || requested === "student") {
+        if ((requested === "teacher" && !me.isTeacher) || (requested === "student" && !me.isStudent)) {
+          res.status(400).json({ error: "role_mismatch" });
+          return;
+        }
+        ownerRole = requested;
+      }
+
       // Idempotent create FIRST — before any gate: a retried outbox POST for a row
       // that already exists must return it even if the trial lapsed in between
       // (mirrors submit ordering 409-before-402), never paywall an existing row.
+      // Canceled rows never match (cancel releases the clientLessonId), so a
+      // discarded-then-rerecorded lesson gets a fresh row, not a dead one.
       if (clientLessonId) {
         const [dup] = await db
           .select()
           .from(lessonSessions)
-          .where(and(eq(lessonSessions.teacherId, me.id), eq(lessonSessions.clientLessonId, clientLessonId)))
+          .where(and(
+            eq(lessonSessions.teacherId, me.id),
+            eq(lessonSessions.clientLessonId, clientLessonId),
+            sql`${lessonSessions.status} <> 'canceled'`,
+          ))
           .limit(1);
         if (dup) {
+          // Crash-window repair: a row inserted before its audioPath update lost
+          // its path — mint it now so uploadUrl is never null (fielded decoder
+          // treats it as non-optional).
+          let audioPath = dup.audioPath;
+          if (!audioPath) {
+            audioPath = deps.lessons.blobPath(me.id, dup.id);
+            await db.update(lessonSessions).set({ audioPath, updatedAt: sql`now()` }).where(eq(lessonSessions.id, dup.id));
+          }
           res.status(200).json({
-            lesson: dup,
-            uploadUrl: dup.audioPath ? deps.lessons.uploadUrl(dup.audioPath) : null,
+            lesson: { ...dup, audioPath },
+            uploadUrl: deps.lessons.uploadUrl(audioPath),
           });
           return;
         }
@@ -172,6 +199,12 @@ export function lessonsRouter(deps: Deps): Router {
         .limit(1);
       if (!lesson) {
         res.status(404).json({ error: "not_found" });
+        return;
+      }
+      // Canceled is TERMINAL, never "already submitted" — the app treats
+      // already_submitted as success, which would resurrect a discarded lesson.
+      if (lesson.status === "canceled") {
+        res.status(409).json({ error: "lesson_canceled" });
         return;
       }
       if (lesson.status !== "created") {
@@ -384,10 +417,12 @@ export function lessonsRouter(deps: Deps): Router {
         return;
       }
       // CAS so a submit that raced this cancel cannot be overwritten (which would
-      // strand a queued job pointing at deleted audio).
+      // strand a queued job pointing at deleted audio). Cancel also RELEASES the
+      // clientLessonId: the dedupe skips canceled rows, so without this a
+      // re-record with the same local id would hit uq_lesson_client_id.
       const [canceled] = await db
         .update(lessonSessions)
-        .set({ status: "canceled", updatedAt: sql`now()` })
+        .set({ status: "canceled", clientLessonId: null, updatedAt: sql`now()` })
         .where(and(eq(lessonSessions.id, lesson.id), eq(lessonSessions.status, "created")))
         .returning();
       if (!canceled) {
