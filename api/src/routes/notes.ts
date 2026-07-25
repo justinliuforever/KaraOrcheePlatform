@@ -25,7 +25,7 @@ export function notesRouter(deps: Deps): Router {
   // /v1/me/notes — and a pure-student token gets 403, never an empty-but-real list.
   const requireTeacher = (me: { isTeacher: boolean }, res: { status(n: number): { json(b: unknown): unknown } }): boolean => {
     if (me.isTeacher) return true;
-    res.status(403).json({ error: "teacher_only" });
+    res.status(403).json({ error: "teacher_only", message: "This account isn't set up as a teacher." });
     return false;
   };
 

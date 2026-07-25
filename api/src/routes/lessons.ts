@@ -194,7 +194,10 @@ export function lessonsRouter(deps: Deps): Router {
     wrap(async (req, res) => {
       const me = req.notesUser!;
       if (!me.isTeacher && !me.isStudent) {
-        res.status(403).json({ error: "notes_role_required" });
+        res.status(403).json({
+          error: "notes_role_required",
+          message: "This account isn't set up as a teacher or a student yet.",
+        });
         return;
       }
       if (!deps.lessons) {

@@ -68,24 +68,24 @@ export function verifierFromConfig(auth: {
 export function requireAuth(verifier?: AuthVerifier): RequestHandler {
   return async (req, res, next) => {
     if (!verifier) {
-      res.status(503).json({ error: "auth_not_configured" });
+      res.status(503).json({ error: "auth_not_configured", message: "KaraOrchee is having trouble right now." });
       return;
     }
     const header = req.headers.authorization;
     if (!header || !header.startsWith("Bearer ")) {
-      res.status(401).json({ error: "unauthorized" });
+      res.status(401).json({ error: "unauthorized", message: "Sign in again to continue." });
       return;
     }
     const token = header.slice("Bearer ".length).trim();
     if (!token) {
-      res.status(401).json({ error: "unauthorized" });
+      res.status(401).json({ error: "unauthorized", message: "Sign in again to continue." });
       return;
     }
     try {
       req.user = await verifier.verify(token);
       next();
     } catch {
-      res.status(401).json({ error: "unauthorized" });
+      res.status(401).json({ error: "unauthorized", message: "Sign in again to continue." });
     }
   };
 }

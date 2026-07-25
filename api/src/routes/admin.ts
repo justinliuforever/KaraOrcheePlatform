@@ -108,8 +108,11 @@ const rolesSchema = z
     isTeacher: z.boolean().optional(),
     isStudent: z.boolean().optional(),
     canViewTranscripts: z.boolean().optional(),
+    // Acknowledges "this account will have no teaching or learning role".
+    force: z.boolean().optional(),
   })
-  .refine((v) => Object.values(v).some((x) => x !== undefined), {
+  .refine((v) => ["isAdmin", "isTeacher", "isStudent", "canViewTranscripts"]
+    .some((k) => v[k as keyof typeof v] !== undefined), {
     message: "no role fields given",
   });
 
@@ -159,9 +162,21 @@ export function adminRouter(deps: Deps): Router {
       const limit = Math.min(Number(req.query.limit) || 50, 200);
       const offset = Math.max(Number(req.query.offset) || 0, 0);
       const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
-      const filter = q
+      const search = q
         ? or(ilike(users.email, `%${q}%`), ilike(users.displayName, `%${q}%`), ilike(users.organization, `%${q}%`))
         : undefined;
+      // needs_setup = the bricked state: active, no admin console, and neither
+      // capability. The count must be watched for INCREASE — it is never zero
+      // (admin@karaorchee.com is deliberately role-less).
+      const needsSetup = req.query.role === "needs_setup"
+        ? and(
+            eq(users.status, "active"),
+            eq(users.isAdmin, false),
+            eq(users.isTeacher, false),
+            eq(users.isStudent, false),
+          )
+        : undefined;
+      const filter = search && needsSetup ? and(search, needsSetup) : (search ?? needsSetup);
 
       const items = await db
         .select()
@@ -270,14 +285,35 @@ export function adminRouter(deps: Deps): Router {
           return;
         }
       }
+      // Two of the three bricked accounts in dev were made here: both switches off
+      // leaves an account that renders a healthy home where every write 403s.
+      const { force, ...changes } = parsed.data;
+      const nextTeacher = changes.isTeacher ?? target.isTeacher;
+      const nextStudent = changes.isStudent ?? target.isStudent;
+      const removingRole =
+        (changes.isTeacher === false && target.isTeacher) ||
+        (changes.isStudent === false && target.isStudent);
+      if (!nextTeacher && !nextStudent && removingRole && force !== true) {
+        res.status(409).json({
+          error: "would_leave_no_role",
+          message: "This account would have no teaching or learning role. Confirm to continue.",
+        });
+        return;
+      }
+      // An admin-granted student role starts the trial clock; a null clock
+      // re-anchors to now() on every read, which is an infinite trial.
+      const trialPatch = changes.isStudent === true && !target.trialStartedAt
+        ? { trialStartedAt: sql`now()` }
+        : {};
       const [updated] = await db
         .update(users)
-        .set({ ...parsed.data, updatedAt: sql`now()` })
+        .set({ ...changes, ...trialPatch, updatedAt: sql`now()` })
         .where(eq(users.id, id))
         .returning();
       await audit(deps, req, "user.set_roles", { type: "user", id }, {
-        changes: parsed.data,
+        changes,
         email: target.email,
+        ...(force === true ? { force: true } : {}),
       });
       if (parsed.data.canViewTranscripts !== undefined &&
           parsed.data.canViewTranscripts !== target.canViewTranscripts) {

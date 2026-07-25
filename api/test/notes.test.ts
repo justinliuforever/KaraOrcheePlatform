@@ -339,12 +339,126 @@ describe("users/sync", () => {
     expect(second.body.notesConsentAt).toBe(consentAt);
   });
 
-  it("role capabilities are additive: teacher then student yields both", async () => {
+  // I-5/NEW-14: the two recording notices are different promises. The teacher one
+  // carries the responsibility-to-inform language, so accepting the solo notice must
+  // never satisfy it — and one shared column could not tell them apart.
+  it("solo consent does not satisfy the teacher gate, and vice versa", async () => {
+    const soloToken = await mkToken("consent-solo", "Solo Sam");
+    const solo = await sync(soloToken, { role: "student", notesConsent: true, consentKind: "solo" });
+    expect(solo.status).toBe(200);
+    expect(solo.body.soloConsentAt).not.toBeNull();
+    expect(solo.body.teacherConsentAt).toBeNull();
+
+    const teacherToken = await mkToken("consent-teacher", "Consent Cleo");
+    const teacher = await sync(teacherToken, { role: "teacher", notesConsent: true, consentKind: "teacher" });
+    expect(teacher.body.teacherConsentAt).not.toBeNull();
+    expect(teacher.body.soloConsentAt).toBeNull();
+  });
+
+  it("each consent is write-once and the two accumulate independently", async () => {
+    const token = await mkToken("consent-both", "Both Bo");
+    const first = await sync(token, { role: "student", notesConsent: true, consentKind: "solo" });
+    const soloAt = first.body.soloConsentAt;
+    expect(soloAt).not.toBeNull();
+
+    const second = await sync(token, { notesConsent: true, consentKind: "teacher" });
+    expect(second.body.soloConsentAt).toBe(soloAt); // never re-stamped
+    expect(second.body.teacherConsentAt).not.toBeNull();
+    const teacherAt = second.body.teacherConsentAt;
+
+    const third = await sync(token, { notesConsent: true, consentKind: "teacher" });
+    expect(third.body.teacherConsentAt).toBe(teacherAt);
+    expect(third.body.soloConsentAt).toBe(soloAt);
+  });
+
+  it("an acceptance that names no kind satisfies NEITHER gate (fail closed)", async () => {
+    const legacy = await mkToken("consent-legacy", "Legacy Lee");
+    const res = await sync(legacy, { role: "student", notesConsent: true });
+    expect(res.body.notesConsentAt).not.toBeNull();
+    expect(res.body.soloConsentAt).toBeNull();
+    expect(res.body.teacherConsentAt).toBeNull();
+
+    const bogus = await mkToken("consent-bogus", "Bogus Bea");
+    const two = await sync(bogus, { role: "student", notesConsent: true, consentKind: "everything" });
+    expect(two.body.soloConsentAt).toBeNull();
+    expect(two.body.teacherConsentAt).toBeNull();
+  });
+
+  it("a named kind without the acceptance flag stamps nothing", async () => {
+    const token = await mkToken("consent-unflagged", "Unflagged Uma");
+    const res = await sync(token, { role: "student", consentKind: "teacher" });
+    expect(res.body.notesConsentAt).toBeNull();
+    expect(res.body.teacherConsentAt).toBeNull();
+    expect(res.body.soloConsentAt).toBeNull();
+  });
+
+  // S-2: the client may name a role for an account that has NONE, and never again.
+  // Self-granting isTeacher was a permanent paywall bypass (teacher_free).
+  it("a role sent for an account that already holds one is a silent no-op", async () => {
     const token = await mkToken("sync-both", "B");
-    await sync(token, { role: "student" });
-    const res = await sync(token, { role: "teacher" });
-    expect(res.body.isStudent).toBe(true);
+    const first = await sync(token, { role: "student" });
+    expect(first.body.isStudent).toBe(true);
+    expect(first.body.needsRole).toBe(false);
+
+    const second = await sync(token, { role: "teacher" });
+    expect(second.status).toBe(200);
+    expect(second.body.isStudent).toBe(true);
+    expect(second.body.isTeacher).toBe(false);
+    expect(second.body.access.status).toBe("beta_free");
+
+    const third = await sync(token, { role: "teacher" });
+    expect(third.body.isTeacher).toBe(false);
+  });
+
+  it("a teacher cannot self-grant the student role either", async () => {
+    const token = await mkToken("sync-teacher-then-student", "TS");
+    await sync(token, { role: "teacher" });
+    const res = await sync(token, { role: "student" });
     expect(res.body.isTeacher).toBe(true);
+    expect(res.body.isStudent).toBe(false);
+    expect(res.body.trialStartedAt).toBeNull();
+  });
+
+  it("needsRole is derived on every sync and the role step clears it", async () => {
+    const token = await mkToken("sync-roleless", "R");
+    const bare = await sync(token, {});
+    expect(bare.status).toBe(200);
+    expect(bare.body.needsRole).toBe(true);
+    expect(bare.body.isTeacher).toBe(false);
+    expect(bare.body.isStudent).toBe(false);
+
+    const repaired = await sync(token, { role: "student", via: "setup" });
+    expect(repaired.body.needsRole).toBe(false);
+    expect(repaired.body.isStudent).toBe(true);
+
+    const [event] = await db.orm
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.actorUserId, repaired.body.id), eq(auditEvents.action, "user.role_set")));
+    expect(event!.detail).toMatchObject({ role: "student", via: "setup" });
+  });
+
+  // G-8/I-13: the origin is what lets an admin tell a repair from a sign-up. A
+  // client that sends nothing (or something unrecognized) still reads as a sign-up,
+  // which is what the trail assumed before the field existed.
+  it("a role grant with no origin records as a sign-up", async () => {
+    const token = await mkToken("via-absent", "Via Vera");
+    const res = await sync(token, { role: "teacher" });
+    const [event] = await db.orm
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.actorUserId, res.body.id), eq(auditEvents.action, "user.role_set")));
+    expect(event!.detail).toMatchObject({ role: "teacher", via: "signup" });
+  });
+
+  it("an unrecognized origin is recorded as a sign-up, never verbatim", async () => {
+    const token = await mkToken("via-bogus", "Via Bogus");
+    const res = await sync(token, { role: "student", via: "totally-made-up" });
+    const [event] = await db.orm
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.actorUserId, res.body.id), eq(auditEvents.action, "user.role_set")));
+    expect(event!.detail).toMatchObject({ role: "student", via: "signup" });
   });
 });
 
@@ -416,6 +530,7 @@ describe("invites", () => {
       .send({});
     expect(forbidden.status).toBe(403);
     expect(forbidden.body.error).toBe("notes_role_required");
+    expect(forbidden.body.message).toBe("This account isn't set up as a teacher or a student yet.");
 
     const ok = await request(makeApp())
       .post("/v1/invites")
@@ -428,11 +543,13 @@ describe("invites", () => {
   });
 
   it("GET lists only live invites; DELETE revokes; unknown DELETE 404s", async () => {
-    const b = await request(makeApp())
-      .post("/v1/invites")
-      .set("Authorization", `Bearer ${invT.token}`)
-      .send({});
-    const bId = b.body.id as string;
+    // Seeded, not minted: one live code per issuer per direction means a second
+    // POST would return inviteA rather than a new row.
+    const [b] = await db.orm
+      .insert(invites)
+      .values({ code: "SEEDB1", teacherId: invT.id, expiresAt: daysFromNow(7) })
+      .returning();
+    const bId = b!.id;
 
     let list = await request(makeApp()).get("/v1/invites").set("Authorization", `Bearer ${invT.token}`);
     expect(list.body.map((r: { id: string }) => r.id)).toEqual(expect.arrayContaining([inviteA.id, bId]));
@@ -483,6 +600,7 @@ describe("invites", () => {
       .send({ code: inviteA.code, consent: true });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("own_code");
+    expect(res.body.message).toBe("That's your own code.");
   });
 
   it("successful redeem links, records consent, increments use, grows student role", async () => {
@@ -504,29 +622,45 @@ describe("invites", () => {
     expect(row!.trialStartedAt).not.toBeNull();
   });
 
-  it("redeeming a second live code for an existing pair → 409 already_linked", async () => {
+  it("redeeming a second live code for an existing pair → 409 already_linked with the counterpart", async () => {
     const c = await request(makeApp())
       .post("/v1/invites")
       .set("Authorization", `Bearer ${invT.token}`)
       .send({});
+    expect(c.status).toBe(201); // inviteA is spent, so this is a fresh code
     const res = await request(makeApp())
       .post("/v1/invites/redeem")
       .set("Authorization", `Bearer ${invS.token}`)
       .send({ code: c.body.code, consent: true });
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("already_linked");
+    expect(res.body.message).toBe("You're already connected with Invite Teacher.");
+    expect(res.body.counterpart).toEqual({ id: invT.id, displayName: "Invite Teacher" });
+    // The 409 fires before the claim, so the code is not burned.
+    const [row] = await db.orm.select().from(invites).where(eq(invites.id, c.body.id));
+    expect(row!.usedCount).toBe(0);
   });
 
-  it("redeem after the link was removed reactivates the same row", async () => {
+  it("a code minted after the removal reactivates the same row and re-consents at now()", async () => {
     const removed = await request(makeApp())
       .delete(`/v1/me/teachers/${invT.id}`)
       .set("Authorization", `Bearer ${invS.token}`);
     expect(removed.status).toBe(200);
+    const [link] = await db.orm.select().from(teacherStudentLinks).where(eq(teacherStudentLinks.id, linkId));
+    const removedAt = link!.removedAt!;
 
+    // The teacher's pre-removal code is still live; it cannot re-form the pair, so
+    // the fresh code has to replace it.
+    const live = await request(makeApp()).get("/v1/invites").set("Authorization", `Bearer ${invT.token}`);
+    for (const r of live.body as { id: string }[]) {
+      await request(makeApp()).delete(`/v1/invites/${r.id}`).set("Authorization", `Bearer ${invT.token}`);
+    }
     const d = await request(makeApp())
       .post("/v1/invites")
       .set("Authorization", `Bearer ${invT.token}`)
       .send({});
+    expect(d.status).toBe(201);
+
     const res = await request(makeApp())
       .post("/v1/invites/redeem")
       .set("Authorization", `Bearer ${invS.token}`)
@@ -535,6 +669,7 @@ describe("invites", () => {
     expect(res.body.link.id).toBe(linkId); // same row, reactivated
     expect(res.body.link.status).toBe("active");
     expect(res.body.link.removedAt).toBeNull();
+    expect(new Date(res.body.link.consentAt).getTime()).toBeGreaterThan(removedAt.getTime());
   });
 });
 
@@ -2293,6 +2428,8 @@ describe("account deletion", () => {
     // Fresh users so this test doesn't collide with the shared fixtures' links.
     const dt = await makeUser({ oid: "del-teacher", name: "Del Teacher", email: "dt@k.com", role: "teacher" });
     const ds = await makeUser({ oid: "del-student", name: "Del Student", email: "dsx@k.com", role: "student" });
+    await sync(ds.token, { notesConsent: true, consentKind: "solo" });
+    await sync(ds.token, { notesConsent: true, consentKind: "teacher" });
     await linkActive(dt.id, ds.id);
     const sent = await seedNote({
       teacherId: dt.id, studentId: ds.id, status: "sent", sentAt: new Date(), pieceId: "seed_piece",
@@ -2310,6 +2447,8 @@ describe("account deletion", () => {
     expect(srow!.email).toBeNull();
     expect(srow!.displayName).toBeNull();
     expect(srow!.entraOid).toBeNull();
+    expect(srow!.soloConsentAt).toBeNull();
+    expect(srow!.teacherConsentAt).toBeNull();
 
     // Received note gone; link removed.
     const remaining = await db.orm.select().from(notes).where(eq(notes.id, sent.note.id));

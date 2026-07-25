@@ -5,6 +5,7 @@ import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireUser, userAudit } from "../notes/user";
 import {
+  auditEvents,
   devices,
   entitlements,
   invites,
@@ -17,6 +18,20 @@ import {
 } from "../db/schema";
 import { notesAccess } from "../notes/entitlement";
 
+// Where a role grant came from. Anything else (including a client that sends
+// nothing) records as a sign-up, which is what the audit trail assumed before the
+// field existed.
+const ROLE_GRANT_ORIGINS = ["signup", "setup"] as const;
+type RoleGrantOrigin = (typeof ROLE_GRANT_ORIGINS)[number];
+
+// Which recording notice an acceptance is for. Matches NotesConsent.Kind on the app.
+const CONSENT_KINDS = ["teacher", "solo"] as const;
+type ConsentKind = (typeof CONSENT_KINDS)[number];
+
+function roleGrantOrigin(via: unknown): RoleGrantOrigin {
+  return ROLE_GRANT_ORIGINS.includes(via as RoleGrantOrigin) ? (via as RoleGrantOrigin) : "signup";
+}
+
 export function usersRouter(deps: Deps): Router {
   const router = Router();
 
@@ -25,7 +40,7 @@ export function usersRouter(deps: Deps): Router {
     requireAuth(deps.auth),
     wrap(async (req, res) => {
       if (!deps.db) {
-        res.status(503).json({ error: "db_not_configured" });
+        res.status(503).json({ error: "db_not_configured", message: "KaraOrchee is having trouble right now." });
         return;
       }
       const claims = req.user!;
@@ -42,16 +57,37 @@ export function usersRouter(deps: Deps): Router {
         .returning();
       const row = upserted[0]!;
 
-      // Role capabilities grow-only from the app (registration role step + beta
-      // Settings toggle); admin role-patch remains the only way to revoke.
+      // Role capabilities are grow-only AND first-only: the app may name a role for
+      // an account that has NONE (sign-up, or the setup screen repairing a role-less
+      // row) and never afterwards. isTeacher is permanent, admin-only to revoke, and
+      // short-circuits entitlements to teacher_free — a client that can add it to an
+      // existing account is a self-service paywall bypass. A stale role on a
+      // returning user is a silent no-op, never an error: sync is an idempotent
+      // upsert the app calls on every launch, and the response carries the truth.
       const body = req.body ?? {};
       const patch: Record<string, unknown> = {};
-      if (body.role === "teacher" && !row.isTeacher) patch.isTeacher = true;
-      if (body.role === "student" && !row.isStudent) {
+      const roleless = !row.isTeacher && !row.isStudent;
+      const grantedRole = roleless && (body.role === "teacher" || body.role === "student")
+        ? (body.role as "teacher" | "student")
+        : null;
+      if (grantedRole === "teacher") patch.isTeacher = true;
+      if (grantedRole === "student") {
         patch.isStudent = true;
         if (!row.trialStartedAt) patch.trialStartedAt = sql`now()`;
       }
-      if (body.notesConsent === true && !row.notesConsentAt) patch.notesConsentAt = sql`now()`;
+      // Each recording notice is its own promise and its own timestamp: accepting the
+      // solo notice must never satisfy the teacher gate, which is the one carrying the
+      // responsibility-to-inform language. consentKind NAMES the notice; an acceptance
+      // that does not name one (the pre-split shape, or an unrecognized kind) stamps
+      // only the legacy column and satisfies NEITHER gate — re-asking is the sole
+      // fail-closed answer to "which notice was this?". Each stamp is write-once.
+      const accepted = body.notesConsent === true;
+      const consentKind = CONSENT_KINDS.includes(body.consentKind as ConsentKind)
+        ? (body.consentKind as ConsentKind)
+        : null;
+      if (accepted && !row.notesConsentAt) patch.notesConsentAt = sql`now()`;
+      if (accepted && consentKind === "solo" && !row.soloConsentAt) patch.soloConsentAt = sql`now()`;
+      if (accepted && consentKind === "teacher" && !row.teacherConsentAt) patch.teacherConsentAt = sql`now()`;
       // Optional studio/school from teacher sign-up. Write-once: sign-up sets it,
       // nothing overwrites it (admin-only surface in beta — "Not shown publicly").
       if (typeof body.organization === "string" && body.organization.trim() && !row.organization) {
@@ -66,6 +102,20 @@ export function usersRouter(deps: Deps): Router {
           .returning();
         user = updated[0]!;
       }
+      if (grantedRole) {
+        // requireUser never runs on this route, so the actor is stamped directly.
+        await deps.db.orm.insert(auditEvents).values({
+          actorUserId: user.id,
+          action: "user.role_set",
+          subjectType: "user",
+          subjectId: user.id,
+          detail: {
+            role: grantedRole,
+            via: roleGrantOrigin(body.via),
+            ...(req.reqId ? { reqId: req.reqId } : {}),
+          },
+        });
+      }
 
       const access = await notesAccess(deps, user);
       const [unread] = await deps.db.orm
@@ -74,8 +124,16 @@ export function usersRouter(deps: Deps): Router {
         .where(and(eq(notes.studentId, user.id), eq(notes.status, "sent"), isNull(notes.readAt)));
 
       // canRecord lets the app warn a lapsed student BEFORE they record two hours
-      // of audio (the hard 402 still lives at lesson create/submit).
-      res.status(200).json({ ...user, access, canRecord: access.status !== "lapsed", unreadNotes: unread?.count ?? 0 });
+      // of audio (the hard 402 still lives at lesson create/submit). needsRole is
+      // derived on every read, never stored — an account with neither capability
+      // can record nothing and connect with nobody, and must be told so by name.
+      res.status(200).json({
+        ...user,
+        access,
+        canRecord: access.status !== "lapsed",
+        unreadNotes: unread?.count ?? 0,
+        needsRole: !user.isTeacher && !user.isStudent,
+      });
     }),
   );
 
@@ -172,6 +230,8 @@ export function usersRouter(deps: Deps): Router {
             organization: null,
             trialStartedAt: null,
             notesConsentAt: null,
+            soloConsentAt: null,
+            teacherConsentAt: null,
             deletedAt: sql`now()`,
             updatedAt: sql`now()`,
           })

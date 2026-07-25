@@ -127,6 +127,20 @@
       "when": 1784944832704,
       "tag": "0017_talented_mach_iv",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784954148103,
+      "tag": "0018_unknown_rogue",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784961288898,
+      "tag": "0019_famous_wallop",
+      "breakpoints": true
     }
   ]
 }

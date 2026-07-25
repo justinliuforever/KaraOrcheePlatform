@@ -40,13 +40,13 @@ describe("requireAuth fail-closed", () => {
   it("returns 503 auth_not_configured on a protected route when auth is unconfigured", async () => {
     const res = await request(createServer({})).post("/v1/users/sync");
     expect(res.status).toBe(503);
-    expect(res.body).toEqual({ error: "auth_not_configured" });
+    expect(res.body).toEqual({ error: "auth_not_configured", message: "KaraOrchee is having trouble right now." });
   });
 
   it("returns 401 when the token is missing", async () => {
     const res = await request(createServer({ auth: verifier })).post("/v1/users/sync");
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: "unauthorized" });
+    expect(res.body).toEqual({ error: "unauthorized", message: "Sign in again to continue." });
   });
 
   it("returns 401 on a garbage token", async () => {
@@ -54,7 +54,7 @@ describe("requireAuth fail-closed", () => {
       .post("/v1/users/sync")
       .set("Authorization", "Bearer not-a-real-jwt");
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: "unauthorized" });
+    expect(res.body).toEqual({ error: "unauthorized", message: "Sign in again to continue." });
   });
 
   it("returns 401 on an expired token", async () => {

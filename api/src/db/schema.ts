@@ -7,6 +7,7 @@ import {
   integer,
   jsonb,
   timestamp,
+  index,
   primaryKey,
   unique,
   uniqueIndex,
@@ -38,8 +39,15 @@ export const users = pgTable("users", {
   // Trial expiry is computed as max(trial_started_at, monetization_live_at) + 30d so
   // beta testers get a fresh clock when the paywall goes live — never store expiry.
   trialStartedAt: timestamp("trial_started_at", { withTimezone: true }),
-  // First-use Notes consent (teacher: recording responsibility; student: terms).
+  // LEGACY, pre-split: one column could not say WHICH notice was accepted, so it
+  // satisfies neither gate below. Kept as the historical first-consent stamp.
   notesConsentAt: timestamp("notes_consent_at", { withTimezone: true }),
+  // The two recording notices are different promises and are recorded separately:
+  // solo = "you are recording yourself"; teacher = "you are responsible for
+  // informing your student (and a parent, for minors)". Accepting one must never
+  // satisfy the other, so neither is backfilled from notes_consent_at.
+  soloConsentAt: timestamp("solo_consent_at", { withTimezone: true }),
+  teacherConsentAt: timestamp("teacher_consent_at", { withTimezone: true }),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -177,6 +185,8 @@ export const studioJobs = pgTable("studio_jobs", {
 });
 
 // Append-only trail of admin mutations. Reads are not audited.
+// The (actor, action, created_at) index is not reporting sugar: the per-account
+// redeem throttle derives its lock from this table on every redeem attempt.
 export const auditEvents = pgTable("audit_events", {
   id: uuid("id").primaryKey().defaultRandom(),
   actorUserId: uuid("actor_user_id").references(() => users.id),
@@ -185,7 +195,9 @@ export const auditEvents = pgTable("audit_events", {
   subjectId: text("subject_id"),
   detail: jsonb("detail").notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  index("ix_audit_actor_action_created").on(t.actorUserId, t.action, t.createdAt),
+]);
 
 // ── Notes domain ────────────────────────────────────────────────────────────────
 
@@ -223,7 +235,9 @@ export const invites = pgTable("invites", {
   maxUses: integer("max_uses").notNull().default(1),
   usedCount: integer("used_count").notNull().default(0),
   redeemedBy: jsonb("redeemed_by").notNull().default([]), // user ids, audit only
-  // Delivery address for the email fallback; used once, never copied to the link.
+  // LEGACY, read-only: no mailer exists, so nothing writes this any more — the
+  // column asserted a targeted delivery that never happened. Pre-existing rows keep
+  // their value for the audit trail.
   sentToEmail: text("sent_to_email"),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

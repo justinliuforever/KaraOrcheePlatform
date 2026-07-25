@@ -137,6 +137,13 @@ async function linkActive(teacherId: string, studentId: string) {
   return row!;
 }
 
+// The SECOND capability can no longer come from users/sync (S-2: self-granting
+// isTeacher was a permanent teacher_free bypass). Admin and invite redemption are
+// the only remaining grants — this is the admin one.
+async function grantRole(userId: string, patch: { isTeacher?: boolean; isStudent?: boolean }) {
+  await db.orm.update(users).set(patch).where(eq(users.id, userId));
+}
+
 async function setMonetization(iso: string | null) {
   await db.orm.delete(platformConfig).where(eq(platformConfig.key, "monetization_live_at"));
   if (iso) await db.orm.insert(platformConfig).values({ key: "monetization_live_at", value: iso });
@@ -339,7 +346,7 @@ describe("solo lessons", () => {
     // Dual-role: student first, then teacher. Teacher wins at create, so the
     // student-owned row is seeded directly (owner_role is a create-time snapshot).
     const dual = await makeUser({ oid: "np-solo-dual", name: "Dual Dana", role: "student" });
-    await sync(dual.token, { role: "teacher" });
+    await grantRole(dual.id, { isTeacher: true });
 
     const created = await request(makeApp())
       .post("/v1/lessons")
@@ -458,7 +465,13 @@ describe("reverse invites", () => {
   let rvT: TestUser; // fresh NO-ROLE redeemer (redeem has no role gate — asserted)
   let linkId: string;
 
+  // One live code per issuer per direction: a fresh code requires replacing the
+  // live one, which is exactly what the app's "Replace this code" does.
   async function mintReverse(): Promise<{ id: string; code: string; createdAt: string }> {
+    const live = await request(makeApp()).get("/v1/invites").set("Authorization", auth(rvS));
+    for (const r of live.body as { id: string }[]) {
+      await request(makeApp()).delete(`/v1/invites/${r.id}`).set("Authorization", auth(rvS));
+    }
     const res = await request(makeApp())
       .post("/v1/invites")
       .set("Authorization", auth(rvS))
@@ -562,6 +575,8 @@ describe("reverse invites", () => {
       .delete(`/v1/me/students/${rvS.id}`)
       .set("Authorization", auth(rvT));
     expect(removed.status).toBe(200);
+    const [ended] = await db.orm.select().from(teacherStudentLinks).where(eq(teacherStudentLinks.id, linkId));
+    const removedAt = ended!.removedAt!;
 
     const inv = await mintReverse();
     const res = await request(makeApp())
@@ -572,9 +587,9 @@ describe("reverse invites", () => {
     expect(res.body.link.id).toBe(linkId); // same row, reactivated
     expect(res.body.link.status).toBe("active");
     expect(res.body.link.removedAt).toBeNull();
-    // Reactivation refreshes consent to the NEW invite's mint time.
-    const [invRow] = await db.orm.select().from(invites).where(eq(invites.id, inv.id));
-    expect(new Date(res.body.link.consentAt).getTime()).toBe(invRow!.createdAt.getTime());
+    // S-6: a resumed relationship re-consents at now(); consent never predates the
+    // departure it survived.
+    expect(new Date(res.body.link.consentAt).getTime()).toBeGreaterThan(removedAt.getTime());
   });
 });
 
@@ -586,7 +601,7 @@ describe("origin scoping (born-sent self-notes)", () => {
 
   beforeAll(async () => {
     dual = await makeUser({ oid: "np-origin-dual", name: "Origin Olive", role: "student" });
-    await sync(dual.token, { role: "teacher" });
+    await grantRole(dual.id, { isTeacher: true });
     const { note } = await seedSelfNote(dual.id, { withAnnotation: true });
     selfNoteId = note.id;
   });
@@ -863,7 +878,7 @@ describe("sync canRecord", () => {
 describe("review fixes: ownerRole declaration and canceled lessons", () => {
   it("declared student ownerRole beats teacher-wins for a dual-role account; mismatch 400s", async () => {
     const dual = await makeUser({ oid: "np-rf-dual", name: "Dual Dana", role: "teacher" });
-    await sync(dual.token, { role: "student" });
+    await grantRole(dual.id, { isStudent: true });
 
     const solo = await request(makeApp())
       .post("/v1/lessons")

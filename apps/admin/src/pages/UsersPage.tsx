@@ -18,14 +18,27 @@ import UserPanel from "../components/UserPanel";
 
 const PAGE = 50;
 
+// An account with neither capability renders a healthy-looking Notes home where
+// every write 403s. The badge is what makes that visible from the console. The
+// count is never zero — the console-only admin account is deliberately role-less —
+// so it is the INCREASE that matters.
+function needsSetup(u: AdminUser): boolean {
+  return !u.isAdmin && !u.isTeacher && !u.isStudent && u.status === "active";
+}
+
 export default function UsersPage() {
   const [q, setQ] = useState("");
   const [offset, setOffset] = useState(0);
+  const [onlyNeedsSetup, setOnlyNeedsSetup] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const query = useQuery<{ items: AdminUser[]; total: number }, Error>({
-    queryKey: ["users", q, offset],
+    queryKey: ["users", q, offset, onlyNeedsSetup],
     queryFn: () =>
-      api(`/admin/users?limit=${PAGE}&offset=${offset}${q ? `&q=${encodeURIComponent(q)}` : ""}`),
+      api(
+        `/admin/users?limit=${PAGE}&offset=${offset}` +
+          `${q ? `&q=${encodeURIComponent(q)}` : ""}` +
+          `${onlyNeedsSetup ? "&role=needs_setup" : ""}`,
+      ),
     placeholderData: keepPreviousData,
   });
 
@@ -35,15 +48,26 @@ export default function UsersPage() {
         title="Users"
         subtitle={query.data ? `${query.data.total} account${query.data.total === 1 ? "" : "s"}` : undefined}
         right={
-          <Input
-            className="w-64"
-            placeholder="Search email or name…"
-            value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
-              setOffset(0);
-            }}
-          />
+          <div className="flex items-center gap-2">
+            <Button
+              variant={onlyNeedsSetup ? "default" : "outline"}
+              onClick={() => {
+                setOnlyNeedsSetup((v) => !v);
+                setOffset(0);
+              }}
+            >
+              Needs setup
+            </Button>
+            <Input
+              className="w-64"
+              placeholder="Search email or name…"
+              value={q}
+              onChange={(e) => {
+                setQ(e.target.value);
+                setOffset(0);
+              }}
+            />
+          </div>
         }
       />
       {query.isPending && <Spinner />}
@@ -85,7 +109,8 @@ export default function UsersPage() {
                       {u.isTeacher && <ToneBadge tone="ok">teacher</ToneBadge>}
                       {u.isStudent && <ToneBadge tone="muted">student</ToneBadge>}
                       {u.canViewTranscripts && <ToneBadge tone="warn">transcripts</ToneBadge>}
-                      {!u.isAdmin && !u.isTeacher && !u.isStudent && !u.canViewTranscripts && (
+                      {needsSetup(u) && <ToneBadge tone="warn">needs setup</ToneBadge>}
+                      {!u.isAdmin && !u.isTeacher && !u.isStudent && !u.canViewTranscripts && !needsSetup(u) && (
                         <span className="text-ink-faint text-sm">—</span>
                       )}
                     </div>

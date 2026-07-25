@@ -19,12 +19,12 @@ declare global {
 export function requireUser(deps: Deps): RequestHandler {
   return async (req, res, next) => {
     if (!deps.db) {
-      res.status(503).json({ error: "db_not_configured" });
+      res.status(503).json({ error: "db_not_configured", message: "KaraOrchee is having trouble right now." });
       return;
     }
     const oid = req.user?.oid;
     if (!oid) {
-      res.status(401).json({ error: "unauthorized" });
+      res.status(401).json({ error: "unauthorized", message: "Sign in again to continue." });
       return;
     }
     try {

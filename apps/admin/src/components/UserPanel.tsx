@@ -1,11 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { api, ApiError, type AdminUser, type AdminUserDetail, type RolePatch } from "../api";
 import { ErrorNote, Spinner, statusTone, AuditTrail } from "./ui";
 import ToneBadge from "./ToneBadge";
 import { Button } from "@/components/ui-kit/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui-kit/sheet";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui-kit/alert-dialog";
 
 // The panel is deliberately sectioned: Notes-phase sections (subscription/entitlements,
 // lessons, teacher-student links) slot in as new <Section>s without reshaping this file.
@@ -83,20 +93,31 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
     queryFn: () => api(`/admin/users/${userId}`),
   });
 
+  // The server refuses to leave an account with neither capability until the patch
+  // is re-sent with force — that account renders a healthy home where every write
+  // 403s, so the refusal is held, not styled away.
+  const [confirmNoRole, setConfirmNoRole] = useState<RolePatch | null>(null);
+
   const roles = useMutation<AdminUser, Error, RolePatch>({
     mutationFn: (patch) =>
       api(`/admin/users/${userId}/roles`, { method: "PATCH", body: JSON.stringify(patch) }),
     onSuccess: () => {
+      setConfirmNoRole(null);
       qc.invalidateQueries({ queryKey: ["user", userId] });
       qc.invalidateQueries({ queryKey: ["users"] });
     },
-    onError: (e) => {
+    onError: (e, patch) => {
+      if (e instanceof ApiError && e.code === "would_leave_no_role") {
+        setConfirmNoRole(patch);
+        return;
+      }
       toast.error(roleErrorMessage(e));
     },
   });
 
   const u = detail.data?.user;
   const isSelf = me?.id === userId;
+  const needsSetup = !!u && !u.isAdmin && !u.isTeacher && !u.isStudent && u.status === "active";
 
   return (
     <Sheet
@@ -136,6 +157,16 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
 
         {u && (
           <>
+            {needsSetup && (
+              <div className="px-5 py-3 border-b border-line bg-amber-50/60 dark:bg-amber-950/20">
+                <ToneBadge tone="warn">needs setup</ToneBadge>
+                <p className="text-xs text-ink-soft mt-2 leading-relaxed">
+                  This account has neither capability: it can't record a lesson or connect with
+                  anyone, and every Notes write answers 403. The app asks the person to choose on
+                  their next launch — granting a role here is a manual intervention.
+                </p>
+              </div>
+            )}
             <Section title="Roles">
               <RoleToggle
                 label="Admin"
@@ -208,6 +239,27 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
             </Section>
           </>
         )}
+
+        <AlertDialog open={!!confirmNoRole} onOpenChange={(open) => { if (!open) setConfirmNoRole(null); }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Leave this account with no role?</AlertDialogTitle>
+              <AlertDialogDescription>
+                It will keep working everywhere except Notes: no recording, no connecting, no notes.
+                The app asks the person to choose a role on their next launch.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                disabled={roles.isPending}
+                onClick={() => confirmNoRole && roles.mutate({ ...confirmNoRole, force: true })}
+              >
+                {roles.isPending ? "Saving…" : "Confirm"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </SheetContent>
     </Sheet>
   );

@@ -333,6 +333,64 @@ describe("user detail + roles", () => {
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ isAdmin: false });
   });
+
+  // Two of the three role-less accounts in dev were made right here.
+  it("refuses to leave an account with no role unless forced", async () => {
+    const [plain] = await db.orm.select().from(users).where(eq(users.entraOid, "plain-oid"));
+    expect(plain.isTeacher).toBe(true); // set by the patch test above
+
+    const refused = await request(app())
+      .patch(`/admin/users/${plain.id}/roles`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ isTeacher: false });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe("would_leave_no_role");
+    expect(refused.body.message).toBe("This account would have no teaching or learning role. Confirm to continue.");
+    const [unchanged] = await db.orm.select().from(users).where(eq(users.id, plain.id));
+    expect(unchanged.isTeacher).toBe(true);
+
+    const forced = await request(app())
+      .patch(`/admin/users/${plain.id}/roles`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ isTeacher: false, force: true });
+    expect(forced.status).toBe(200);
+    expect(forced.body.isTeacher).toBe(false);
+    expect(forced.body.isStudent).toBe(false);
+  });
+
+  it("granting isStudent starts the trial clock — a null clock is an infinite trial", async () => {
+    const [plain] = await db.orm.select().from(users).where(eq(users.entraOid, "plain-oid"));
+    expect(plain.trialStartedAt).toBeNull();
+    const res = await request(app())
+      .patch(`/admin/users/${plain.id}/roles`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ isStudent: true });
+    expect(res.status).toBe(200);
+    expect(res.body.trialStartedAt).not.toBeNull();
+  });
+
+  it("role=needs_setup lists only bricked accounts", async () => {
+    const [plain] = await db.orm.select().from(users).where(eq(users.entraOid, "plain-oid"));
+    await db.orm.update(users).set({ isTeacher: false, isStudent: false }).where(eq(users.id, plain.id));
+
+    const res = await request(app())
+      .get("/admin/users")
+      .query({ role: "needs_setup" })
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    const ids = res.body.items.map((u: { id: string }) => u.id);
+    expect(ids).toContain(plain.id);
+    for (const u of res.body.items as { isTeacher: boolean; isStudent: boolean; isAdmin: boolean; status: string }[]) {
+      expect(u.isTeacher).toBe(false);
+      expect(u.isStudent).toBe(false);
+      expect(u.isAdmin).toBe(false);
+      expect(u.status).toBe("active");
+    }
+    expect(res.body.total).toBe(res.body.items.length);
+
+    const all = await request(app()).get("/admin/users").set("Authorization", `Bearer ${adminToken}`);
+    expect(all.body.total).toBeGreaterThan(res.body.total);
+  });
 });
 
 describe("cors", () => {

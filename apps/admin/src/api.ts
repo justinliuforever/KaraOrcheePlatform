@@ -79,9 +79,11 @@ export interface AdminUserDetail {
   recentAudit: AuditEntry[];
 }
 
+// force acknowledges "this account will have no teaching or learning role" — the
+// state that silently bricked two dev accounts.
 export type RolePatch = Partial<
   Pick<AdminUser, "isAdmin" | "isTeacher" | "isStudent" | "canViewTranscripts">
->;
+> & { force?: boolean };
 
 export interface AdminPiece {
   id: string;

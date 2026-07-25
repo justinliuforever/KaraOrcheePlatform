@@ -343,12 +343,15 @@ describe("students roster (teacher side)", () => {
     expect(res.body.notes[0].status).toBe("sent");
   });
 
-  it("detail: a removed link is still served, email intact while the account lives", async () => {
+  // A student who leaves withdraws their address with them; the history stays
+  // readable so "Invite again" still works.
+  it("detail: a removed link is still served, but the email is withdrawn", async () => {
     const res = await request(makeApp()).get(`/v1/me/students/${s2.id}`).set("Authorization", auth(t1));
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("removed");
     expect(res.body.removedAt).not.toBeNull();
-    expect(res.body.email).toBe("nr-ros-rob@k.com");
+    expect(res.body.displayName).not.toBeNull();
+    expect(res.body.email).toBeNull();
     expect(res.body.counterpartDeleted).toBe(false);
   });
 
@@ -477,7 +480,8 @@ describe("invite code history", () => {
     sr = await makeUser({ oid: "nr-inv-redeemer", name: "Redeemer Renee", role: "student" });
     sd = await makeUser({ oid: "nr-inv-redeemer-del", name: "Redeemer Dana", role: "student" });
 
-    liveInv = await mint();
+    // One live code per issuer per direction, so each code must leave the live set
+    // (revoked / spent / expired) before the next mint. The live one comes last.
     revokedInv = await mint();
     const rev = await request(makeApp()).delete(`/v1/invites/${revokedInv.id}`).set("Authorization", auth(ti));
     if (rev.status !== 200) throw new Error(`revoke failed: ${rev.status}`);
@@ -491,6 +495,7 @@ describe("invite code history", () => {
     if (gone.status !== 200) throw new Error(`account delete failed: ${gone.status}`);
     expiredInv = await mint();
     await db.orm.update(invites).set({ expiresAt: daysAgo(1) }).where(eq(invites.id, expiredInv.id));
+    liveInv = await mint();
   });
 
   it("default GET /v1/invites is unchanged: live only, raw B1 rows with no state key", async () => {
