@@ -113,6 +113,20 @@
       "when": 1784716689635,
       "tag": "0015_flimsy_prodigy",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1784939656802,
+      "tag": "0016_striped_mentor",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784944832704,
+      "tag": "0017_talented_mach_iv",
+      "breakpoints": true
     }
   ]
 }

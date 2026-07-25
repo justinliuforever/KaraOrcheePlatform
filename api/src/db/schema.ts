@@ -246,13 +246,18 @@ export const lessonSessions = pgTable("lesson_sessions", {
   studentId: uuid("student_id").references(() => users.id),
   pieceId: text("piece_id").references(() => pieces.id),
   pieceLabel: text("piece_label"), // free-text fallback for non-catalog pieces
+  // Stamped ONLY when the piece actually changed value, never by a student
+  // assignment: it is the sole evidence that a retry's LLM inputs would differ,
+  // and updated_at cannot carry that (every PATCH bumps it).
+  pieceUpdatedAt: timestamp("piece_updated_at", { withTimezone: true }),
   startedAt: timestamp("started_at", { withTimezone: true }),
   endedAt: timestamp("ended_at", { withTimezone: true }),
   durationSec: integer("duration_sec"),
   audioPath: text("audio_path"), // lesson-audio container-relative; blob auto-deletes at 90d
   audioBytes: integer("audio_bytes"),
   language: text("language").notNull().default("en"),
-  // Default-checked "student has been informed this lesson is recorded" confirm.
+  // "Student has been informed this lesson is recorded" confirm. NEVER pre-checked:
+  // the app requires a deliberate tap before a capture can start.
   attested: boolean("attested").notNull().default(false),
   status: text("status").notNull().default("created"), // created | submitted | canceled
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -272,6 +277,19 @@ export const noteJobs = pgTable("note_jobs", {
   error: text("error"),
   failureHints: jsonb("failure_hints").notNull().default([]),
   attempts: integer("attempts").notNull().default(0),
+  // Terminal cause, machine-readable. NULL on pre-0016 rows and on any job that
+  // has not failed = "unknown". no_speech | thin_note | asr_error | llm_invalid |
+  // worker_crash | no_audio | lesson_discarded. Cleared on every requeue.
+  failureCode: text("failure_code"),
+  // Owner discarded the lesson: transcript blob deleted, transcript_path nulled,
+  // metrics.warnings stripped. The row survives as the only record that this
+  // failure happened; after a discard it holds no lesson content.
+  discardedAt: timestamp("discarded_at", { withTimezone: true }),
+  // Stamped at submit AND on every requeue. Wall-time measurement and the app's
+  // elapsed counter must anchor here, never on created_at: a retry bumps
+  // updated_at and leaves created_at at the first attempt, so
+  // updated_at - created_at silently includes the human gap before Retry was tapped.
+  startedAt: timestamp("started_at", { withTimezone: true }),
   transcriptPath: text("transcript_path"), // notes-assets, durable (survives audio deletion)
   metrics: jsonb("metrics").notNull().default({}), // asr/llm timings, annotation + grounding counts
   createdBy: uuid("created_by").references(() => users.id),

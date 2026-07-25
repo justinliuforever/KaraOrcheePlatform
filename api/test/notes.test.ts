@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql as sqlRaw } from "drizzle-orm";
 import {
   generateKeyPair,
   exportJWK,
@@ -23,6 +23,7 @@ import {
   entitlements,
   platformConfig,
   devices,
+  auditEvents,
 } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { LessonStore } from "../src/notes/lessons_store";
@@ -41,21 +42,48 @@ let privateKey: CryptoKey;
 interface FakeLessons extends LessonStore {
   audio: { bytes: number } | null;
   deleted: string[];
+  failNextDelete: boolean;
 }
 function makeFakeLessons(): FakeLessons {
   const f: FakeLessons = {
     audio: { bytes: 1000 },
     deleted: [],
+    failNextDelete: false,
     blobPath: (t, l) => `${t}/${l}.m4a`,
     uploadUrl: (p) => `https://fake/${p}?sas`,
     async audioProps() {
       return f.audio;
     },
     async deleteAudio(p) {
+      if (f.failNextDelete) {
+        f.failNextDelete = false;
+        throw new Error("blob service unavailable");
+      }
       f.deleted.push(p);
     },
   };
   return f;
+}
+
+interface FakeAssets {
+  deleted: string[];
+  reads: string[];
+  readTranscript(path: string): Promise<unknown | null>;
+  deleteAsset(path: string): Promise<void>;
+}
+function makeFakeAssets(): FakeAssets {
+  const a: FakeAssets = {
+    deleted: [],
+    reads: [],
+    async readTranscript(p) {
+      a.reads.push(p);
+      return { text: "transcript" };
+    },
+    async deleteAsset(p) {
+      a.deleted.push(p);
+    },
+  };
+  return a;
 }
 
 interface FakeQueue extends NotesQueue {
@@ -76,9 +104,16 @@ function makeFakeQueue(): FakeQueue {
 
 let fakeLessons: FakeLessons;
 let fakeQueue: FakeQueue;
+let fakeAssets: FakeAssets;
 
 function makeApp() {
-  return createServer({ db, auth: verifier, lessons: fakeLessons, notesQueue: fakeQueue });
+  return createServer({
+    db,
+    auth: verifier,
+    lessons: fakeLessons,
+    notesQueue: fakeQueue,
+    notesAssets: fakeAssets,
+  });
 }
 
 function daysAgo(n: number): Date {
@@ -247,6 +282,7 @@ beforeAll(async () => {
   db = await createTestDb();
   fakeLessons = makeFakeLessons();
   fakeQueue = makeFakeQueue();
+  fakeAssets = makeFakeAssets();
 
   await db.orm.insert(pieces).values({
     id: "seed_piece",
@@ -268,6 +304,7 @@ beforeAll(async () => {
 beforeEach(() => {
   // Each test starts from a completed, healthy upload + working queue.
   fakeLessons.audio = { bytes: 1000 };
+  fakeLessons.failNextDelete = false;
   fakeQueue.throwNext = false;
 });
 
@@ -783,7 +820,9 @@ describe("lessons", () => {
     expect(cancel.status).toBe(200);
     expect(fakeLessons.deleted).toContain(audioPath);
 
-    // A submitted lesson can no longer be canceled.
+    // CONTRACT CHANGE (r4 fix 2): a submitted lesson with a live job is refused
+    // as lesson_processing, not already_submitted — "already submitted" is no
+    // longer a reason to refuse, only "still running" is.
     const submitted = await request(makeApp())
       .post("/v1/lessons")
       .set("Authorization", `Bearer ${teacher.token}`)
@@ -796,7 +835,983 @@ describe("lessons", () => {
       .delete(`/v1/lessons/${submitted.body.lesson.id}`)
       .set("Authorization", `Bearer ${teacher.token}`);
     expect(late.status).toBe(409);
-    expect(late.body.error).toBe("already_submitted");
+    expect(late.body.error).toBe("lesson_processing");
+  });
+});
+
+// ── 5b. Lesson metadata lifecycle: PATCH, discard, retry policy (r4) ────────────────
+
+describe("lesson metadata lifecycle", () => {
+  let mdT: TestUser; // recording teacher
+  let mdS: TestUser; // linked student the lesson was really with
+  let mdS2: TestUser; // a second linked student, for the "teacher chose someone else" case
+  let solo: TestUser; // solo (student-owned) recorder
+
+  const HOUR = 60 * 60 * 1000;
+
+  beforeAll(async () => {
+    mdT = await makeUser({ oid: "md-teacher", name: "Meta Teacher", role: "teacher" });
+    mdS = await makeUser({ oid: "md-student", name: "Meta Student", role: "student" });
+    mdS2 = await makeUser({ oid: "md-student-2", name: "Meta Student Two", role: "student" });
+    solo = await makeUser({ oid: "md-solo", name: "Meta Solo", role: "student", notesConsent: true });
+    await linkActive(mdT.id, mdS.id);
+    await linkActive(mdT.id, mdS2.id);
+    // 32 bars: everything past bar 32 is out of range once this piece is named.
+    await db.orm.insert(pieces).values({
+      id: "short_piece",
+      title: "Burgmüller Op. 100 No. 2",
+      composer: "Friedrich Burgmüller",
+      rights: "public_domain",
+      status: "published",
+      publishedVersion: 5,
+      facts: { measures: 32 },
+    });
+  });
+
+  async function mkLesson(opts: {
+    owner?: TestUser;
+    ownerRole?: "teacher" | "student";
+    studentId?: string | null;
+    pieceId?: string | null;
+    pieceLabel?: string | null;
+    status?: string;
+  } = {}) {
+    const owner = opts.owner ?? mdT;
+    const [row] = await db.orm
+      .insert(lessonSessions)
+      .values({
+        teacherId: owner.id,
+        ownerRole: opts.ownerRole ?? "teacher",
+        studentId: opts.studentId ?? null,
+        pieceId: opts.pieceId ?? null,
+        pieceLabel: opts.pieceLabel ?? null,
+        status: opts.status ?? "submitted",
+      })
+      .returning();
+    const [withPath] = await db.orm
+      .update(lessonSessions)
+      .set({ audioPath: `${owner.id}/${row!.id}.m4a` })
+      .where(eq(lessonSessions.id, row!.id))
+      .returning();
+    return withPath!;
+  }
+
+  async function mkJob(lessonSessionId: string, opts: {
+    status?: string;
+    failureCode?: string | null;
+    attempts?: number;
+    transcriptPath?: string | null;
+    metrics?: Record<string, unknown>;
+    movedAgoMs?: number;
+  } = {}) {
+    const [row] = await db.orm
+      .insert(noteJobs)
+      .values({
+        lessonSessionId,
+        status: opts.status ?? "failed",
+        failureCode: opts.failureCode ?? null,
+        attempts: opts.attempts ?? 0,
+        transcriptPath: opts.transcriptPath ?? null,
+        metrics: opts.metrics ?? {},
+        createdBy: mdT.id,
+        startedAt: new Date(),
+      })
+      .returning();
+    if (opts.movedAgoMs !== undefined) {
+      const [aged] = await db.orm
+        .update(noteJobs)
+        .set({ updatedAt: new Date(Date.now() - opts.movedAgoMs) })
+        .where(eq(noteJobs.id, row!.id))
+        .returning();
+      return aged!;
+    }
+    return row!;
+  }
+
+  async function mkNote(lessonSessionId: string, opts: {
+    teacherId?: string;
+    studentId?: string | null;
+    origin?: "teacher" | "self";
+    status?: "draft" | "sent" | "retracted";
+    pieceId?: string | null;
+    pieceLabel?: string | null;
+    pieceVersion?: number | null;
+    annotations?: { instruction: string; quote: string; location: Record<string, unknown> }[];
+  } = {}) {
+    const content = { lessonSummary: "Good work.", practicePlan: [] };
+    const [note] = await db.orm
+      .insert(notes)
+      .values({
+        lessonSessionId,
+        teacherId: opts.teacherId ?? mdT.id,
+        studentId: opts.studentId ?? null,
+        origin: opts.origin ?? "teacher",
+        status: opts.status ?? "draft",
+        pieceId: opts.pieceId ?? null,
+        pieceLabel: opts.pieceLabel ?? null,
+        pieceVersion: opts.pieceVersion ?? null,
+        contentOriginal: content,
+        content,
+      })
+      .returning();
+    const anns = opts.annotations ?? [];
+    const rows = anns.length
+      ? await db.orm
+          .insert(noteAnnotations)
+          .values(anns.map((a, i) => ({
+            noteId: note!.id,
+            idx: i,
+            category: "other",
+            instruction: a.instruction,
+            quote: a.quote,
+            location: a.location,
+          })))
+          .returning()
+      : [];
+    return { note: note!, annotations: rows };
+  }
+
+  const patch = (id: string, body: Record<string, unknown>, who: TestUser = mdT) =>
+    request(makeApp()).patch(`/v1/lessons/${id}`).set("Authorization", `Bearer ${who.token}`).send(body);
+  const del = (id: string, who: TestUser = mdT) =>
+    request(makeApp()).delete(`/v1/lessons/${id}`).set("Authorization", `Bearer ${who.token}`);
+  const getOne = (id: string, who: TestUser = mdT) =>
+    request(makeApp()).get(`/v1/lessons/${id}`).set("Authorization", `Bearer ${who.token}`);
+
+  // ── PATCH ───────────────────────────────────────────────────────────────────
+
+  it("assigns a student on a submitted lesson that has no note yet", async () => {
+    const lesson = await mkLesson();
+    await mkJob(lesson.id, { status: "failed", failureCode: "thin_note" });
+    const res = await patch(lesson.id, { studentId: mdS.id });
+    expect(res.status).toBe(200);
+    expect(res.body.lesson.studentId).toBe(mdS.id);
+    expect(res.body.notes).toEqual([]);
+    expect(res.body.regrounded).toBe(0);
+  });
+
+  it("cascades to a draft that merely inherited the lesson's old value", async () => {
+    const lesson = await mkLesson({ studentId: null });
+    const { note } = await mkNote(lesson.id, { studentId: null, status: "draft" });
+    const res = await patch(lesson.id, { studentId: mdS.id });
+    expect(res.status).toBe(200);
+    expect(res.body.notes).toHaveLength(1);
+    expect(res.body.notes[0]).toMatchObject({ id: note.id, updated: true, studentId: mdS.id });
+    const [row] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect(row!.studentId).toBe(mdS.id);
+  });
+
+  it("never clobbers a student the teacher chose at review", async () => {
+    // The lesson never named anyone; the teacher picked mdS2 while reviewing.
+    const lesson = await mkLesson({ studentId: null });
+    const { note } = await mkNote(lesson.id, { studentId: mdS2.id, status: "draft" });
+    const res = await patch(lesson.id, { studentId: mdS.id });
+    expect(res.status).toBe(200);
+    expect(res.body.lesson.studentId).toBe(mdS.id);
+    expect(res.body.notes[0]).toMatchObject({ id: note.id, updated: false, studentId: mdS2.id });
+    const [row] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect(row!.studentId).toBe(mdS2.id); // untouched
+  });
+
+  it("M7: the wire carries the DRAFT's own studentId after a non-cascading PATCH", async () => {
+    // The teacher home resolves its Needs-attention row from the LESSON today,
+    // which would name the newly assigned student on a draft that still goes to
+    // the one the teacher chose. The list must expose the note's own studentId
+    // for that row to be fixable, and it does.
+    const lesson = await mkLesson({ studentId: null });
+    await mkNote(lesson.id, { studentId: mdS2.id, status: "draft" });
+    await patch(lesson.id, { studentId: mdS.id });
+    const list = await request(makeApp()).get("/v1/lessons").set("Authorization", `Bearer ${mdT.token}`);
+    const item = list.body.items.find((i: { lesson: { id: string } }) => i.lesson.id === lesson.id);
+    expect(item.lesson.studentId).toBe(mdS.id);
+    expect(item.notes[0].studentId).toBe(mdS2.id);
+    expect(item.notes[0].origin).toBe("teacher");
+  });
+
+  it("updates the fact but never a sent note", async () => {
+    const lesson = await mkLesson({ studentId: mdS.id, pieceLabel: "Old label" });
+    const { note } = await mkNote(lesson.id, {
+      studentId: mdS.id,
+      status: "sent",
+      pieceLabel: "Old label",
+    });
+    const res = await patch(lesson.id, { pieceLabel: "New label" });
+    expect(res.status).toBe(200);
+    expect(res.body.lesson.pieceLabel).toBe("New label");
+    expect(res.body.notes[0]).toMatchObject({ id: note.id, updated: false, status: "sent" });
+    const [row] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect(row!.pieceLabel).toBe("Old label");
+  });
+
+  it("rejects a student on a solo lesson and an unlinked student on a teacher lesson", async () => {
+    const soloLesson = await mkLesson({ owner: solo, ownerRole: "student" });
+    const soloRes = await patch(soloLesson.id, { studentId: mdS.id }, solo);
+    expect(soloRes.status).toBe(400);
+    expect(soloRes.body.error).toBe("solo_lesson_no_student");
+
+    const lesson = await mkLesson();
+    const unlinked = await patch(lesson.id, { studentId: stranger.id });
+    expect(unlinked.status).toBe(400);
+    expect(unlinked.body.error).toBe("not_your_student");
+
+    const badPiece = await patch(lesson.id, { pieceId: "no_such_piece" });
+    expect(badPiece.status).toBe(400);
+    expect(badPiece.body.error).toBe("unknown_piece");
+  });
+
+  // ── D1: no bare 400 after a 45-minute recording ─────────────────────────────
+
+  it("every repairable 400 carries the same message on create and on PATCH", async () => {
+    const post = (body: Record<string, unknown>, who: TestUser = mdT) =>
+      request(makeApp()).post("/v1/lessons").set("Authorization", `Bearer ${who.token}`).send(body);
+
+    const created = await post({ pieceId: "no_such_piece" });
+    expect(created.status).toBe(400);
+    expect(created.body.error).toBe("unknown_piece");
+    expect(created.body.message).toBeTruthy();
+
+    const unlinkedCreate = await post({ studentId: stranger.id });
+    expect(unlinkedCreate.body.error).toBe("not_your_student");
+    expect(unlinkedCreate.body.message).toBeTruthy();
+
+    const soloCreate = await post({ ownerRole: "student", studentId: mdS.id, attested: true }, solo);
+    expect(soloCreate.body.error).toBe("solo_lesson_no_student");
+    expect(soloCreate.body.message).toBeTruthy();
+
+    // The two write paths must say the SAME thing about the same problem.
+    const lesson = await mkLesson();
+    const soloLesson = await mkLesson({ owner: solo, ownerRole: "student" });
+    expect((await patch(lesson.id, { pieceId: "no_such_piece" })).body.message).toBe(created.body.message);
+    expect((await patch(lesson.id, { studentId: stranger.id })).body.message).toBe(unlinkedCreate.body.message);
+    expect((await patch(soloLesson.id, { studentId: mdS.id }, solo)).body.message).toBe(soloCreate.body.message);
+  });
+
+  it("pins pieceVersion on a self note, which has no later send event", async () => {
+    const lesson = await mkLesson({ owner: solo, ownerRole: "student" });
+    const { note } = await mkNote(lesson.id, {
+      teacherId: solo.id,
+      studentId: solo.id,
+      origin: "self",
+      status: "sent",
+    });
+    const res = await patch(lesson.id, { pieceId: "short_piece" }, solo);
+    expect(res.status).toBe(200);
+    expect(res.body.notes[0]).toMatchObject({ id: note.id, updated: true, pieceId: "short_piece" });
+    const [row] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect(row!.pieceVersion).toBe(5);
+    expect(row!.studentId).toBe(solo.id); // a self note's student is the owner, never rewritten
+  });
+
+  it("re-grounds only the auto anchors that now point past the end of the piece", async () => {
+    const lesson = await mkLesson({ studentId: mdS.id });
+    const { note, annotations } = await mkNote(lesson.id, {
+      studentId: mdS.id,
+      status: "draft",
+      annotations: [
+        {
+          instruction: "Past the end",
+          quote: "bar eighty four",
+          location: { type: "absolute", raw: "bar 84", grounded: true, measureStart: 84, measureEnd: 84, pinnedBy: "auto" },
+        },
+        {
+          instruction: "Still inside",
+          quote: "bar four",
+          location: { type: "absolute", raw: "bar 4", grounded: true, measureStart: 4, measureEnd: 4, pinnedBy: "auto" },
+        },
+        {
+          instruction: "A human put this here",
+          quote: "over there",
+          location: { type: "absolute", raw: "over there", grounded: true, measureStart: 90, measureEnd: 90, pinnedBy: "teacher" },
+        },
+      ],
+    });
+    const res = await patch(lesson.id, { pieceId: "short_piece" });
+    expect(res.status).toBe(200);
+    expect(res.body.regrounded).toBe(1);
+
+    const rows = await db.orm
+      .select()
+      .from(noteAnnotations)
+      .where(eq(noteAnnotations.noteId, note.id));
+    const byId = new Map(rows.map((r) => [r.id, r.location as Record<string, unknown>]));
+    const demoted = byId.get(annotations[0]!.id)!;
+    expect(demoted.grounded).toBe(false);
+    expect(demoted.measureStart).toBeUndefined();
+    expect(demoted.measureEnd).toBeUndefined();
+    expect(demoted.pinnedBy).toBeUndefined();
+    expect(demoted.raw).toBe("bar 84"); // the words survive as the clue
+    expect(typeof demoted.hint).toBe("string");
+    expect(byId.get(annotations[1]!.id)!.grounded).toBe(true); // in range
+    const human = byId.get(annotations[2]!.id)!;
+    expect(human.grounded).toBe(true); // a deliberate human placement is never touched
+    expect(human.measureStart).toBe(90);
+  });
+
+  it("refuses a discarded lesson, an empty body, and someone else's lesson", async () => {
+    const canceled = await mkLesson({ status: "canceled" });
+    const discarded = await patch(canceled.id, { pieceLabel: "x" });
+    expect(discarded.status).toBe(409);
+    expect(discarded.body.error).toBe("lesson_discarded");
+
+    const lesson = await mkLesson();
+    const empty = await patch(lesson.id, {});
+    expect(empty.status).toBe(400);
+    expect(empty.body.error).toBe("nothing_to_update");
+
+    // 404, never 403 — do not confirm that someone else's lesson exists.
+    const notMine = await patch(lesson.id, { pieceLabel: "x" }, stranger);
+    expect(notMine.status).toBe(404);
+    const alsoNotMine = await patch(lesson.id, { pieceLabel: "x" }, teacher);
+    expect(alsoNotMine.status).toBe(404);
+  });
+
+  it("is allowed on a created lesson — the divergence case a local-only edit cannot fix", async () => {
+    const created = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({ clientLessonId: "md-created-1" });
+    const id = created.body.lesson.id;
+    const res = await patch(id, { studentId: mdS.id, pieceLabel: "  Trimmed  " });
+    expect(res.status).toBe(200);
+    expect(res.body.lesson.studentId).toBe(mdS.id);
+    expect(res.body.lesson.pieceLabel).toBe("Trimmed");
+
+    // Re-creating with the same clientLessonId returns the row WITH the patch —
+    // create's dedupe stays idempotent-pure and the PATCH is what carried the edit.
+    const again = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({ clientLessonId: "md-created-1", studentId: null });
+    expect(again.status).toBe(200);
+    expect(again.body.lesson.studentId).toBe(mdS.id);
+  });
+
+  it("clears a field with an explicit null and leaves absent fields alone", async () => {
+    const lesson = await mkLesson({ studentId: mdS.id, pieceId: "short_piece", pieceLabel: "Keep me" });
+    const res = await patch(lesson.id, { studentId: null });
+    expect(res.status).toBe(200);
+    expect(res.body.lesson.studentId).toBeNull();
+    expect(res.body.lesson.pieceId).toBe("short_piece");
+    expect(res.body.lesson.pieceLabel).toBe("Keep me");
+  });
+
+  it("writes lesson.assign_student and lesson.set_piece audits", async () => {
+    const lesson = await mkLesson();
+    await patch(lesson.id, { studentId: mdS.id, pieceId: "short_piece", pieceLabel: "Op. 100 No. 2" });
+    const rows = await db.orm
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.subjectId, lesson.id));
+    const actions = rows.map((r) => r.action);
+    expect(actions).toContain("lesson.assign_student");
+    expect(actions).toContain("lesson.set_piece");
+    const assign = rows.find((r) => r.action === "lesson.assign_student")!;
+    expect((assign.detail as { to: string }).to).toBe(mdS.id);
+    const setPiece = rows.find((r) => r.action === "lesson.set_piece")!;
+    expect((setPiece.detail as { toPieceId: string }).toPieceId).toBe("short_piece");
+  });
+
+  // ── DELETE / discard ────────────────────────────────────────────────────────
+
+  it("discards a permanently failed lesson: audio, transcript, draft and warnings all go", async () => {
+    const lesson = await mkLesson({ studentId: mdS.id, pieceLabel: "Op. 100" });
+    await db.orm
+      .update(lessonSessions)
+      .set({ clientLessonId: "md-discard-1" })
+      .where(eq(lessonSessions.id, lesson.id));
+    const job = await mkJob(lesson.id, {
+      status: "failed",
+      failureCode: "thin_note",
+      attempts: 1,
+      transcriptPath: `transcripts/${lesson.id}.json`,
+      // r4_verify M1: metrics.warnings is verbatim lesson content.
+      metrics: { asr_secs: 12, warnings: ["dropped_unverifiable_quote: keep your wrist relaxed on"] },
+    });
+    const { note, annotations } = await mkNote(lesson.id, {
+      studentId: mdS.id,
+      status: "draft",
+      annotations: [{ instruction: "x", quote: "y", location: {} }],
+    });
+
+    const res = await del(lesson.id);
+    expect(res.status).toBe(200);
+
+    const [row] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, lesson.id));
+    expect(row!.status).toBe("canceled");
+    expect(row!.clientLessonId).toBeNull(); // released, so a re-record can reuse it
+    const [jobRow] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job.id));
+    expect(jobRow).toBeTruthy(); // the stub survives: the only record the failure happened
+    expect(jobRow!.discardedAt).not.toBeNull();
+    expect(jobRow!.transcriptPath).toBeNull();
+    expect(jobRow!.metrics).toEqual({ asr_secs: 12 }); // counts survive, content does not
+    expect(fakeLessons.deleted).toContain(lesson.audioPath);
+    expect(fakeAssets.deleted).toContain(`transcripts/${lesson.id}.json`);
+    const noteRows = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect(noteRows.length).toBe(0);
+    const annRows = await db.orm
+      .select()
+      .from(noteAnnotations)
+      .where(eq(noteAnnotations.id, annotations[0]!.id));
+    expect(annRows.length).toBe(0);
+
+    const audit = await db.orm.select().from(auditEvents).where(eq(auditEvents.subjectId, lesson.id));
+    const discard = audit.find((a) => a.action === "lesson.discard")!;
+    expect(discard).toBeTruthy();
+    expect(discard.detail).toMatchObject({
+      failureCode: "thin_note",
+      attempts: 1,
+      notesDeleted: 1,
+      audioDeleted: true,
+      transcriptDeleted: true,
+    });
+  });
+
+  it("is idempotent: a second discard returns 200 and deletes nothing twice", async () => {
+    const lesson = await mkLesson();
+    await mkJob(lesson.id, { status: "failed", failureCode: "no_speech" });
+    expect((await del(lesson.id)).status).toBe(200);
+    const deletionsAfterFirst = fakeLessons.deleted.filter((p) => p === lesson.audioPath).length;
+    const second = await del(lesson.id);
+    expect(second.status).toBe(200);
+    expect(second.body.ok).toBe(true);
+    expect(fakeLessons.deleted.filter((p) => p === lesson.audioPath).length).toBe(deletionsAfterFirst);
+  });
+
+  it("refuses while a job is genuinely running, and allows it once wedged past the hatch", async () => {
+    const running = await mkLesson();
+    await mkJob(running.id, { status: "processing", movedAgoMs: 5 * 60 * 1000 });
+    const fresh = await del(running.id);
+    expect(fresh.status).toBe(409);
+    expect(fresh.body.error).toBe("lesson_processing");
+    expect(fresh.body.message).toContain("once it finishes");
+
+    const wedged = await mkLesson();
+    await mkJob(wedged.id, { status: "processing", movedAgoMs: 61 * 60 * 1000 });
+    expect((await del(wedged.id)).status).toBe(200);
+  });
+
+  it("refuses a lesson whose note was already sent", async () => {
+    const lesson = await mkLesson({ studentId: mdS.id });
+    await mkJob(lesson.id, { status: "ready_for_review" });
+    await mkNote(lesson.id, { studentId: mdS.id, status: "sent" });
+    const res = await del(lesson.id);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("lesson_has_sent_note");
+    const [row] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, lesson.id));
+    expect(row!.status).toBe("submitted"); // nothing happened
+  });
+
+  it("allows discarding an unwanted ready_for_review draft", async () => {
+    const lesson = await mkLesson({ studentId: mdS.id });
+    await mkJob(lesson.id, { status: "ready_for_review", metrics: { warnings: ["dropped_unverifiable_quote: sit up"] } });
+    const { note } = await mkNote(lesson.id, { studentId: mdS.id, status: "draft" });
+    expect((await del(lesson.id)).status).toBe(200);
+    expect((await db.orm.select().from(notes).where(eq(notes.id, note.id))).length).toBe(0);
+    const [jobRow] = await db.orm.select().from(noteJobs).where(eq(noteJobs.lessonSessionId, lesson.id));
+    expect(jobRow!.metrics).toEqual({});
+  });
+
+  it("a solo self note never blocks the discard — it is the owner's own data", async () => {
+    // The sent-note guard is scoped to origin='teacher': a self note is 'sent' by
+    // construction, so scoping it wrongly would make every solo recording
+    // undeletable the moment its note landed.
+    const lesson = await mkLesson({ owner: solo, ownerRole: "student" });
+    await mkJob(lesson.id, { status: "ready_for_review" });
+    const { note } = await mkNote(lesson.id, {
+      teacherId: solo.id,
+      studentId: solo.id,
+      origin: "self",
+      status: "sent",
+      annotations: [{ instruction: "x", quote: "y", location: {} }],
+    });
+    const read = await getOne(lesson.id, solo);
+    expect(read.body.lesson.discardAllowed).toBe(true);
+    expect((await del(lesson.id, solo)).status).toBe(200);
+    expect((await db.orm.select().from(notes).where(eq(notes.id, note.id))).length).toBe(0);
+    const anns = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, note.id));
+    expect(anns.length).toBe(0);
+  });
+
+  it("loses cleanly to a racing submit (CAS on the observed status)", async () => {
+    const created = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({});
+    const id = created.body.lesson.id;
+    // Simulate the race: the row leaves 'created' between the read and the CAS.
+    const app = makeApp();
+    const inFlight = request(app).delete(`/v1/lessons/${id}`).set("Authorization", `Bearer ${mdT.token}`);
+    await db.orm
+      .update(lessonSessions)
+      .set({ status: "submitted" })
+      .where(and(eq(lessonSessions.id, id), eq(lessonSessions.status, "created")));
+    const res = await inFlight;
+    // Either the CAS lost (409) or it won before the update landed (200) — but a
+    // 409 must never have mutated anything.
+    if (res.status === 409) {
+      expect(res.body.error).toBe("status_changed");
+      const [row] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, id));
+      expect(row!.status).toBe("submitted");
+    } else {
+      expect(res.status).toBe(200);
+    }
+  });
+
+  // ── D2: what the discard destroys is read UNDER the lock ────────────────────
+
+  it("cascades and deletes from the post-lock read, not from the pre-lock snapshot", async () => {
+    // The worker takes the same lesson row FOR UPDATE before it inserts a note or
+    // stamps a transcript, so its write lands in the window between the pre-lock
+    // read and the CAS. A trigger on the CAS itself reproduces that window
+    // exactly and deterministically: what a snapshot cannot see is a note that
+    // then outlives the discard, and a transcript blob orphaned PERMANENTLY
+    // (notes-assets has no lifecycle rule) behind an audit that says it is gone.
+    const lesson = await mkLesson({ studentId: mdS.id });
+    const job = await mkJob(lesson.id, { status: "failed", failureCode: "thin_note" });
+    await db.orm.execute(sqlRaw`
+      CREATE OR REPLACE FUNCTION test_worker_lands_mid_discard() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.status = 'canceled' AND OLD.status <> 'canceled' THEN
+          INSERT INTO notes (note_job_id, lesson_session_id, teacher_id, student_id,
+                             origin, status, content_original, content)
+          SELECT j.id, NEW.id, NEW.teacher_id, NEW.student_id, 'teacher', 'draft',
+                 '{"lessonSummary":"landed mid-discard"}'::jsonb,
+                 '{"lessonSummary":"landed mid-discard"}'::jsonb
+          FROM note_jobs j WHERE j.lesson_session_id = NEW.id LIMIT 1;
+          UPDATE note_jobs SET transcript_path = 'transcripts/raced.json'
+          WHERE lesson_session_id = NEW.id;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+    `);
+    await db.orm.execute(sqlRaw`
+      CREATE TRIGGER test_worker_lands_mid_discard BEFORE UPDATE ON lesson_sessions
+      FOR EACH ROW EXECUTE FUNCTION test_worker_lands_mid_discard()
+    `);
+    try {
+      const res = await del(lesson.id);
+      expect(res.status).toBe(200);
+      // Neither write may survive a discard the user was told deleted the
+      // recording and its transcript.
+      const survivors = await db.orm.select().from(notes).where(eq(notes.lessonSessionId, lesson.id));
+      expect(survivors.length).toBe(0);
+      expect(fakeAssets.deleted).toContain("transcripts/raced.json");
+      const [jobRow] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job.id));
+      expect(jobRow!.transcriptPath).toBeNull();
+      const audits = await db.orm.select().from(auditEvents).where(eq(auditEvents.subjectId, lesson.id));
+      const detail = audits.find((a) => a.action === "lesson.discard")!.detail as {
+        notesDeleted: number;
+        transcriptDeleted: boolean;
+      };
+      expect(detail.notesDeleted).toBe(1);
+      expect(detail.transcriptDeleted).toBe(true);
+    } finally {
+      await db.orm.execute(sqlRaw`DROP TRIGGER test_worker_lands_mid_discard ON lesson_sessions`);
+    }
+  });
+
+  it("unwinds the CAS when the post-lock read revokes the permission", async () => {
+    // Same window, other direction: a note that becomes SENT in it must revoke a
+    // discard the pre-lock read had already allowed. Returning from the callback
+    // would commit the cancel, so the recheck has to throw.
+    const lesson = await mkLesson({ studentId: mdS.id });
+    const job = await mkJob(lesson.id, { status: "failed", failureCode: "thin_note" });
+    await db.orm.execute(sqlRaw`
+      CREATE OR REPLACE FUNCTION test_note_sent_mid_discard() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.status = 'canceled' AND OLD.status <> 'canceled' THEN
+          INSERT INTO notes (note_job_id, lesson_session_id, teacher_id, student_id,
+                             origin, status, sent_at, content_original, content)
+          SELECT j.id, NEW.id, NEW.teacher_id, NEW.student_id, 'teacher', 'sent', now(),
+                 '{"lessonSummary":"sent mid-discard"}'::jsonb,
+                 '{"lessonSummary":"sent mid-discard"}'::jsonb
+          FROM note_jobs j WHERE j.lesson_session_id = NEW.id LIMIT 1;
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+    `);
+    await db.orm.execute(sqlRaw`
+      CREATE TRIGGER test_note_sent_mid_discard BEFORE UPDATE ON lesson_sessions
+      FOR EACH ROW EXECUTE FUNCTION test_note_sent_mid_discard()
+    `);
+    try {
+      const res = await del(lesson.id);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe("status_changed");
+      // Nothing committed: the lesson is still live and the job untouched.
+      const [row] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, lesson.id));
+      expect(row!.status).toBe("submitted");
+      expect(row!.audioPath).toBe(lesson.audioPath);
+      const [jobRow] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job.id));
+      expect(jobRow!.discardedAt).toBeNull();
+      expect(jobRow!.failureCode).toBe("thin_note");
+      expect((await db.orm.select().from(notes).where(eq(notes.lessonSessionId, lesson.id))).length).toBe(0);
+    } finally {
+      await db.orm.execute(sqlRaw`DROP TRIGGER test_note_sent_mid_discard ON lesson_sessions`);
+    }
+  });
+
+  // ── D6: a discarded lesson's queued work cannot still run ───────────────────
+
+  it("terminalizes a live job, and never relabels one that already had a real cause", async () => {
+    // The Service Bus message outlives the discard; the worker gates on this
+    // status, so this is what stops the run.
+    const wedged = await mkLesson();
+    const live = await mkJob(wedged.id, { status: "queued", movedAgoMs: 2 * HOUR });
+    expect((await del(wedged.id)).status).toBe(200);
+    const [liveRow] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, live.id));
+    expect(liveRow!.status).toBe("failed");
+    expect(liveRow!.failureCode).toBe("lesson_discarded");
+    expect(liveRow!.stage).toBeNull();
+    expect(liveRow!.discardedAt).not.toBeNull();
+
+    // An ASR failure is a real statistic; the discard must not claim it.
+    const failed = await mkLesson();
+    const real = await mkJob(failed.id, { status: "failed", failureCode: "asr_error", attempts: 1 });
+    expect((await del(failed.id)).status).toBe(200);
+    const [realRow] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, real.id));
+    expect(realRow!.status).toBe("failed");
+    expect(realRow!.failureCode).toBe("asr_error");
+    expect(realRow!.discardedAt).not.toBeNull();
+
+    // ready_for_review is an outcome too, not a failure.
+    const ready = await mkLesson();
+    const done = await mkJob(ready.id, { status: "ready_for_review" });
+    expect((await del(ready.id)).status).toBe(200);
+    const [doneRow] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, done.id));
+    expect(doneRow!.status).toBe("ready_for_review");
+    expect(doneRow!.failureCode).toBeNull();
+  });
+
+  // ── D5 / D7: audio_path is the sentinel, and Discard-again really retries ────
+
+  it("nulls audio_path on a confirmed delete, keeps it on a failure, and retries on the next tap", async () => {
+    const ok = await mkLesson();
+    await mkJob(ok.id, { status: "failed", failureCode: "thin_note" });
+    expect((await del(ok.id)).status).toBe(200);
+    const [okRow] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, ok.id));
+    expect(okRow!.audioPath).toBeNull();
+
+    const bad = await mkLesson();
+    await mkJob(bad.id, { status: "failed", failureCode: "thin_note" });
+    fakeLessons.failNextDelete = true;
+    const res = await del(bad.id);
+    expect(res.status).toBe(200); // best effort: a blob failure never un-discards
+    const [badRow] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, bad.id));
+    expect(badRow!.status).toBe("canceled");
+    // "canceled AND audio_path IS NOT NULL" is the whole reaper query.
+    expect(badRow!.audioPath).toBe(bad.audioPath);
+    const audits = await db.orm.select().from(auditEvents).where(eq(auditEvents.subjectId, bad.id));
+    expect((audits.find((a) => a.action === "lesson.discard")!.detail as { audioDeleted: boolean }).audioDeleted).toBe(false);
+
+    // The second tap is idempotent for the row and NOT a no-op for the blob.
+    expect(fakeLessons.deleted).not.toContain(bad.audioPath);
+    expect((await del(bad.id)).status).toBe(200);
+    expect(fakeLessons.deleted).toContain(bad.audioPath);
+    const [healed] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, bad.id));
+    expect(healed!.audioPath).toBeNull();
+    // The ledger records that the deletion the first discard promised finally happened.
+    const after = await db.orm.select().from(auditEvents).where(eq(auditEvents.subjectId, bad.id));
+    expect(after.some((a) => (a.detail as { retriedAudioDelete?: boolean }).retriedAudioDelete === true)).toBe(true);
+  });
+
+  // ── C3 anti-drift: discardAllowed and the DELETE guard are one function ──────
+
+  it("discardAllowed on the wire agrees with the DELETE guard on every row of the table", async () => {
+    const cases: { name: string; build: () => Promise<string>; allowed: boolean }[] = [
+      {
+        name: "created, no job",
+        allowed: true,
+        build: async () => (await mkLesson({ status: "created" })).id,
+      },
+      {
+        name: "canceled (idempotent no-op)",
+        allowed: true,
+        build: async () => (await mkLesson({ status: "canceled" })).id,
+      },
+      {
+        name: "submitted, no job",
+        allowed: true,
+        build: async () => (await mkLesson()).id,
+      },
+      {
+        name: "submitted, failed job + draft",
+        allowed: true,
+        build: async () => {
+          const l = await mkLesson({ studentId: mdS.id });
+          await mkJob(l.id, { status: "failed", failureCode: "no_speech" });
+          await mkNote(l.id, { studentId: mdS.id, status: "draft" });
+          return l.id;
+        },
+      },
+      {
+        name: "submitted, ready_for_review + draft",
+        allowed: true,
+        build: async () => {
+          const l = await mkLesson({ studentId: mdS.id });
+          await mkJob(l.id, { status: "ready_for_review" });
+          await mkNote(l.id, { studentId: mdS.id, status: "draft" });
+          return l.id;
+        },
+      },
+      {
+        name: "submitted, queued and fresh",
+        allowed: false,
+        build: async () => {
+          const l = await mkLesson();
+          await mkJob(l.id, { status: "queued", movedAgoMs: 60 * 1000 });
+          return l.id;
+        },
+      },
+      {
+        name: "submitted, processing past the 60-minute hatch",
+        allowed: true,
+        build: async () => {
+          const l = await mkLesson();
+          await mkJob(l.id, { status: "processing", movedAgoMs: 2 * HOUR });
+          return l.id;
+        },
+      },
+      {
+        name: "a sent teacher note exists",
+        allowed: false,
+        build: async () => {
+          const l = await mkLesson({ studentId: mdS.id });
+          await mkJob(l.id, { status: "failed" });
+          await mkNote(l.id, { studentId: mdS.id, status: "sent" });
+          return l.id;
+        },
+      },
+    ];
+
+    for (const c of cases) {
+      const id = await c.build();
+      const read = await getOne(id);
+      expect(read.status, c.name).toBe(200);
+      expect(read.body.lesson.discardAllowed, c.name).toBe(c.allowed);
+      const res = await del(id);
+      // The flag on the wire IS the answer the route gives. No second implementation.
+      expect(res.status === 200, c.name).toBe(c.allowed);
+    }
+  });
+
+  // ── Retry policy ────────────────────────────────────────────────────────────
+
+  it("caps retries by failure code, and naming the piece buys exactly one more", async () => {
+    const lesson = await mkLesson({ studentId: mdS.id });
+    await mkJob(lesson.id, { status: "failed", failureCode: "thin_note", attempts: 2 });
+    const exhausted = await request(makeApp())
+      .post(`/v1/lessons/${lesson.id}/retry`)
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({});
+    expect(exhausted.status).toBe(409);
+    expect(exhausted.body.error).toBe("retry_exhausted");
+    expect(exhausted.body.message).toContain("as many times as it usefully can");
+
+    // Naming the piece changes the prompt, so it is a genuinely different attempt.
+    const edited = await patch(lesson.id, { pieceId: "short_piece" });
+    expect(edited.status).toBe(200);
+    const allowed = await request(makeApp())
+      .post(`/v1/lessons/${lesson.id}/retry`)
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({});
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.job.status).toBe("queued");
+    expect(allowed.body.job.attempts).toBe(3);
+    expect(allowed.body.job.failureCode).toBeNull(); // the code described the LAST failure
+    expect(allowed.body.job.startedAt).not.toBe(null);
+  });
+
+  // ── D4: what the bonus is allowed to fund ───────────────────────────────────
+
+  it("a student assignment never funds a paid re-run — only the piece does", async () => {
+    // The prompt reads the piece and nothing else about the lesson, so a pure
+    // reassignment must leave a byte-identical run un-armed.
+    const lesson = await mkLesson({ pieceId: "short_piece" });
+    await mkJob(lesson.id, { status: "failed", failureCode: "thin_note", attempts: 2 });
+    const assigned = await patch(lesson.id, { studentId: mdS.id });
+    expect(assigned.status).toBe(200);
+    expect(assigned.body.job.retryAllowed).toBe(false);
+    const denied = await request(makeApp())
+      .post(`/v1/lessons/${lesson.id}/retry`)
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({});
+    expect(denied.status).toBe(409);
+    expect(denied.body.error).toBe("retry_exhausted");
+
+    // Re-sending the SAME piece is not a change either.
+    const same = await patch(lesson.id, { pieceId: "short_piece" });
+    expect(same.status).toBe(200);
+    expect(same.body.job.retryAllowed).toBe(false);
+
+    // A different piece is.
+    const changed = await patch(lesson.id, { pieceId: "seed_piece" });
+    expect(changed.body.job.retryAllowed).toBe(true);
+  });
+
+  it("no_speech is categorical: cap 0, and no piece edit can resurrect it", async () => {
+    // no_speech is raised before the LLM ever runs, so a funded re-run would be a
+    // byte-identical paid ASR call the app's own explainer says cannot help.
+    const lesson = await mkLesson();
+    await mkJob(lesson.id, { status: "failed", failureCode: "no_speech", attempts: 0 });
+    const first = await request(makeApp())
+      .post(`/v1/lessons/${lesson.id}/retry`)
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({});
+    expect(first.status).toBe(409);
+    expect(first.body.error).toBe("retry_exhausted");
+
+    const edited = await patch(lesson.id, { pieceId: "short_piece" });
+    expect(edited.status).toBe(200);
+    expect(edited.body.job.retryAllowed).toBe(false);
+    const stillDenied = await request(makeApp())
+      .post(`/v1/lessons/${lesson.id}/retry`)
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({});
+    expect(stillDenied.status).toBe(409);
+
+    // Same for the other categorical code.
+    const noAudio = await mkLesson();
+    await mkJob(noAudio.id, { status: "failed", failureCode: "no_audio", attempts: 0 });
+    await patch(noAudio.id, { pieceId: "short_piece" });
+    const na = await request(makeApp())
+      .post(`/v1/lessons/${noAudio.id}/retry`)
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({});
+    expect(na.status).toBe(409);
+    expect(na.body.error).toBe("retry_exhausted");
+  });
+
+  // ── D8: the PATCH answer carries the job it just re-armed ───────────────────
+
+  it("PATCH returns the job so a freshly granted retry is visible without a refetch", async () => {
+    const lesson = await mkLesson();
+    const job = await mkJob(lesson.id, { status: "failed", failureCode: "thin_note", attempts: 2 });
+    const before = await getOne(lesson.id);
+    expect(before.body.job.retryAllowed).toBe(false);
+    const res = await patch(lesson.id, { pieceId: "short_piece" });
+    expect(res.status).toBe(200);
+    expect(res.body.job.id).toBe(job.id);
+    expect(res.body.job.retryAllowed).toBe(true);
+    expect(res.body.job.attempts).toBe(2);
+    // A lesson with no job at all still answers, with null rather than a missing key.
+    const jobless = await mkLesson();
+    const noJob = await patch(jobless.id, { pieceLabel: "Anything" });
+    expect(noJob.body.job).toBeNull();
+  });
+
+  // ── D3: a failed requeue send unwinds completely ────────────────────────────
+
+  it("a queue failure on retry restores the job exactly, bonus included", async () => {
+    const lesson = await mkLesson();
+    const job = await mkJob(lesson.id, {
+      status: "failed",
+      failureCode: "thin_note",
+      attempts: 2,
+      transcriptPath: "transcripts/x.json",
+    });
+    await db.orm
+      .update(noteJobs)
+      .set({ stage: "llm", error: "thin_note: too few annotations", failureHints: ["Try naming the piece."] })
+      .where(eq(noteJobs.id, job.id));
+    // The piece edit is what funds this attempt; a rollback must not eat it.
+    await patch(lesson.id, { pieceId: "short_piece" });
+    const [armed] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job.id));
+
+    fakeQueue.throwNext = true;
+    const res = await request(makeApp())
+      .post(`/v1/lessons/${lesson.id}/retry`)
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({});
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe("queue_unavailable");
+    expect(res.body.message).toContain("try again in a moment");
+
+    const [after] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job.id));
+    expect(after!.status).toBe("failed");
+    expect(after!.attempts).toBe(2); // NOT charged for an attempt that never ran
+    expect(after!.stage).toBe("llm");
+    expect(after!.error).toBe("thin_note: too few annotations");
+    expect(after!.failureCode).toBe("thin_note");
+    expect(after!.failureHints).toEqual(["Try naming the piece."]);
+    expect(after!.startedAt!.getTime()).toBe(armed!.startedAt!.getTime());
+    expect(after!.updatedAt.getTime()).toBe(armed!.updatedAt.getTime());
+
+    // The bonus survives, so the next tap is still allowed — the sheet's
+    // "as many times as it usefully can" would have been a lie otherwise.
+    const detail = await getOne(lesson.id);
+    expect(detail.body.job.retryAllowed).toBe(true);
+    fakeQueue.throwNext = false;
+    const second = await request(makeApp())
+      .post(`/v1/lessons/${lesson.id}/retry`)
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({});
+    expect(second.status).toBe(200);
+  });
+
+  it("no_audio is never retryable and a discarded lesson refuses retry outright", async () => {
+    const noAudio = await mkLesson();
+    await mkJob(noAudio.id, { status: "failed", failureCode: "no_audio", attempts: 0 });
+    const res = await request(makeApp())
+      .post(`/v1/lessons/${noAudio.id}/retry`)
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("retry_exhausted");
+
+    const gone = await mkLesson({ status: "canceled" });
+    await mkJob(gone.id, { status: "failed", failureCode: "thin_note" });
+    const dead = await request(makeApp())
+      .post(`/v1/lessons/${gone.id}/retry`)
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({});
+    expect(dead.status).toBe(409);
+    expect(dead.body.error).toBe("lesson_discarded");
+  });
+
+  it("a retry re-anchors startedAt so the card does not show the first attempt's age", async () => {
+    const lesson = await mkLesson();
+    const job = await mkJob(lesson.id, { status: "failed", failureCode: "worker_crash" });
+    await db.orm
+      .update(noteJobs)
+      .set({ startedAt: new Date(Date.now() - 47 * 60 * 1000) })
+      .where(eq(noteJobs.id, job.id));
+    const res = await request(makeApp())
+      .post(`/v1/lessons/${lesson.id}/retry`)
+      .set("Authorization", `Bearer ${mdT.token}`)
+      .send({});
+    expect(res.status).toBe(200);
+    const [row] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job.id));
+    expect(Date.now() - row!.startedAt!.getTime()).toBeLessThan(60 * 1000);
+    expect(row!.createdAt.getTime()).toBeLessThanOrEqual(row!.startedAt!.getTime());
+  });
+
+  // ── Wire contract ───────────────────────────────────────────────────────────
+
+  it("list and detail both carry attempts/failureCode/retryAllowed and discardAllowed", async () => {
+    const lesson = await mkLesson({ studentId: mdS.id });
+    await mkJob(lesson.id, { status: "failed", failureCode: "thin_note", attempts: 2 });
+
+    const list = await request(makeApp()).get("/v1/lessons").set("Authorization", `Bearer ${mdT.token}`);
+    const item = list.body.items.find((i: { lesson: { id: string } }) => i.lesson.id === lesson.id);
+    expect(item.job.attempts).toBe(2);
+    expect(item.job.failureCode).toBe("thin_note");
+    expect(item.job.retryAllowed).toBe(false); // thin_note caps at 2
+    expect(item.lesson.discardAllowed).toBe(true);
+
+    const detail = await getOne(lesson.id);
+    expect(detail.body.job.attempts).toBe(2);
+    expect(detail.body.job.failureCode).toBe("thin_note");
+    expect(detail.body.job.retryAllowed).toBe(false);
+    expect(detail.body.lesson.discardAllowed).toBe(true);
+  });
+
+  it("a null failureCode (pre-0016 row) still allows the historical three attempts", async () => {
+    const lesson = await mkLesson();
+    await mkJob(lesson.id, { status: "failed", failureCode: null, attempts: 2 });
+    const detail = await getOne(lesson.id);
+    expect(detail.body.job.failureCode).toBeNull();
+    expect(detail.body.job.retryAllowed).toBe(true);
   });
 });
 

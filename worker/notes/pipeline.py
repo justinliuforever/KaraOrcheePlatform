@@ -19,9 +19,14 @@ LOCATION_TYPES = {"absolute", "compound", "relative", "deixis", "none"}
 
 
 class GateFail(Exception):
-    def __init__(self, message: str, hints: list[str] | None = None):
+    """`code` is the machine-readable cause written to note_jobs.failure_code. The
+    app renders copy and the retry cap keys off it — hints are prose and cannot
+    carry it (hints[0] is shown to the user verbatim)."""
+
+    def __init__(self, message: str, hints: list[str] | None = None, code: str = "unknown"):
         super().__init__(message)
         self.hints = hints or []
+        self.code = code
 
 
 def build_turns(utterances: list[dict]) -> str:
@@ -42,7 +47,8 @@ def check_transcript(text: str, utterances: list[dict]) -> dict:
         raise GateFail(
             "Very little speech was detected in this recording.",
             ["The lesson may have been mostly playing, or the phone was too far from the teacher.",
-             "Check the recording picks up the teacher's voice, then try again."])
+             "Next time, keep the phone within a few feet of where you talk."],
+            code="no_speech")
     speakers = {u.get("speaker") for u in utterances if u.get("speaker")}
     return {"transcript_words": words, "speakers": len(speakers)}
 
@@ -135,10 +141,14 @@ def normalize_note(obj: dict, transcript: str, measure_count: int | None):
         })
 
     if len(annotations) < MIN_ANNOTATIONS:
+        # Never tell the user to listen back: the local audio is deleted at submit
+        # and the client cannot read the blob. Naming the piece is the one thing
+        # they CAN do — it changes the prompt, so the retry is not a re-run.
         raise GateFail(
             "Too little teaching talk was detected to build a useful note.",
             ["The recording may be mostly playing, or the teacher's voice may be unclear.",
-             "If this was a real lesson, listen to a minute of the recording to check the audio."])
+             "Naming the piece gives the note writer something to anchor to — add it, then try once more."],
+            code="thin_note")
 
     content = {"lessonSummary": summary.strip(), "practicePlan": plan}
     return content, annotations, warnings

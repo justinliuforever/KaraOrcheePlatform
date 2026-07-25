@@ -48,6 +48,15 @@ def env(name: str) -> str:
     return v
 
 
+def piece_measures(facts) -> int | None:
+    """The only piece fact the grounding bound reads. Absent/zero = unbounded."""
+    if isinstance(facts, dict):
+        m = facts.get("measures")
+        if isinstance(m, int) and m > 0:
+            return m
+    return None
+
+
 def fetch_job(conn, job_id: str):
     with conn.cursor() as cur:
         cur.execute(
@@ -67,6 +76,67 @@ def update_job(conn, job_id: str, **cols) -> None:
     with conn.cursor() as cur:
         cur.execute(f"UPDATE note_jobs SET {sets} WHERE id = %s", (*cols.values(), job_id))
     conn.commit()
+
+
+def lesson_canceled(conn, lesson_id: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM lesson_sessions WHERE id = %s", (lesson_id,))
+        row = cur.fetchone()
+    conn.commit()
+    return bool(row) and row[0] == "canceled"
+
+
+def stamp_transcript(conn, job_id: str, path: str) -> bool:
+    """Record the transcript ONLY while the lesson is still live. One statement, so
+    a discard committing alongside it either loses (and then sees transcript_path
+    and deletes the blob itself) or wins (and this returns False)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE note_jobs j SET transcript_path = %s, stage = 'llm', updated_at = now()
+               FROM lesson_sessions l
+               WHERE j.id = %s AND l.id = j.lesson_session_id AND l.status <> 'canceled'""",
+            (path, job_id))
+        landed = cur.rowcount > 0
+    conn.commit()
+    return landed
+
+
+def delete_transcript_blob(blob, path: str) -> None:
+    try:
+        blob.get_container_client(ASSETS_CONTAINER).get_blob_client(path).delete_blob()
+    except Exception as err:
+        jlog(event="transcript_delete_failed", path=path, error=str(err)[:200])
+
+
+def record_gate_fail(conn, job_id: str, gf: GateFail) -> None:
+    update_job(conn, job_id, status="failed", stage=None, failure_code=gf.code,
+               error=str(gf), failure_hints=json.dumps(gf.hints))
+    jlog(job=job_id, event="gate_fail", code=gf.code, error=str(gf))
+
+
+def mark_worker_crash(conn, job_id: str) -> None:
+    """Never relabel a terminal success: a transient error AFTER the note committed
+    (final update_job blip, or a duplicate-delivery race loser) must not flip a
+    delivered job to 'failed' and invite a paid re-run."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE note_jobs
+               SET status = 'failed',
+                   failure_code = 'worker_crash',
+                   error = 'worker_crash: see worker logs',
+                   updated_at = now()
+               WHERE id = %s AND status <> 'ready_for_review'""",
+            (job_id,))
+    conn.commit()
+
+
+def abort_discarded(conn, job_id: str, reason: str) -> None:
+    """Terminal state for a job whose lesson was discarded mid-run. Writes NO
+    metrics: metrics.warnings carries quoted instruction text, and the discard the
+    user was promised has already stripped it from this row."""
+    update_job(conn, job_id, status="failed", stage=None,
+               failure_code="lesson_discarded", error="lesson discarded by owner")
+    jlog(job=job_id, event="drop", reason=reason)
 
 
 def audio_read_url(storage_cs: str, path: str) -> str:
@@ -137,14 +207,74 @@ def run_asr(audio_url: str, api_key: str) -> dict:
         waited += ASR_POLL_INTERVAL
 
 
-def replace_draft(conn, job_id: str, lesson, content: dict, original: dict,
-                  annotations: list[dict]) -> str:
+# Mirrors REGROUND_HINT in api/src/routes/lessons.ts — it must read as "needs a
+# location", never as an error.
+REGROUND_HINT = "This pointed past the end of the piece — place it on the score."
+
+
+def rebound_annotations(annotations: list[dict], measure_count: int | None) -> list[dict]:
+    """Demote every auto-placed anchor that points past the end of the piece, the
+    same rule the API applies when a piece is named after the fact. A human pin is
+    never touched, and `raw` survives as the clue. No-op when the anchors were
+    already validated against this bound upstream."""
+    if measure_count is None:
+        return annotations
+    out = []
+    for a in annotations:
+        loc = a.get("location") or {}
+        end = loc.get("measureEnd") if isinstance(loc.get("measureEnd"), int) else loc.get("measureStart")
+        if (loc.get("grounded") is True and loc.get("pinnedBy") == "auto"
+                and isinstance(end, int) and end > measure_count):
+            kept = {k: v for k, v in loc.items()
+                    if k not in ("measureStart", "measureEnd", "pinnedBy")}
+            kept.update({"grounded": False, "hint": REGROUND_HINT})
+            a = {**a, "location": kept}
+        out.append(a)
+    return out
+
+
+def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: dict,
+                  annotations: list[dict]) -> str | None:
     """Idempotent output. Teacher lessons: a redelivered job wipes its own draft and
     rebuilds. Solo lessons: the note is born 'sent' to the owner, so the wipe can't
     apply — an insert-guard makes redelivery/requeue a no-op instead (a rebuild
-    would silently drop pins the student may already have placed)."""
-    lesson_id, teacher_id, student_id, piece_id, piece_label, owner_role = lesson
+    would silently drop pins the student may already have placed).
+
+    Every mutable lesson fact is re-read UNDER the lock and never taken from the
+    job snapshot: PATCH /v1/lessons/:id can reassign the student or name the piece
+    during the ASR+LLM window, and its cascade finds no note to fix because the
+    note does not exist yet — so a snapshot write would silently revert the repair
+    and prefill the review footer with the wrong recipient.
+
+    Returns None when the lesson was discarded — the caller MUST NOT then flip the
+    job to ready_for_review."""
     with conn.cursor() as cur:
+        # Discard race: a worker already past process()'s status check can insert a
+        # note into a lesson canceled seconds ago, leaving an orphan draft in
+        # "Needs attention" for a lesson the teacher deleted. FOR UPDATE, so a
+        # discard that arrives mid-insert blocks here and then deletes the draft
+        # we just wrote instead of interleaving with it. (FOR UPDATE OF l: the
+        # piece join is the nullable side and must not be locked.)
+        cur.execute(
+            """SELECT l.status, l.teacher_id, l.student_id, l.piece_id, l.piece_label,
+                      l.owner_role, p.published_version, p.facts
+               FROM lesson_sessions l
+               LEFT JOIN pieces p ON p.id = l.piece_id
+               WHERE l.id = %s FOR UPDATE OF l""",
+            (lesson_id,))
+        row = cur.fetchone()
+        if row is None:
+            conn.commit()
+            return None
+        (status, teacher_id, student_id, piece_id, piece_label, owner_role,
+         piece_version, piece_facts) = row
+        if status == "canceled":
+            conn.commit()
+            return None
+        # A piece named during the run bounds grounding that was computed with no
+        # bound at all; re-picking the same piece later is a no-op on both the
+        # inherit test and the reground pass, so this is the only place it lands.
+        annotations = rebound_annotations(annotations, piece_measures(piece_facts))
         if owner_role == "student":
             cur.execute(
                 """SELECT id FROM notes WHERE note_job_id = %s
@@ -154,11 +284,6 @@ def replace_draft(conn, job_id: str, lesson, content: dict, original: dict,
             if existing:
                 conn.commit()
                 return existing[0]
-            piece_version = None
-            if piece_id:
-                cur.execute("SELECT published_version FROM pieces WHERE id = %s", (piece_id,))
-                row = cur.fetchone()
-                piece_version = row[0] if row else None
             try:
                 cur.execute(
                     """INSERT INTO notes (note_job_id, lesson_session_id, teacher_id, student_id,
@@ -215,22 +340,39 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
     if row is None:
         jlog(job=job_id, event="drop", reason="no such job")
         return
+    # PROMPT INPUTS ONLY. Everything written to the note (student, piece, its
+    # version and measure bound) is re-read under the lock in replace_draft — a
+    # PATCH during the ASR+LLM window must not be reverted by this snapshot.
     (_, status, attempts, lesson_id, teacher_id, student_id, piece_id, piece_label,
      audio_path, duration_sec, owner_role, piece_title, piece_composer, piece_facts) = row
     if status not in ("queued", "processing"):
         jlog(job=job_id, event="skip", status=status)
         return
     if not audio_path:
-        update_job(conn, job_id, status="failed", error="lesson has no audio")
+        update_job(conn, job_id, status="failed", stage=None,
+                   failure_code="no_audio", error="lesson has no audio")
+        return
+
+    # Before the spend and before any failure label: a message queued ahead of a
+    # discard (or redelivered after one) must not be attributed to asr_error in
+    # the failure-code facet, and must not re-ship deleted audio to the ASR vendor.
+    if lesson_canceled(conn, lesson_id):
+        abort_discarded(conn, job_id, "lesson canceled before asr")
         return
 
     # Mic-proximity watch: solo recordings put the phone near the STUDENT, flipping
     # which voice is far-field. Recorded per job; never pre-tuned on.
     metrics: dict = {"owner_role": owner_role}
     t0 = time.time()
-    update_job(conn, job_id, status="processing", stage="asr", error=None)
+    update_job(conn, job_id, status="processing", stage="asr", error=None, failure_code=None)
 
-    asr = run_asr(audio_read_url(storage_cs, audio_path), env("ASSEMBLYAI_API_KEY"))
+    try:
+        asr = run_asr(audio_read_url(storage_cs, audio_path), env("ASSEMBLYAI_API_KEY"))
+    except Exception as err:
+        update_job(conn, job_id, status="failed", stage=None,
+                   failure_code="asr_error", error=f"asr_error: {err}"[:500])
+        jlog(job=job_id, event="asr_fail", error=str(err)[:200])
+        return
     text = asr.get("text") or ""
     utterances = asr.get("utterances") or []
     metrics["asr_secs"] = round(time.time() - t0, 1)
@@ -239,20 +381,29 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
 
     # Persist the transcript BEFORE any gate — it is the durable derivative that
     # outlives the 90-day audio and the only debug artifact for a gate failure.
+    #
+    # The 60-minute stuck-job hatch can fire while ASR is still running
+    # (ASR_POLL_MAX alone is 40 min), so a discard can land between the job
+    # starting and this write. notes-assets has NO lifecycle rule — a transcript
+    # re-uploaded after a discard is permanent, and the audit trail would say it
+    # was deleted. Check before the upload, and let the stamp itself re-check.
     transcript_path = f"transcripts/{job_id}.json"
+    if lesson_canceled(conn, lesson_id):
+        abort_discarded(conn, job_id, "lesson canceled during asr")
+        return
     blob.get_container_client(ASSETS_CONTAINER).get_blob_client(transcript_path).upload_blob(
         json.dumps({"text": text, "utterances": utterances,
                     "language": asr.get("language_code"),
                     "audio_duration": asr.get("audio_duration")}),
         overwrite=True, content_settings=ContentSettings(content_type="application/json"))
-    update_job(conn, job_id, stage="llm", transcript_path=transcript_path)
+    if not stamp_transcript(conn, job_id, transcript_path):
+        delete_transcript_blob(blob, transcript_path)
+        abort_discarded(conn, job_id, "lesson canceled during transcript upload")
+        return
 
     metrics.update(check_transcript(text, utterances))
 
-    measure_count = None
-    if isinstance(piece_facts, dict):
-        m = piece_facts.get("measures")
-        measure_count = m if isinstance(m, int) and m > 0 else None
+    measure_count = piece_measures(piece_facts)
     piece_desc = f'"{piece_title}" by {piece_composer}' if piece_title else piece_label
     system = build_system(measure_count)
     user = build_user(build_turns(utterances) or text, piece_desc)
@@ -264,11 +415,19 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
         obj = extract_json(result.text)
         parsed = normalize_note(obj, text, measure_count)
     except ValueError as err:
+        # GateFail is not a ValueError, so a content gate never lands here — only
+        # a malformed model response, which earns exactly one repair pass.
         jlog(job=job_id, event="llm_repair", error=str(err)[:200])
         result = generate(system, user + f"\n\nYour previous output failed validation: {err}. "
                                          "Output ONLY the corrected ```json block.")
-        obj = extract_json(result.text)
-        parsed = normalize_note(obj, text, measure_count)
+        try:
+            obj = extract_json(result.text)
+            parsed = normalize_note(obj, text, measure_count)
+        except ValueError as err2:
+            update_job(conn, job_id, status="failed", stage=None,
+                       failure_code="llm_invalid", error=f"llm_invalid: {err2}"[:500])
+            jlog(job=job_id, event="llm_invalid", error=str(err2)[:200])
+            return
     content, annotations, warnings = parsed
     metrics.update({
         "llm_secs": round(time.time() - t1, 1), "llm_model": result.model,
@@ -279,8 +438,15 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
     })
 
     update_job(conn, job_id, stage="gates")
-    lesson = (lesson_id, teacher_id, student_id, piece_id, piece_label, owner_role)
-    note_id = replace_draft(conn, job_id, lesson, content, obj, annotations)
+    note_id = replace_draft(conn, job_id, lesson_id, content, obj, annotations)
+    if note_id is None:
+        # A canceled lesson must never produce a ready_for_review job: it would be
+        # a "ready" row with no note — invisible to the app (canceled lessons are
+        # filtered out of the poll) but a lie in admin and in the failure_code
+        # statistics. Writing metrics here would also re-introduce the quoted
+        # instruction text the discard just stripped.
+        abort_discarded(conn, job_id, "lesson canceled before note insert")
+        return
     update_job(conn, job_id, status="ready_for_review", stage=None,
                metrics=json.dumps(metrics))
     jlog(job=job_id, event="done", note=str(note_id), reqId=req_id,
@@ -314,9 +480,7 @@ def main() -> None:
                         try:
                             process(conn, blob, storage_cs, job_id, req_id)
                         except GateFail as gf:
-                            update_job(conn, job_id, status="failed", stage=None,
-                                       error=str(gf), failure_hints=json.dumps(gf.hints))
-                            jlog(job=job_id, event="gate_fail", error=str(gf))
+                            record_gate_fail(conn, job_id, gf)
                     processed = True
                     receiver.complete_message(msg)
                 except Exception:
@@ -325,19 +489,7 @@ def main() -> None:
                     if job_id and not processed:
                         try:
                             with psycopg.connect(db_url) as conn:
-                                # Never relabel a terminal success: a transient error
-                                # AFTER the note committed (final update_job blip, or
-                                # a duplicate-delivery race loser) must not flip a
-                                # delivered job to 'failed' and invite a paid re-run.
-                                with conn.cursor() as cur:
-                                    cur.execute(
-                                        """UPDATE note_jobs
-                                           SET status = 'failed',
-                                               error = 'worker_crash: see worker logs',
-                                               updated_at = now()
-                                           WHERE id = %s AND status <> 'ready_for_review'""",
-                                        (job_id,))
-                                conn.commit()
+                                mark_worker_crash(conn, job_id)
                             marked_failed = True
                         except Exception:
                             traceback.print_exc()

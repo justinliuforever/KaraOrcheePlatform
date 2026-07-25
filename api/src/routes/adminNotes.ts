@@ -23,6 +23,18 @@ const ENTITLEMENT_STATUSES = ["active", "grace", "expired", "revoked"];
 const NOTE_JOB_STATUSES = ["queued", "processing", "failed", "ready_for_review"];
 const NOTE_JOB_STAGES = ["asr", "llm", "gates"];
 const OWNER_ROLES = ["teacher", "student"];
+// Written by the worker (and by the discard path for lesson_discarded). NULL =
+// never failed, or a pre-0016 row; the facet omits it rather than counting every
+// healthy job as "unknown".
+const FAILURE_CODES = [
+  "no_speech",
+  "thin_note",
+  "asr_error",
+  "llm_invalid",
+  "worker_crash",
+  "no_audio",
+  "lesson_discarded",
+];
 
 // Server-derived invite lifecycle. An invite can be several of these at once;
 // precedence is revoked > exhausted > expired > active (most-terminal wins).
@@ -407,12 +419,16 @@ export function adminNotesRouter(deps: Deps): Router {
         conds.push(c);
         sharedConds.push(c);
       }
+      const failureCode = typeof req.query.failureCode === "string" ? req.query.failureCode : "";
       const statusCond = NOTE_JOB_STATUSES.includes(status) ? eq(noteJobs.status, status) : null;
       const ownerRoleCond = OWNER_ROLES.includes(ownerRole) ? eq(lessonSessions.ownerRole, ownerRole) : null;
+      const failureCodeCond = FAILURE_CODES.includes(failureCode) ? eq(noteJobs.failureCode, failureCode) : null;
       if (statusCond) conds.push(statusCond);
       if (ownerRoleCond) conds.push(ownerRoleCond);
-      const statusFacetConds = ownerRoleCond ? [...sharedConds, ownerRoleCond] : sharedConds;
-      const ownerRoleFacetConds = statusCond ? [...sharedConds, statusCond] : sharedConds;
+      if (failureCodeCond) conds.push(failureCodeCond);
+      const statusFacetConds = [...sharedConds, ownerRoleCond, failureCodeCond].filter((c) => c !== null);
+      const ownerRoleFacetConds = [...sharedConds, statusCond, failureCodeCond].filter((c) => c !== null);
+      const failureCodeFacetConds = [...sharedConds, statusCond, ownerRoleCond].filter((c) => c !== null);
       const rows = await db
         .select({
           id: noteJobs.id,
@@ -420,14 +436,18 @@ export function adminNotesRouter(deps: Deps): Router {
           stage: noteJobs.stage,
           attempts: noteJobs.attempts,
           error: noteJobs.error,
+          failureCode: noteJobs.failureCode,
           failureHints: noteJobs.failureHints,
           metrics: noteJobs.metrics,
           transcriptPath: noteJobs.transcriptPath,
+          discardedAt: noteJobs.discardedAt,
+          startedAt: noteJobs.startedAt,
           createdAt: noteJobs.createdAt,
           updatedAt: noteJobs.updatedAt,
           lessonSessionId: noteJobs.lessonSessionId,
           teacherId: lessonSessions.teacherId,
           ownerRole: lessonSessions.ownerRole,
+          lessonStatus: lessonSessions.status,
           pieceId: lessonSessions.pieceId,
           pieceLabel: lessonSessions.pieceLabel,
           // teacherEmail/teacherName kept for compat; ownerEmail/ownerName are the
@@ -462,6 +482,14 @@ export function adminNotesRouter(deps: Deps): Router {
         .leftJoin(users, eq(lessonSessions.teacherId, users.id))
         .where(ownerRoleFacetConds.length ? and(...ownerRoleFacetConds) : undefined)
         .groupBy(lessonSessions.ownerRole);
+      // Turns "processing sometimes fails" into a number per cause.
+      const failureCodeCounts = await db
+        .select({ failureCode: noteJobs.failureCode, count: sql<number>`count(*)::int` })
+        .from(noteJobs)
+        .leftJoin(lessonSessions, eq(noteJobs.lessonSessionId, lessonSessions.id))
+        .leftJoin(users, eq(lessonSessions.teacherId, users.id))
+        .where(failureCodeFacetConds.length ? and(...failureCodeFacetConds) : undefined)
+        .groupBy(noteJobs.failureCode);
       res.json({
         items,
         facets: {
@@ -469,6 +497,9 @@ export function adminNotesRouter(deps: Deps): Router {
           ownerRole: ownerRoleCounts
             .filter((c): c is { ownerRole: string; count: number } => c.ownerRole !== null)
             .map((c) => ({ value: c.ownerRole, count: c.count })),
+          failureCode: failureCodeCounts
+            .filter((c): c is { failureCode: string; count: number } => c.failureCode !== null)
+            .map((c) => ({ value: c.failureCode, count: c.count })),
         },
       });
     }),
@@ -519,6 +550,7 @@ export function adminNotesRouter(deps: Deps): Router {
               durationSec: lesson.durationSec,
               language: lesson.language,
               createdAt: lesson.createdAt,
+              updatedAt: lesson.updatedAt,
             }
           : null,
         notes: producedNotes,
@@ -545,14 +577,34 @@ export function adminNotesRouter(deps: Deps): Router {
         res.status(409).json({ error: "not_failed", status: job.status });
         return;
       }
+      // A discarded lesson's audio and transcript are gone, and its owner asked
+      // for exactly that. The failed-only check cannot see it — a discard leaves
+      // the job in 'failed' — so read the lesson: permission to re-run lives
+      // there, not on the job.
+      const [lessonRow] = await db
+        .select({ status: lessonSessions.status })
+        .from(lessonSessions)
+        .where(eq(lessonSessions.id, job.lessonSessionId))
+        .limit(1);
+      if (job.discardedAt || !lessonRow || lessonRow.status === "canceled") {
+        res.status(409).json({
+          error: "lesson_discarded",
+          message: "The owner discarded this recording. Its audio and transcript are gone, so there is nothing to re-run.",
+        });
+        return;
+      }
+      // Deliberately UNCAPPED: the user-facing retry cap is a spend guard on a
+      // button an end user taps, not a limit on a deliberate admin re-run.
       const [requeued] = await db
         .update(noteJobs)
         .set({
           status: "queued",
           stage: null,
           error: null,
+          failureCode: null,
           failureHints: [],
           attempts: sql`${noteJobs.attempts} + 1`,
+          startedAt: sql`now()`,
           updatedAt: sql`now()`,
         })
         .where(eq(noteJobs.id, job.id))
@@ -599,6 +651,16 @@ export function adminNotesRouter(deps: Deps): Router {
       const [job] = await db.select().from(noteJobs).where(eq(noteJobs.id, id)).limit(1);
       if (!job) {
         res.status(404).json({ error: "not_found" });
+        return;
+      }
+      // A break-glass reader must be able to tell "purged on the owner's request"
+      // from "never existed" — 410 is the difference, and it is checked before the
+      // null-path 409 because a discard nulls the path.
+      if (job.discardedAt) {
+        res.status(410).json({
+          error: "transcript_discarded",
+          message: "The owner deleted this recording and its transcript.",
+        });
         return;
       }
       if (!job.transcriptPath) {

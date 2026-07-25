@@ -92,6 +92,7 @@ export default function NotesJobsView() {
   const status = params.get("status") ?? "";
   const stage = params.get("stage") ?? "";
   const ownerRole = params.get("ownerRole") ?? "";
+  const failureCode = params.get("failureCode") ?? "";
   const sel = params.get("sel");
   const q = params.get("q") ?? "";
 
@@ -116,8 +117,8 @@ export default function NotesJobsView() {
   }, [search, setParams]);
 
   const query = useQuery<NoteJobsResponse, Error>({
-    queryKey: ["note-jobs", status, stage, ownerRole, q],
-    queryFn: () => listNoteJobs({ status, stage, ownerRole, q }),
+    queryKey: ["note-jobs", status, stage, ownerRole, failureCode, q],
+    queryFn: () => listNoteJobs({ status, stage, ownerRole, failureCode, q }),
     placeholderData: keepPreviousData,
     staleTime: 0,
   });
@@ -134,6 +135,7 @@ export default function NotesJobsView() {
 
   const statusFacets = query.data?.facets.status ?? [];
   const ownerRoleFacets = query.data?.facets.ownerRole ?? [];
+  const failureCodeFacets = query.data?.facets.failureCode ?? [];
 
   return (
     <>
@@ -181,6 +183,16 @@ export default function NotesJobsView() {
               onSelect={(v) => set({ ownerRole: v, sel: null })}
             />
           </div>
+          {failureCodeFacets.length > 0 && (
+            <div className="mt-2 border-t border-line/50 pt-2">
+              <FacetGroup
+                title="Failure"
+                facets={failureCodeFacets}
+                selected={failureCode}
+                onSelect={(v) => set({ failureCode: v, sel: null })}
+              />
+            </div>
+          )}
         </div>
 
         <div className="min-w-0 flex-1">
@@ -215,7 +227,13 @@ export default function NotesJobsView() {
                       <TableCell className="px-4 py-2.5">
                         <StatusTag value={j.status} family="lifecycle" label={j.status.replaceAll("_", " ")} />
                       </TableCell>
-                      <TableCell className="px-4 py-2.5 text-xs text-ink-soft">{j.stage ?? "—"}</TableCell>
+                      <TableCell className="px-4 py-2.5 text-xs text-ink-soft">
+                        {j.failureCode ? (
+                          <ToneBadge tone="bad">{j.failureCode}</ToneBadge>
+                        ) : (
+                          (j.stage ?? "—")
+                        )}
+                      </TableCell>
                       <TableCell className="px-4 py-2.5 text-right text-xs text-ink-soft tabular-nums">
                         {j.attempts}
                       </TableCell>

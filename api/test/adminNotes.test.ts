@@ -596,6 +596,108 @@ describe("note-jobs monitoring", () => {
     const [row] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job.id));
     expect(row!.status).toBe("failed");
   });
+
+  // ── r4: failure_code + discard visibility ─────────────────────────────────
+
+  it("list carries failureCode / discardedAt / lessonStatus and a failureCode facet", async () => {
+    const codeTeacher = await mkUser({ displayName: "Code Teacher", email: "codeteach@k.com", isTeacher: true });
+    await seedJob(codeTeacher.id, { status: "failed", failureCode: "no_speech" });
+    await seedJob(codeTeacher.id, { status: "failed", failureCode: "thin_note" });
+    await seedJob(
+      codeTeacher.id,
+      { status: "failed", failureCode: "thin_note", discardedAt: new Date() },
+      { status: "canceled" },
+    );
+    const res = await request(app())
+      .get("/admin/note-jobs?q=codeteach")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.items.length).toBe(3);
+    const codes = res.body.items.map((r: { failureCode: string }) => r.failureCode).sort();
+    expect(codes).toEqual(["no_speech", "thin_note", "thin_note"]);
+    const discarded = res.body.items.find((r: { discardedAt: string | null }) => r.discardedAt !== null);
+    expect(discarded.lessonStatus).toBe("canceled");
+    const facet = res.body.facets.failureCode;
+    expect(facet.find((f: { value: string }) => f.value === "thin_note").count).toBe(2);
+    expect(facet.find((f: { value: string }) => f.value === "no_speech").count).toBe(1);
+  });
+
+  it("filters by failureCode, and that facet still ignores its own filter", async () => {
+    const res = await request(app())
+      .get("/admin/note-jobs?q=codeteach&failureCode=no_speech")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.body.items.length).toBe(1);
+    expect(res.body.items[0].failureCode).toBe("no_speech");
+    expect(res.body.facets.failureCode.length).toBe(2);
+  });
+
+  it("detail exposes the code and the discard stamp", async () => {
+    const { job } = await seedJob(
+      teacher.id,
+      { status: "failed", failureCode: "worker_crash", discardedAt: new Date() },
+      { status: "canceled" },
+    );
+    const res = await request(app())
+      .get(`/admin/note-jobs/${job.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.job.failureCode).toBe("worker_crash");
+    expect(res.body.job.discardedAt).not.toBeNull();
+    expect(res.body.lesson.status).toBe("canceled");
+  });
+
+  it("requeue refuses a discarded lesson — the owner asked for exactly that", async () => {
+    // The failed-only check cannot see it: a discard leaves the job in 'failed'.
+    // This is the deterministic, no-race leg — an admin looking at a failed job
+    // has no reason to know the owner deleted the recording underneath it.
+    const { job } = await seedJob(
+      teacher.id,
+      { status: "failed", failureCode: "lesson_discarded", discardedAt: new Date() },
+      { status: "canceled" },
+    );
+    const before = fakeQueue.sent.length;
+    const res = await request(app())
+      .post(`/admin/note-jobs/${job.id}/requeue`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("lesson_discarded");
+    expect(res.body.message).toBeTruthy();
+    expect(fakeQueue.sent.length).toBe(before); // nothing enqueued
+    const [row] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job.id));
+    expect(row!.status).toBe("failed");
+    expect(row!.attempts).toBe(0); // not charged for a run that was refused
+
+    // A canceled lesson refuses even when the job carries no discard stamp
+    // (a pre-0016 row, or a cancel that never reached the job).
+    const stampless = await seedJob(teacher.id, { status: "failed", failureCode: "asr_error" }, { status: "canceled" });
+    const second = await request(app())
+      .post(`/admin/note-jobs/${stampless.job.id}/requeue`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({});
+    expect(second.status).toBe(409);
+    expect(second.body.error).toBe("lesson_discarded");
+  });
+
+  it("requeue clears the stale code, re-anchors startedAt, and stays uncapped", async () => {
+    const { job } = await seedJob(teacher.id, {
+      status: "failed",
+      failureCode: "no_speech",
+      // no_speech is categorically un-retryable for an end user; an admin re-run
+      // is a different act from tapping Retry, so the cap does not apply here.
+      attempts: 9,
+      startedAt: new Date(Date.now() - 47 * 60 * 1000),
+    });
+    const res = await request(app())
+      .post(`/admin/note-jobs/${job.id}/requeue`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.job.failureCode).toBeNull();
+    expect(res.body.job.attempts).toBe(10);
+    const [row] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job.id));
+    expect(Date.now() - row!.startedAt!.getTime()).toBeLessThan(60 * 1000);
+  });
 });
 
 // ── Transcript break-glass ───────────────────────────────────────────────────────
@@ -687,6 +789,25 @@ describe("transcript break-glass", () => {
       .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("transcript_not_ready");
+  });
+
+  it("410s once the owner discarded it — 'purged on request' is not 'never existed'", async () => {
+    const { job } = await seedJob(teacher.id, {
+      status: "failed",
+      failureCode: "thin_note",
+      // Exactly the shape the discard transaction leaves behind.
+      transcriptPath: null,
+      discardedAt: new Date(),
+    });
+    const before = (await auditFor("transcript.view")).length;
+    const res = await request(app())
+      .get(`/admin/note-jobs/${job.id}/transcript?reason=Checking a support ticket about a deleted lesson.`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(410);
+    expect(res.body.error).toBe("transcript_discarded");
+    expect(fakeAssets.reads).not.toContain(null);
+    // Nothing was read, so nothing is audited as read.
+    expect((await auditFor("transcript.view")).length).toBe(before);
   });
 });
 

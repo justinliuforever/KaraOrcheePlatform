@@ -777,9 +777,15 @@ export interface NoteJobRow {
   failureHints: string[];
   metrics: NoteJobMetrics;
   transcriptPath: string | null;
+  // Worker-written cause of a failure; null on a healthy job or a pre-0016 row.
+  failureCode: string | null;
+  discardedAt: string | null;
+  // Stamped at submit and on every requeue — the anchor for time-to-note.
+  startedAt: string | null;
   createdAt: string;
   updatedAt: string;
   lessonSessionId: string;
+  lessonStatus: string | null;
   teacherId: string | null;
   ownerRole: OwnerRole | null;
   pieceId: string | null;
@@ -797,6 +803,7 @@ export interface NoteJobsResponse {
   facets: {
     status: { value: string; count: number }[];
     ownerRole: { value: string; count: number }[];
+    failureCode: { value: string; count: number }[];
   };
 }
 
@@ -967,7 +974,7 @@ export function putMonetization(value: string | null): Promise<MonetizationConfi
 }
 
 // Note-jobs (Ops lane)
-export function listNoteJobs(params: { status?: string; stage?: string; ownerRole?: string; q?: string }): Promise<NoteJobsResponse> {
+export function listNoteJobs(params: { status?: string; stage?: string; ownerRole?: string; failureCode?: string; q?: string }): Promise<NoteJobsResponse> {
   return api(`/admin/note-jobs${notesQs(params)}`);
 }
 export function getNoteJob(id: string): Promise<NoteJobDetail> {
