@@ -2489,3 +2489,31 @@ describe("auth", () => {
     expect(res.body.error).toBe("unknown_user");
   });
 });
+
+describe("users/sync profile preservation", () => {
+  // A claim the token omits says nothing about the profile. CIAM omits email/name on
+  // some token shapes, and an unconditional set wiped a real account's profile in dev.
+  it("a token without email or name claims does not wipe a stored profile", async () => {
+    const full = await mkToken("sync-keep-profile", "Ada", "ada@example.com");
+    const first = await sync(full, { role: "student" });
+    expect(first.status).toBe(200);
+    expect(first.body.email).toBe("ada@example.com");
+    expect(first.body.displayName).toBe("Ada");
+
+    const bare = await mkToken("sync-keep-profile");
+    const second = await sync(bare);
+    expect(second.status).toBe(200);
+    expect(second.body.email).toBe("ada@example.com");
+    expect(second.body.displayName).toBe("Ada");
+  });
+
+  it("a later token that carries a changed profile still updates it", async () => {
+    const first = await mkToken("sync-update-profile", "Old", "old@example.com");
+    await sync(first, { role: "student" });
+
+    const renamed = await mkToken("sync-update-profile", "New", "new@example.com");
+    const res = await sync(renamed);
+    expect(res.body.email).toBe("new@example.com");
+    expect(res.body.displayName).toBe("New");
+  });
+});

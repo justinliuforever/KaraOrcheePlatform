@@ -31,6 +31,12 @@ const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
 const AUDIENCE = "api://karaorchee";
 const KID = "test-key";
 
+// Every timestamp on the wire is ISO-8601 UTC. The iOS client parses dates with
+// ISO8601DateFormatter, which rejects Postgres's own text form
+// ("2026-07-25 13:38:26.463294+00"); JS `new Date(...)` accepts both, so an
+// assertion that only round-trips through Date cannot see the difference.
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+
 let verifier: AuthVerifier;
 let db: Db;
 let privateKey: CryptoKey;
@@ -284,8 +290,12 @@ describe("students roster (teacher side)", () => {
     expect(new Date(row.consentAt).getTime()).toBe(consentDate.getTime());
     expect(row.counterpartDeleted).toBe(false);
     expect(Math.abs(new Date(row.lastNoteAt).getTime() - sentAt.getTime())).toBeLessThan(2000);
+    expect(row.lastNoteAt).toMatch(ISO_UTC);
     expect(row.lastLessonAt).toBeTruthy();
     expect(Number.isNaN(new Date(row.lastLessonAt).getTime())).toBe(false);
+    expect(row.lastLessonAt).toMatch(ISO_UTC);
+    expect(row.linkedAt).toMatch(ISO_UTC);
+    expect(row.consentAt).toMatch(ISO_UTC);
     expect(row.practicedTotal).toBe(2);
     expect(row.practicedDone).toBe(1);
     expect(row.canReceiveNotes).toBe(true);
@@ -404,6 +414,8 @@ describe("teachers roster (student side)", () => {
     const rowA = res.body.items.find((i: { teacherId: string }) => i.teacherId === ta.id);
     expect(rowA.noteCount).toBe(1); // sent+teacher only: draft and self-note excluded
     expect(Math.abs(new Date(rowA.lastNoteAt).getTime() - taSentAt.getTime())).toBeLessThan(2000);
+    expect(rowA.lastNoteAt).toMatch(ISO_UTC);
+    expect(rowA.linkedAt).toMatch(ISO_UTC);
     expect(new Date(rowA.consentAt).getTime()).toBe(consentA.getTime());
     expect(rowA.counterpartDeleted).toBe(false);
 

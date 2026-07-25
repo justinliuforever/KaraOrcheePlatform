@@ -509,11 +509,15 @@ export function linksRouter(deps: Deps): Router {
       const studentRows = studentIds.length
         ? await db.select().from(users).where(inArray(users.id, studentIds))
         : [];
+      // INVARIANT: every timestamp on the wire is ISO-8601. A bare `sql` expression
+      // carries no column decoder, so the driver's own text ("2026-07-25 13:38:26+00")
+      // would reach the client — which parses dates with ISO8601DateFormatter and
+      // fails the whole response. mapWith borrows the column's decoder.
       const lastNotes = studentIds.length
         ? await db
             .select({
               studentId: notes.studentId,
-              lastSentAt: sql<string>`max(${notes.sentAt})`,
+              lastSentAt: sql<Date>`max(${notes.sentAt})`.mapWith(notes.sentAt),
             })
             .from(notes)
             .where(and(eq(notes.teacherId, me.id), eq(notes.status, "sent"), inArray(notes.studentId, studentIds)))
@@ -524,7 +528,8 @@ export function linksRouter(deps: Deps): Router {
         ? await db
             .select({
               studentId: lessonSessions.studentId,
-              lastAt: sql<string>`max(coalesce(${lessonSessions.startedAt}, ${lessonSessions.createdAt}))`,
+              lastAt: sql<Date>`max(coalesce(${lessonSessions.startedAt}, ${lessonSessions.createdAt}))`
+                .mapWith(lessonSessions.startedAt),
             })
             .from(lessonSessions)
             .where(and(
@@ -696,7 +701,7 @@ export function linksRouter(deps: Deps): Router {
             .select({
               teacherId: notes.teacherId,
               count: sql<number>`count(*)::int`,
-              lastAt: sql<string>`max(${notes.sentAt})`,
+              lastAt: sql<Date>`max(${notes.sentAt})`.mapWith(notes.sentAt),
             })
             .from(notes)
             .where(and(

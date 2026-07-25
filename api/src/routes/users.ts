@@ -47,12 +47,19 @@ export function usersRouter(deps: Deps): Router {
       const email = claims.email ?? null;
       const displayName = claims.name ?? null;
 
+      // A token that omits a claim says nothing about the profile — it must never be
+      // read as "clear it". CIAM omits email/name on some token shapes, so an
+      // unconditional set wipes the stored profile of a real account on one sync.
       const upserted = await deps.db.orm
         .insert(users)
         .values({ entraOid: claims.oid, email, displayName })
         .onConflictDoUpdate({
           target: users.entraOid,
-          set: { email, displayName, updatedAt: sql`now()` },
+          set: {
+            ...(email === null ? {} : { email }),
+            ...(displayName === null ? {} : { displayName }),
+            updatedAt: sql`now()`,
+          },
         })
         .returning();
       const row = upserted[0]!;
