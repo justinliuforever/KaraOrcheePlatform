@@ -47,9 +47,7 @@ export function usersRouter(deps: Deps): Router {
       const email = claims.email ?? null;
       const displayName = claims.name ?? null;
 
-      // A token that omits a claim says nothing about the profile — it must never be
-      // read as "clear it". CIAM omits email/name on some token shapes, so an
-      // unconditional set wipes the stored profile of a real account on one sync.
+      // An omitted claim says nothing about the profile — never read it as "clear it".
       const upserted = await deps.db.orm
         .insert(users)
         .values({ entraOid: claims.oid, email, displayName })

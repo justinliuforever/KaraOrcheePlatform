@@ -2491,8 +2491,6 @@ describe("auth", () => {
 });
 
 describe("users/sync profile preservation", () => {
-  // A claim the token omits says nothing about the profile. CIAM omits email/name on
-  // some token shapes, and an unconditional set wiped a real account's profile in dev.
   it("a token without email or name claims does not wipe a stored profile", async () => {
     const full = await mkToken("sync-keep-profile", "Ada", "ada@example.com");
     const first = await sync(full, { role: "student" });
