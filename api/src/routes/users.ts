@@ -17,6 +17,7 @@ import {
   users,
 } from "../db/schema";
 import { notesAccess } from "../notes/entitlement";
+import { narrationPrefix } from "../notes/narration";
 
 // Where a role grant came from. Anything else (including a client that sends
 // nothing) records as a sign-up, which is what the audit trail assumed before the
@@ -176,7 +177,9 @@ export function usersRouter(deps: Deps): Router {
         : [];
       const transcriptPaths = myJobs.map((j) => j.transcriptPath).filter((p): p is string => !!p);
 
-      await db.transaction(async (tx) => {
+      // Narration follows the note row: purged for the copies destroyed below, kept
+      // for the SENT notes that stay with their students.
+      const purgedNoteIds = await db.transaction(async (tx) => {
         // End every relationship on both sides.
         await tx
           .update(teacherStudentLinks)
@@ -241,6 +244,8 @@ export function usersRouter(deps: Deps): Router {
             updatedAt: sql`now()`,
           })
           .where(eq(users.id, me.id));
+
+        return [...receivedIds, ...draftIds];
       });
 
       await userAudit(deps, req, "account.delete", { type: "user", id: me.id });
@@ -259,6 +264,13 @@ export function usersRouter(deps: Deps): Router {
             await deps.notesAssets.deleteAsset(path);
           } catch (err) {
             console.error("account.delete: transcript purge failed", path, err);
+          }
+        }
+        for (const noteId of purgedNoteIds) {
+          try {
+            await deps.notesAssets.deletePrefix(narrationPrefix(noteId));
+          } catch (err) {
+            console.error("account.delete: narration purge failed", noteId, err);
           }
         }
       }

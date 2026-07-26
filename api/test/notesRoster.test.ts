@@ -70,6 +70,9 @@ function makeFakeQueue(): FakeQueue {
     async send(body) {
       q.sent.push(body);
     },
+    async sendNarration(body) {
+      q.sent.push(body);
+    },
   };
   return q;
 }
@@ -79,11 +82,19 @@ let fakeQueue: FakeQueue;
 
 const fakeAssets = {
   deleted: [] as string[],
+  deletedPrefixes: [] as string[],
   async readTranscript() {
     return null;
   },
+  readUrl(path: string) {
+    return `https://fake.blob/notes-assets/${path}?sig=fake`;
+  },
+  async copyAsset() {},
   async deleteAsset(path: string) {
     fakeAssets.deleted.push(path);
+  },
+  async deletePrefix(prefix: string) {
+    fakeAssets.deletedPrefixes.push(prefix);
   },
 };
 

@@ -366,6 +366,40 @@ export const noteAnnotations = pgTable("note_annotations", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Pre-rendered premium narration: one row per (note, voice, clip), where clip_id is
+// "overview" or the annotation id and the audio sits at
+// narration/<note_id>/<voice>/<clip_id>.mp3 in notes-assets. A table rather than a
+// manifest column on notes: generation is per (note, voice) and upserts one clip at a
+// time (two voices can run concurrently without clobbering each other), the annotation
+// link is a real FK instead of a string convention, character spend is a SUM, and note
+// list queries stay free of manifests nobody asked for.
+export const noteNarrationClips = pgTable("note_narration_clips", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  noteId: uuid("note_id").notNull().references(() => notes.id, { onDelete: "cascade" }),
+  annotationId: uuid("annotation_id").references(() => noteAnnotations.id, { onDelete: "cascade" }), // null on the overview clip
+  voice: text("voice").notNull(), // jessica | george
+  clipId: text("clip_id").notNull(), // "overview" | annotation id
+  kind: text("kind").notNull(), // overview | step
+  blobPath: text("blob_path").notNull(), // notes-assets container-relative
+  // sha256 over [text, voiceId, model, seed, settings, outputFormat]. Equal = already
+  // synthesized at this exact config; the vendor bills per character, so it is never
+  // re-sent — and a duplicated note copies these rows rather than paying again.
+  contentHash: text("content_hash").notNull(),
+  // The clip's identity to the client: full lowercase-hex sha256 of the spoken lines
+  // joined by "\n" (worker/notes/narration_parity.json). Stored WHOLE — the app compares
+  // the whole digest, and a truncated one can never equal it.
+  textHash: text("text_hash").notNull(),
+  chars: integer("chars").notNull(),
+  bytes: integer("bytes").notNull(),
+  model: text("model").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("uq_narration_clip").on(t.noteId, t.voice, t.clipId),
+  check("ck_narration_voice", sql`${t.voice} IN ('jessica', 'george')`),
+  check("ck_narration_kind", sql`${t.kind} IN ('overview', 'step')`),
+]);
+
 // Multi-row by design: a user can hold trial + admin_grant + apple_iap rows over time.
 // The resolver picks the strongest live row; teachers bypass entitlements entirely.
 export const entitlements = pgTable("entitlements", {
@@ -414,5 +448,6 @@ export type LessonSession = typeof lessonSessions.$inferSelect;
 export type NoteJob = typeof noteJobs.$inferSelect;
 export type Note = typeof notes.$inferSelect;
 export type NoteAnnotation = typeof noteAnnotations.$inferSelect;
+export type NoteNarrationClip = typeof noteNarrationClips.$inferSelect;
 export type Entitlement = typeof entitlements.$inferSelect;
 export type Device = typeof devices.$inferSelect;

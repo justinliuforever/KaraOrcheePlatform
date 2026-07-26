@@ -1,13 +1,23 @@
 import { Router } from "express";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireUser, userAudit } from "../notes/user";
 import { noteIsLocked, notesAccess } from "../notes/entitlement";
+import { ASSET_READ_SAS_MINUTES } from "../notes/assets_store";
+import {
+  DEFAULT_NARRATION_VOICE,
+  NARRATION_OVERVIEW_CLIP,
+  NARRATION_VOICES,
+  isNarrationVoice,
+  narrationClipPath,
+  narrationPrefix,
+} from "../notes/narration";
 import {
   devices,
   noteAnnotations,
+  noteNarrationClips,
   notes,
   pieces,
   teacherStudentLinks,
@@ -139,6 +149,7 @@ export function notesRouter(deps: Deps): Router {
       // annotations half-rewritten. Annotations are worker-authored — the client
       // may reorder, edit instruction/category/location, or DELETE (omit an id),
       // but NEVER create a row or alter a quote (verbatim provenance lives server-side).
+      let dropped: string[] = [];
       const updated = await db.transaction(async (tx) => {
         const [u] = await tx
           .update(notes)
@@ -173,12 +184,26 @@ export function notesRouter(deps: Deps): Router {
           }
           const drop = existing.filter((a) => !keep.has(a.id)).map((a) => a.id);
           if (drop.length) await tx.delete(noteAnnotations).where(inArray(noteAnnotations.id, drop));
+          dropped = drop;
         }
         return u;
       });
       if (!updated) {
         res.status(409).json({ error: "not_editable", message: "Sent notes can't be edited — retract, fix, and resend." });
         return;
+      }
+      // The manifest row cascades with the annotation; its audio does not. Nothing
+      // would ever address these blobs again — they are a pure storage leak.
+      if (dropped.length && deps.notesAssets) {
+        try {
+          for (const clipId of dropped) {
+            for (const voice of NARRATION_VOICES) {
+              await deps.notesAssets.deleteAsset(narrationClipPath(note.id, voice, clipId));
+            }
+          }
+        } catch (err) {
+          console.error("note.patch: narration purge failed", note.id, err);
+        }
       }
       const annotations = await db
         .select()
@@ -250,7 +275,26 @@ export function notesRouter(deps: Deps): Router {
         res.status(409).json({ error: "status_changed" });
         return;
       }
-      await userAudit(deps, req, "note.send", { type: "note", id: note.id }, { studentId });
+      // Narration made while this was a draft can speak text the teacher edited
+      // before sending. The worker re-synthesizes only the clips whose content hash
+      // moved, so this fires unconditionally. ONE message, every voice, on the
+      // dedicated narration lane — the shape pinned in narration_parity.json, which the
+      // worker refuses to guess at. Best-effort: a Service Bus outage must not withhold
+      // the note — narrationQueued:false is the trail for a manual requeue.
+      let narrationQueued = false;
+      if (deps.notesQueue) {
+        try {
+          await deps.notesQueue.sendNarration({
+            noteId: note.id,
+            voices: [...NARRATION_VOICES],
+            reqId: req.reqId,
+          });
+          narrationQueued = true;
+        } catch (err) {
+          console.error("note.send: narration enqueue failed", note.id, err);
+        }
+      }
+      await userAudit(deps, req, "note.send", { type: "note", id: note.id }, { studentId, narrationQueued });
       res.json(updated);
     }),
   );
@@ -281,6 +325,51 @@ export function notesRouter(deps: Deps): Router {
     }),
   );
 
+  // A duplicate speaks the same words in the same order, so its clips are identical to
+  // the origin's — and content_hash, which carries no note id, is exactly what makes the
+  // worker skip a clip it already made. Copying the audio server-side inside the
+  // container is what makes a group send free instead of one full vendor run per
+  // recipient. Best-effort and per clip: the manifest row is written only once its blob
+  // is actually there, so this can never produce a signed URL that 404s.
+  async function copyNarration(
+    fromNoteId: string,
+    toNoteId: string,
+    annotations: { id: string; idx: number }[],
+    clipIdByIdx: Map<number, string>,
+  ): Promise<void> {
+    if (!deps.notesAssets) return;
+    const db = deps.db!.orm;
+    const rows = await db
+      .select()
+      .from(noteNarrationClips)
+      .where(eq(noteNarrationClips.noteId, fromNoteId));
+    const renamed = new Map(annotations.map((a) => [a.id, clipIdByIdx.get(a.idx)]));
+    for (const row of rows) {
+      const overview = row.clipId === NARRATION_OVERVIEW_CLIP;
+      const clipId = overview ? NARRATION_OVERVIEW_CLIP : renamed.get(row.clipId);
+      if (!clipId || !isNarrationVoice(row.voice)) continue;
+      const blobPath = narrationClipPath(toNoteId, row.voice, clipId);
+      try {
+        await deps.notesAssets.copyAsset(narrationClipPath(fromNoteId, row.voice, row.clipId), blobPath);
+        await db.insert(noteNarrationClips).values({
+          noteId: toNoteId,
+          annotationId: overview ? null : clipId,
+          voice: row.voice,
+          clipId,
+          kind: row.kind,
+          blobPath,
+          contentHash: row.contentHash,
+          textHash: row.textHash,
+          chars: row.chars,
+          bytes: row.bytes,
+          model: row.model,
+        });
+      } catch (err) {
+        console.error("note.duplicate: narration copy failed", toNoteId, row.clipId, err);
+      }
+    }
+  }
+
   // Group send (copy the reviewed draft per student) and fix-after-retract both
   // route through duplication; a retracted origin records its successor.
   router.post(
@@ -306,7 +395,7 @@ export function notesRouter(deps: Deps): Router {
         .orderBy(asc(noteAnnotations.idx));
       // One transaction: a copy that exists without its annotations (or a retracted
       // origin pointing at a half-built successor) is worse than no copy.
-      const copy = await db.transaction(async (tx) => {
+      const { copy, clipIdByIdx } = await db.transaction(async (tx) => {
         const [c] = await tx
           .insert(notes)
           .values({
@@ -320,23 +409,27 @@ export function notesRouter(deps: Deps): Router {
             content: note.content,
           })
           .returning();
-        if (annotations.length) {
-          await tx.insert(noteAnnotations).values(
-            annotations.map((a) => ({
-              noteId: c!.id,
-              idx: a.idx,
-              category: a.category,
-              instruction: a.instruction,
-              quote: a.quote,
-              location: a.location,
-            })),
-          );
-        }
+        const made = annotations.length
+          ? await tx
+              .insert(noteAnnotations)
+              .values(
+                annotations.map((a) => ({
+                  noteId: c!.id,
+                  idx: a.idx,
+                  category: a.category,
+                  instruction: a.instruction,
+                  quote: a.quote,
+                  location: a.location,
+                })),
+              )
+              .returning({ id: noteAnnotations.id, idx: noteAnnotations.idx })
+          : [];
         if (note.status === "retracted") {
           await tx.update(notes).set({ supersededBy: c!.id, updatedAt: sql`now()` }).where(eq(notes.id, note.id));
         }
-        return c!;
+        return { copy: c!, clipIdByIdx: new Map(made.map((a) => [a.idx, a.id])) };
       });
+      await copyNarration(note.id, copy.id, annotations, clipIdByIdx);
       await userAudit(deps, req, "note.duplicate", { type: "note", id: note.id }, { copyId: copy.id });
       res.status(201).json(copy);
     }),
@@ -475,6 +568,13 @@ export function notesRouter(deps: Deps): Router {
         await tx.delete(notes).where(eq(notes.id, note.id));
       });
       await userAudit(deps, req, "note.self_delete", { type: "note", id: note.id });
+      if (deps.notesAssets) {
+        try {
+          await deps.notesAssets.deletePrefix(narrationPrefix(note.id));
+        } catch (err) {
+          console.error("note.self_delete: narration purge failed", note.id, err);
+        }
+      }
       res.json({ ok: true });
     }),
   );
@@ -583,6 +683,97 @@ export function notesRouter(deps: Deps): Router {
         .where(eq(noteAnnotations.id, annotation.id))
         .returning();
       res.json({ location: updated!.location });
+    }),
+  );
+
+  // ── Narration ─────────────────────────────────────────────────────────────────
+  // Deliberately dual-role, unlike its /v1/notes siblings: the OR below IS the
+  // authorization, so this route must never gain the requireTeacher guard.
+  // Entitlement is the only check left after the fetch, mirroring GET /v1/me/notes/:id
+  // — narration speaks the whole note, so a lapsed student must not hear it either.
+  router.get(
+    "/v1/notes/:id/narration",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      const requested = typeof req.query.voice === "string" ? req.query.voice : DEFAULT_NARRATION_VOICE;
+      if (!isNarrationVoice(requested)) {
+        res.status(400).json({ error: "invalid_voice", voices: NARRATION_VOICES });
+        return;
+      }
+      if (!deps.notesAssets) {
+        res.status(503).json({ error: "notes_assets_not_configured", message: "KaraOrchee is having trouble right now." });
+        return;
+      }
+      const [note] = await db
+        .select({ id: notes.id, studentId: notes.studentId, sentAt: notes.sentAt })
+        .from(notes)
+        .where(and(
+          eq(notes.id, String(req.params.id)),
+          or(
+            // Student (and the solo author, who is their own student): delivered only.
+            and(eq(notes.studentId, me.id), eq(notes.status, "sent")),
+            // Author, at any status — draft narration is the review preview.
+            ...(me.isTeacher ? [and(eq(notes.teacherId, me.id), eq(notes.origin, "teacher"))] : []),
+          ),
+        ))
+        .limit(1);
+      if (!note) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (note.studentId === me.id) {
+        const access = await notesAccess(deps, me);
+        if (noteIsLocked(access, note.sentAt)) {
+          res.status(402).json({ error: "subscription_required", access });
+          return;
+        }
+      }
+      const annotations = await db
+        .select({ id: noteAnnotations.id })
+        .from(noteAnnotations)
+        .where(eq(noteAnnotations.noteId, note.id))
+        .orderBy(asc(noteAnnotations.idx));
+      const rows = await db
+        .select()
+        .from(noteNarrationClips)
+        .where(and(eq(noteNarrationClips.noteId, note.id), eq(noteNarrationClips.voice, requested)));
+      const present = new Map(rows.map((r) => [r.clipId, r]));
+
+      // Driven by the note as it stands NOW, and the URL is derived from the note in
+      // the path — never from a stored blob_path — so a signed URL cannot address
+      // anything outside this note's prefix.
+      const expected = [NARRATION_OVERVIEW_CLIP, ...annotations.map((a) => a.id)];
+      const clips: Record<string, unknown>[] = [];
+      const pending: string[] = [];
+      for (const clipId of expected) {
+        const row = present.get(clipId);
+        if (!row) {
+          pending.push(clipId);
+          continue;
+        }
+        clips.push({
+          clipId,
+          annotationId: row.annotationId,
+          kind: row.kind,
+          url: deps.notesAssets.readUrl(narrationClipPath(note.id, requested, clipId)),
+          bytes: row.bytes,
+          // The app re-derives this from its own read-aloud script and falls back to
+          // system speech when they disagree — the guard against hearing stale text.
+          textHash: row.textHash,
+          updatedAt: row.updatedAt,
+        });
+      }
+      res.set("Cache-Control", "no-store");
+      res.json({
+        noteId: note.id,
+        voice: requested,
+        voices: NARRATION_VOICES,
+        expiresAt: new Date(Date.now() + ASSET_READ_SAS_MINUTES * 60 * 1000).toISOString(),
+        clips,
+        pending,
+      });
     }),
   );
 

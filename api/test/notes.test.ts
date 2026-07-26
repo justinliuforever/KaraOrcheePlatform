@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import request from "supertest";
-import { and, eq, sql as sqlRaw } from "drizzle-orm";
+import { and, asc, eq, sql as sqlRaw } from "drizzle-orm";
 import {
   generateKeyPair,
   exportJWK,
@@ -20,6 +20,7 @@ import {
   noteJobs,
   notes,
   noteAnnotations,
+  noteNarrationClips,
   entitlements,
   platformConfig,
   devices,
@@ -27,7 +28,29 @@ import {
 } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { LessonStore } from "../src/notes/lessons_store";
+import type { NotesAssetsStore } from "../src/notes/assets_store";
+import { createBlobNotesAssetsStore } from "../src/notes/assets_store";
+import { narrationClipPath, narrationPrefix } from "../src/notes/narration";
 import type { NotesQueue } from "../src/queue";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+// THE cross-repo contract (worker + API + app all assert this one file). Read, never
+// re-derived: a constant copied into this suite could agree with itself forever.
+const GOLDEN = JSON.parse(
+  readFileSync(join(__dirname, "../../worker/notes/narration_parity.json"), "utf8"),
+) as {
+  overview: { textHash: string }[];
+  step: { textHash: string }[];
+  wire: {
+    voices: string[];
+    overviewClipId: string;
+    endpoint: string;
+    queue: string;
+    message: Record<string, unknown>;
+    response: Record<string, unknown> & { clips: Record<string, unknown>[] };
+  };
+};
 
 // Mirrors composers.test.ts: PGlite through testdb, jose local JWKS, supertest.
 const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
@@ -65,38 +88,78 @@ function makeFakeLessons(): FakeLessons {
   return f;
 }
 
-interface FakeAssets {
+// In-memory notes-assets container: put() seeds a blob, signed[] records the exact
+// paths a request minted URLs for, deletePrefix sweeps like the real one.
+interface FakeAssets extends NotesAssetsStore {
+  blobs: Map<string, number>;
+  copied: [string, string][];
   deleted: string[];
+  deletedPrefixes: string[];
   reads: string[];
-  readTranscript(path: string): Promise<unknown | null>;
-  deleteAsset(path: string): Promise<void>;
+  signed: string[];
+  put(path: string, bytes?: number): void;
 }
 function makeFakeAssets(): FakeAssets {
   const a: FakeAssets = {
+    blobs: new Map(),
+    copied: [],
     deleted: [],
+    deletedPrefixes: [],
     reads: [],
+    signed: [],
+    put(path, bytes = 4096) {
+      a.blobs.set(path, bytes);
+    },
     async readTranscript(p) {
       a.reads.push(p);
       return { text: "transcript" };
     },
+    readUrl(p) {
+      a.signed.push(p);
+      return `https://fake.blob/notes-assets/${p}?sp=r&se=fake`;
+    },
+    async copyAsset(from, to) {
+      a.copied.push([from, to]);
+      const bytes = a.blobs.get(from);
+      if (bytes === undefined) throw new Error(`no such blob: ${from}`);
+      a.blobs.set(to, bytes);
+    },
     async deleteAsset(p) {
       a.deleted.push(p);
+      a.blobs.delete(p);
+    },
+    async deletePrefix(prefix) {
+      a.deletedPrefixes.push(prefix);
+      for (const path of [...a.blobs.keys()]) {
+        if (path.startsWith(prefix)) {
+          a.deleted.push(path);
+          a.blobs.delete(path);
+        }
+      }
     },
   };
   return a;
 }
 
+// Two lanes, kept apart on purpose: a narration message on notes-jobs is one the ASR
+// consumer cannot read — it would redeliver until it dead-lettered.
 interface FakeQueue extends NotesQueue {
   sent: Record<string, unknown>[];
+  narrationSent: Record<string, unknown>[];
   throwNext: boolean;
 }
 function makeFakeQueue(): FakeQueue {
   const q: FakeQueue = {
     sent: [],
+    narrationSent: [],
     throwNext: false,
     async send(body) {
       if (q.throwNext) throw new Error("service bus unavailable");
       q.sent.push(body);
+    },
+    async sendNarration(body) {
+      if (q.throwNext) throw new Error("service bus unavailable");
+      q.narrationSent.push(body);
     },
   };
   return q;
@@ -306,6 +369,13 @@ beforeEach(() => {
   fakeLessons.audio = { bytes: 1000 };
   fakeLessons.failNextDelete = false;
   fakeQueue.throwNext = false;
+  fakeQueue.sent.length = 0;
+  fakeQueue.narrationSent.length = 0;
+  fakeAssets.blobs.clear();
+  fakeAssets.copied.length = 0;
+  fakeAssets.deleted.length = 0;
+  fakeAssets.deletedPrefixes.length = 0;
+  fakeAssets.signed.length = 0;
 });
 
 // ── 1. users/sync ────────────────────────────────────────────────────────────────
@@ -2370,6 +2440,512 @@ describe("notes: student flow", () => {
     } finally {
       await setMonetization(null);
     }
+  });
+});
+
+// ── 7b. Narration read path ─────────────────────────────────────────────────────────
+
+describe("notes: narration", () => {
+  let narT: TestUser;
+  let narS: TestUser;
+  let otherS: TestUser; // same teacher, different student
+  let otherT: TestUser;
+  // The worker asserts these same digests are what it produces for the golden's scripts.
+  const goldenHashes = (GOLDEN.wire.response.clips as { textHash: string }[]).map((c) => c.textHash);
+
+  beforeAll(async () => {
+    narT = await makeUser({ oid: "nar-teacher", name: "Narration Teacher", role: "teacher" });
+    narS = await makeUser({ oid: "nar-student", name: "Narration Student", role: "student" });
+    otherS = await makeUser({ oid: "nar-other-student", name: "Other Student", role: "student" });
+    otherT = await makeUser({ oid: "nar-other-teacher", name: "Other Teacher", role: "teacher" });
+    await linkActive(narT.id, narS.id);
+    await linkActive(narT.id, otherS.id);
+  });
+
+  // What the worker leaves behind: one manifest row per synthesized clip, plus its blob.
+  // The hashes are the golden's own — this route's only job is to hand them back whole.
+  async function seedClips(noteId: string, clipIds: string[], voice: "jessica" | "george" = "jessica") {
+    for (const [i, clipId] of clipIds.entries()) {
+      const blobPath = narrationClipPath(noteId, voice, clipId);
+      await db.orm.insert(noteNarrationClips).values({
+        noteId,
+        annotationId: clipId === "overview" ? null : clipId,
+        voice,
+        clipId,
+        kind: clipId === "overview" ? "overview" : "step",
+        blobPath,
+        contentHash: `content-${voice}-${clipId}`,
+        textHash: goldenHashes[i % goldenHashes.length]!,
+        chars: 120,
+        bytes: 4096,
+        model: "eleven_multilingual_v2",
+      });
+      fakeAssets.put(blobPath);
+    }
+  }
+
+  // The path comes from the golden, so the client and this route cannot drift apart:
+  // the app builds the same string from the same file.
+  function narrationPath(noteId: string, voice?: string) {
+    const [path, query] = GOLDEN.wire.endpoint.split("?") as [string, string];
+    const base = path.replace("{noteId}", noteId);
+    return voice === undefined ? base : `${base}?${query.replace("{voice}", voice)}`;
+  }
+
+  function get(noteId: string, token: string, voice?: string) {
+    return request(makeApp()).get(narrationPath(noteId, voice)).set("Authorization", `Bearer ${token}`);
+  }
+
+  it("returns per-clip signed URLs for the student the note was sent to", async () => {
+    const { note, annotations } = await seedNote({
+      teacherId: narT.id,
+      studentId: narS.id,
+      status: "sent",
+      sentAt: new Date(),
+      pieceId: "seed_piece",
+    });
+    await seedClips(note.id, ["overview", annotations[0]!.id, annotations[1]!.id]);
+
+    const res = await get(note.id, narS.token, "jessica");
+    expect(res.status).toBe(200);
+    expect(res.body.voice).toBe("jessica");
+    expect(res.body.pending).toEqual([]);
+    expect(res.body.clips.map((c: { clipId: string }) => c.clipId)).toEqual([
+      "overview",
+      annotations[0]!.id,
+      annotations[1]!.id,
+    ]);
+    expect(res.body.clips[0].annotationId).toBeNull();
+    expect(res.body.clips[0].kind).toBe("overview");
+    expect(res.body.clips[1].annotationId).toBe(annotations[0]!.id);
+    expect(res.body.clips[1].kind).toBe("step");
+    expect(res.body.clips[0].bytes).toBe(4096);
+    // The app re-derives this and refuses to play a clip whose text moved. Handed back
+    // WHOLE and from the manifest table — a truncated or re-derived hash is one the app
+    // can never match, and every clip would fall silently to the error path.
+    expect(res.body.clips[0].textHash).toBe(goldenHashes[0]);
+    expect(res.body.clips[0].textHash).toHaveLength(64);
+    // Every URL is minted for exactly one blob under this note's prefix.
+    expect(fakeAssets.signed).toEqual([
+      narrationClipPath(note.id, "jessica", "overview"),
+      narrationClipPath(note.id, "jessica", annotations[0]!.id),
+      narrationClipPath(note.id, "jessica", annotations[1]!.id),
+    ]);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    expect(new Date(res.body.expiresAt).getTime()).toBeLessThanOrEqual(Date.now() + 15 * 60 * 1000);
+  });
+
+  // A silent fallback is indistinguishable from correct behaviour, so the wire is pinned
+  // to the sample the iOS decoder is tested against byte-for-byte. If either side renames
+  // a field, adds one the other must see, or drops one, this fails here and there.
+  it("answers in exactly the shape the iOS client is tested against", async () => {
+    const sample = GOLDEN.wire.response as {
+      clips: Record<string, unknown>[];
+      [k: string]: unknown;
+    };
+    const { note, annotations } = await seedNote({
+      teacherId: narT.id,
+      studentId: narS.id,
+      status: "sent",
+      sentAt: new Date(),
+    });
+    await seedClips(note.id, [GOLDEN.wire.overviewClipId, annotations[0]!.id]);
+
+    const res = await get(note.id, narS.token, "jessica");
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(Object.keys(sample).sort());
+    expect(Object.keys(res.body.clips[0]).sort()).toEqual(Object.keys(sample.clips[0]!).sort());
+    expect(res.body.voices).toEqual(GOLDEN.wire.voices);
+    expect(res.body.clips[0].clipId).toBe(GOLDEN.wire.overviewClipId);
+    expect(res.body.clips[0].annotationId).toBeNull();
+    // The sample's own clips are the golden's first two scripts, in order.
+    expect(res.body.clips.map((c: { textHash: string }) => c.textHash)).toEqual(
+      sample.clips.map((c) => c.textHash),
+    );
+    expect(String(res.body.clips[0].url)).toContain(
+      narrationClipPath(note.id, "jessica", GOLDEN.wire.overviewClipId),
+    );
+    expect(String(sample.clips[0]!.url)).toContain(".mp3?");
+  });
+
+  it("names clips that do not exist yet instead of signing a URL that 404s", async () => {
+    const { note, annotations } = await seedNote({
+      teacherId: narT.id,
+      studentId: narS.id,
+      status: "sent",
+      sentAt: new Date(),
+    });
+    await seedClips(note.id, ["overview"]);
+
+    const res = await get(note.id, narS.token);
+    expect(res.status).toBe(200);
+    expect(res.body.clips.length).toBe(1);
+    expect(res.body.pending).toEqual([annotations[0]!.id, annotations[1]!.id]);
+  });
+
+  it("serves each voice from its own prefix", async () => {
+    const { note } = await seedNote({
+      teacherId: narT.id,
+      studentId: narS.id,
+      status: "sent",
+      sentAt: new Date(),
+      annotations: [],
+    });
+    await seedClips(note.id, ["overview"], "george");
+
+    const george = await get(note.id, narS.token, "george");
+    expect(george.body.clips.length).toBe(1);
+    const jessica = await get(note.id, narS.token, "jessica");
+    expect(jessica.body.clips.length).toBe(0);
+    expect(jessica.body.pending).toEqual(["overview"]);
+
+    const bad = await get(note.id, narS.token, "alexander");
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe("invalid_voice");
+  });
+
+  it("never signs a clip left behind by an annotation deleted at review", async () => {
+    const { note, annotations } = await seedNote({
+      teacherId: narT.id,
+      studentId: narS.id,
+      status: "sent",
+      sentAt: new Date(),
+    });
+    await seedClips(note.id, ["overview", annotations[0]!.id, annotations[1]!.id]);
+    await db.orm.delete(noteAnnotations).where(eq(noteAnnotations.id, annotations[1]!.id));
+
+    const res = await get(note.id, narS.token);
+    const ids = res.body.clips.map((c: { clipId: string }) => c.clipId);
+    expect(ids).toEqual(["overview", annotations[0]!.id]);
+    expect(res.body.pending).toEqual([]);
+    // The blob outlives the annotation; nothing may hand it to a client.
+    expect(fakeAssets.blobs.has(narrationClipPath(note.id, "jessica", annotations[1]!.id))).toBe(true);
+    expect(fakeAssets.signed).not.toContain(narrationClipPath(note.id, "jessica", annotations[1]!.id));
+  });
+
+  it("takes the audio with the annotation the teacher deleted at review", async () => {
+    const { note, annotations } = await seedNote({ teacherId: narT.id, status: "draft" });
+    await seedClips(note.id, ["overview", annotations[0]!.id, annotations[1]!.id]);
+    await seedClips(note.id, ["overview", annotations[0]!.id, annotations[1]!.id], "george");
+
+    const res = await request(makeApp())
+      .patch(`/v1/notes/${note.id}`)
+      .set("Authorization", `Bearer ${narT.token}`)
+      .send({ annotations: [{ id: annotations[0]!.id }] });
+    expect(res.status).toBe(200);
+
+    // The manifest row cascades with the annotation; without this the audio would sit in
+    // the container forever, addressable by nothing.
+    for (const voice of ["jessica", "george"] as const) {
+      expect(fakeAssets.deleted).toContain(narrationClipPath(note.id, voice, annotations[1]!.id));
+      expect(fakeAssets.blobs.has(narrationClipPath(note.id, voice, annotations[0]!.id))).toBe(true);
+      expect(fakeAssets.blobs.has(narrationClipPath(note.id, voice, "overview"))).toBe(true);
+    }
+  });
+
+  it("carries a duplicate's narration across instead of re-buying it", async () => {
+    const { note, annotations } = await seedNote({ teacherId: narT.id, status: "draft", pieceId: "seed_piece" });
+    await seedClips(note.id, ["overview", annotations[0]!.id, annotations[1]!.id]);
+
+    const res = await request(makeApp())
+      .post(`/v1/notes/${note.id}/duplicate`)
+      .set("Authorization", `Bearer ${narT.token}`);
+    expect(res.status).toBe(201);
+    const copyId = res.body.id as string;
+    const copied = await db.orm
+      .select()
+      .from(noteAnnotations)
+      .where(eq(noteAnnotations.noteId, copyId))
+      .orderBy(asc(noteAnnotations.idx));
+
+    // Same words in the same order = the same content hash, which is exactly what makes
+    // the worker skip a clip. A group send is N duplicates: without this it is N full
+    // vendor runs for audio the account already owns.
+    const rows = await db.orm
+      .select()
+      .from(noteNarrationClips)
+      .where(eq(noteNarrationClips.noteId, copyId));
+    expect(rows.map((r) => r.clipId).sort()).toEqual(
+      ["overview", copied[0]!.id, copied[1]!.id].sort(),
+    );
+    const overview = rows.find((r) => r.clipId === "overview")!;
+    expect(overview.annotationId).toBeNull();
+    expect(overview.textHash).toBe(goldenHashes[0]);
+    expect(rows.find((r) => r.clipId === copied[0]!.id)!.annotationId).toBe(copied[0]!.id);
+    // The copy's audio is where the copy's own signed URL points.
+    for (const row of rows) {
+      expect(row.blobPath).toBe(narrationClipPath(copyId, "jessica", row.clipId));
+      expect(fakeAssets.blobs.has(row.blobPath)).toBe(true);
+    }
+    expect(fakeAssets.copied.length).toBe(3);
+
+    const manifest = await get(copyId, narT.token, "jessica");
+    expect(manifest.status).toBe(200);
+    expect(manifest.body.pending).toEqual([]);
+  });
+
+  it("a duplicate whose audio cannot be copied is still a duplicate, minus the clip", async () => {
+    const { note, annotations } = await seedNote({ teacherId: narT.id, status: "draft", pieceId: "seed_piece" });
+    await seedClips(note.id, ["overview", annotations[0]!.id]);
+    // The manifest row exists but the blob does not: the copy must not claim audio.
+    fakeAssets.blobs.delete(narrationClipPath(note.id, "jessica", "overview"));
+
+    const res = await request(makeApp())
+      .post(`/v1/notes/${note.id}/duplicate`)
+      .set("Authorization", `Bearer ${narT.token}`);
+    expect(res.status).toBe(201);
+    const rows = await db.orm
+      .select()
+      .from(noteNarrationClips)
+      .where(eq(noteNarrationClips.noteId, res.body.id as string));
+    expect(rows.map((r) => r.clipId)).not.toContain("overview");
+    const manifest = await get(res.body.id as string, narT.token, "jessica");
+    expect(manifest.body.pending).toContain("overview");
+  });
+
+  it("refuses another student's narration even inside the same studio", async () => {
+    const { note } = await seedNote({
+      teacherId: narT.id,
+      studentId: narS.id,
+      status: "sent",
+      sentAt: new Date(),
+    });
+    await seedClips(note.id, ["overview"]);
+
+    const res = await get(note.id, otherS.token);
+    expect(res.status).toBe(404);
+    expect(fakeAssets.signed).toEqual([]);
+  });
+
+  it("refuses another teacher's note and an unrelated account", async () => {
+    const { note } = await seedNote({ teacherId: narT.id, status: "draft" });
+    await seedClips(note.id, ["overview"]);
+
+    expect((await get(note.id, otherT.token)).status).toBe(404);
+    expect((await get(note.id, stranger.token)).status).toBe(404);
+    expect(fakeAssets.signed).toEqual([]);
+  });
+
+  it("gives the author draft narration but never the student it is addressed to", async () => {
+    const { note } = await seedNote({
+      teacherId: narT.id,
+      studentId: narS.id,
+      status: "draft",
+    });
+    await seedClips(note.id, ["overview"]);
+
+    const author = await get(note.id, narT.token);
+    expect(author.status).toBe(200);
+    expect(author.body.clips.length).toBe(1);
+
+    const student = await get(note.id, narS.token);
+    expect(student.status).toBe(404);
+  });
+
+  it("stops serving a retracted note the student had already read", async () => {
+    const { note } = await seedNote({
+      teacherId: narT.id,
+      studentId: narS.id,
+      status: "retracted",
+      sentAt: daysAgo(2),
+      readAt: daysAgo(1),
+      retractedAt: new Date(),
+    });
+    await seedClips(note.id, ["overview"]);
+
+    expect((await get(note.id, narS.token)).status).toBe(404);
+  });
+
+  it("keeps delivered narration after the link is removed, and grants nothing new", async () => {
+    const dropS = await makeUser({ oid: "nar-dropped-student", name: "Dropped Student", role: "student" });
+    const link = await linkActive(narT.id, dropS.id);
+    const delivered = await seedNote({
+      teacherId: narT.id,
+      studentId: dropS.id,
+      status: "sent",
+      sentAt: daysAgo(1),
+      annotations: [],
+    });
+    await seedClips(delivered.note.id, ["overview"]);
+    await db.orm
+      .update(teacherStudentLinks)
+      .set({ status: "removed", removedAt: new Date() })
+      .where(eq(teacherStudentLinks.id, link.id));
+
+    // Parity with the note text: what was delivered stays readable.
+    expect((await get(delivered.note.id, dropS.token)).status).toBe(200);
+
+    // The removed link is not a key to anything else the teacher holds.
+    const forOther = await seedNote({
+      teacherId: narT.id,
+      studentId: narS.id,
+      status: "sent",
+      sentAt: new Date(),
+      annotations: [],
+    });
+    await seedClips(forOther.note.id, ["overview"]);
+    expect((await get(forOther.note.id, dropS.token)).status).toBe(404);
+
+    // And the teacher can no longer send them a new one.
+    const fresh = await seedNote({ teacherId: narT.id, status: "draft", pieceId: "seed_piece" });
+    const send = await request(makeApp())
+      .post(`/v1/notes/${fresh.note.id}/send`)
+      .set("Authorization", `Bearer ${narT.token}`)
+      .send({ studentId: dropS.id });
+    expect(send.status).toBe(400);
+    expect(send.body.error).toBe("not_your_student");
+  });
+
+  it("locks narration behind the same paywall as the note body", async () => {
+    const lapS = await makeUser({ oid: "nar-lapsed", name: "Lapsed Listener", role: "student" });
+    await linkActive(narT.id, lapS.id);
+    await db.orm.update(users).set({ trialStartedAt: daysAgo(90) }).where(eq(users.id, lapS.id));
+    await setMonetization(daysAgo(90).toISOString());
+    try {
+      const { note } = await seedNote({
+        teacherId: narT.id,
+        studentId: lapS.id,
+        status: "sent",
+        sentAt: new Date(),
+        annotations: [],
+      });
+      await seedClips(note.id, ["overview"]);
+      const res = await get(note.id, lapS.token);
+      expect(res.status).toBe(402);
+      expect(res.body.error).toBe("subscription_required");
+      expect(fakeAssets.signed).toEqual([]);
+    } finally {
+      await setMonetization(null);
+    }
+  });
+
+  it("send enqueues one regeneration job per note and survives a queue outage", async () => {
+    const first = await seedNote({ teacherId: narT.id, status: "draft", pieceId: "seed_piece" });
+    const ok = await request(makeApp())
+      .post(`/v1/notes/${first.note.id}/send`)
+      .set("Authorization", `Bearer ${narT.token}`)
+      .send({ studentId: narS.id });
+    expect(ok.status).toBe(200);
+    // ONE message, on the narration lane, in the golden's shape — the worker refuses a
+    // body it cannot read rather than guessing which voices to bill for.
+    expect(fakeQueue.narrationSent).toEqual([
+      { noteId: first.note.id, voices: ["jessica", "george"], reqId: expect.any(String) },
+    ]);
+    expect(Object.keys(fakeQueue.narrationSent[0]!).sort()).toEqual(
+      Object.keys(GOLDEN.wire.message).sort(),
+    );
+    expect(fakeQueue.sent.filter((m) => m.noteId)).toEqual([]);
+    const [audited] = await db.orm
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "note.send"), eq(auditEvents.subjectId, first.note.id)));
+    expect((audited!.detail as { narrationQueued: boolean }).narrationQueued).toBe(true);
+
+    fakeQueue.throwNext = true;
+    const second = await seedNote({ teacherId: narT.id, status: "draft", pieceId: "seed_piece" });
+    const degraded = await request(makeApp())
+      .post(`/v1/notes/${second.note.id}/send`)
+      .set("Authorization", `Bearer ${narT.token}`)
+      .send({ studentId: narS.id });
+    expect(degraded.status).toBe(200);
+    expect(degraded.body.status).toBe("sent");
+    const [failAudit] = await db.orm
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "note.send"), eq(auditEvents.subjectId, second.note.id)));
+    expect((failAudit!.detail as { narrationQueued: boolean }).narrationQueued).toBe(false);
+  });
+
+  it("purges narration when a solo note is deleted", async () => {
+    const solo = await makeUser({ oid: "nar-solo", name: "Solo Player", role: "student" });
+    const [lesson] = await db.orm
+      .insert(lessonSessions)
+      .values({ teacherId: solo.id, studentId: solo.id, ownerRole: "student" })
+      .returning();
+    const [note] = await db.orm
+      .insert(notes)
+      .values({
+        lessonSessionId: lesson!.id,
+        teacherId: solo.id,
+        studentId: solo.id,
+        origin: "self",
+        status: "sent",
+        sentAt: new Date(),
+        contentOriginal: {},
+        content: {},
+      })
+      .returning();
+    await seedClips(note!.id, ["overview"]);
+    fakeAssets.put(narrationClipPath(note!.id, "george", "overview"));
+
+    const res = await request(makeApp())
+      .delete(`/v1/me/notes/${note!.id}`)
+      .set("Authorization", `Bearer ${solo.token}`);
+    expect(res.status).toBe(200);
+    expect(fakeAssets.deletedPrefixes).toContain(narrationPrefix(note!.id));
+    expect(fakeAssets.deleted).toContain(narrationClipPath(note!.id, "jessica", "overview"));
+    expect(fakeAssets.deleted).toContain(narrationClipPath(note!.id, "george", "overview"));
+    expect([...fakeAssets.blobs.keys()]).toEqual([]);
+  });
+
+  it("account deletion purges narration for destroyed notes and keeps it for delivered ones", async () => {
+    const leaver = await makeUser({ oid: "nar-leaver", name: "Leaving Teacher", role: "teacher" });
+    const kept = await makeUser({ oid: "nar-kept-student", name: "Kept Student", role: "student" });
+    await linkActive(leaver.id, kept.id);
+    const draft = await seedNote({ teacherId: leaver.id, status: "draft", annotations: [] });
+    const sent = await seedNote({
+      teacherId: leaver.id,
+      studentId: kept.id,
+      status: "sent",
+      sentAt: daysAgo(1),
+      annotations: [],
+    });
+    await seedClips(draft.note.id, ["overview"]);
+    await seedClips(sent.note.id, ["overview"]);
+
+    const res = await request(makeApp()).delete("/v1/me").set("Authorization", `Bearer ${leaver.token}`);
+    expect(res.status).toBe(200);
+    expect(fakeAssets.deletedPrefixes).toContain(narrationPrefix(draft.note.id));
+    expect(fakeAssets.deletedPrefixes).not.toContain(narrationPrefix(sent.note.id));
+    // The student's copy is still playable.
+    expect((await get(sent.note.id, kept.token)).status).toBe(200);
+  });
+
+  it("account deletion purges narration for the notes a student received", async () => {
+    const quitter = await makeUser({ oid: "nar-quitting-student", name: "Quitting Student", role: "student" });
+    await linkActive(narT.id, quitter.id);
+    const { note } = await seedNote({
+      teacherId: narT.id,
+      studentId: quitter.id,
+      status: "sent",
+      sentAt: daysAgo(1),
+      annotations: [],
+    });
+    await seedClips(note.id, ["overview"]);
+
+    const res = await request(makeApp()).delete("/v1/me").set("Authorization", `Bearer ${quitter.token}`);
+    expect(res.status).toBe(200);
+    expect(fakeAssets.deletedPrefixes).toContain(narrationPrefix(note.id));
+    expect(fakeAssets.deleted).toContain(narrationClipPath(note.id, "jessica", "overview"));
+  });
+
+  it("mints a read-only, single-blob, minutes-long SAS", () => {
+    const store = createBlobNotesAssetsStore(
+      "DefaultEndpointsProtocol=https;AccountName=stkaraoappdev;AccountKey=" +
+        Buffer.from("not-a-real-key").toString("base64") +
+        ";EndpointSuffix=core.windows.net",
+    );
+    const path = narrationClipPath("11111111-2222-3333-4444-555555555555", "jessica", "overview");
+    const url = new URL(store.readUrl(path));
+    expect(url.pathname).toBe(`/notes-assets/${path}`);
+    const q = url.searchParams;
+    expect(q.get("sp")).toBe("r"); // read only — no write, no delete, no list
+    expect(q.get("sr")).toBe("b"); // one blob, never the container
+    expect(q.get("spr")).toBe("https");
+    const expiry = new Date(q.get("se")!).getTime();
+    expect(expiry).toBeGreaterThan(Date.now());
+    expect(expiry).toBeLessThanOrEqual(Date.now() + 15 * 60 * 1000 + 1000);
   });
 });
 

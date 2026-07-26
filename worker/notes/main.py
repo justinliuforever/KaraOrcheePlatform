@@ -14,6 +14,7 @@ import datetime as dt
 import json
 import os
 import sys
+import threading
 import time
 import traceback
 
@@ -24,10 +25,12 @@ from azure.storage.blob import (BlobSasPermissions, BlobServiceClient,
                                 ContentSettings, generate_blob_sas)
 
 from llm import generate
+from narration import narrate_on_demand, narration_stage, targets_from_message
 from pipeline import GateFail, build_turns, check_transcript, extract_json, normalize_note
 from prompt import build_system, build_user
 
 QUEUE = "notes-jobs"
+NARRATION_QUEUE = "notes-narration"
 AUDIO_CONTAINER = "lesson-audio"
 ASSETS_CONTAINER = "notes-assets"
 ASR_BASE = "https://api.assemblyai.com/v2"
@@ -453,6 +456,45 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
          annotations=len(annotations), grounded=metrics["grounded"],
          secs=round(time.time() - t0, 1))
 
+    # Strictly after delivery: premium narration is an enhancement, and the app reads
+    # the note with the system voice whether or not any of this succeeds.
+    narration = narration_stage(conn, blob, note_id, req_id)
+    if narration:
+        metrics["narration"] = narration
+        update_job(conn, job_id, metrics=json.dumps(metrics))
+
+
+def narration_loop(sb_cs: str, db_url: str, blob: BlobServiceClient) -> None:
+    """The notes-narration lane, on its own thread: a minutes-long synthesis run must
+    neither delay an ASR job nor wait behind one. Never lets its own death take the
+    ASR lane with it — narration is an enhancement, notes are the product."""
+    try:
+        renewer = AutoLockRenewer(max_lock_renewal_duration=1800)
+        with ServiceBusClient.from_connection_string(sb_cs) as sb:
+            receiver = sb.get_queue_receiver(NARRATION_QUEUE, max_wait_time=None,
+                                             auto_lock_renewer=renewer)
+            with receiver:
+                jlog(event="up", queue=NARRATION_QUEUE)
+                for msg in receiver:
+                    try:
+                        body = json.loads(b"".join(msg.body).decode()
+                                          if not isinstance(msg.body, (bytes, str)) else msg.body)
+                        note_id, voices = targets_from_message(body)
+                        with psycopg.connect(db_url) as conn:
+                            narrate_on_demand(conn, blob, note_id, voices, body.get("reqId"))
+                        receiver.complete_message(msg)
+                    except Exception:
+                        traceback.print_exc()
+                        try:
+                            # Redelivery costs nothing it already paid for: clips whose
+                            # content hash still matches are skipped on the retry.
+                            receiver.abandon_message(msg)
+                        except Exception:
+                            traceback.print_exc()
+    except Exception:
+        traceback.print_exc()
+        jlog(event="narration_lane_down", queue=NARRATION_QUEUE)
+
 
 def main() -> None:
     db_url = env("DATABASE_URL")
@@ -462,6 +504,7 @@ def main() -> None:
     env("ANTHROPIC_API_KEY")
 
     blob = BlobServiceClient.from_connection_string(storage_cs)
+    threading.Thread(target=narration_loop, args=(sb_cs, db_url, blob), daemon=True).start()
     # A 60-min lesson ≈ 10-20 min of ASR+LLM; keep the message lock alive well past it.
     renewer = AutoLockRenewer(max_lock_renewal_duration=3600)
     jlog(event="up", queue=QUEUE)

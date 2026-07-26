@@ -5,6 +5,7 @@ import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireUser, userAudit } from "../notes/user";
 import { notesAccess } from "../notes/entitlement";
+import { narrationPrefix } from "../notes/narration";
 import type { Orm } from "../db/client";
 import {
   lessonSessions,
@@ -957,9 +958,9 @@ export function lessonsRouter(deps: Deps): Router {
         // just took — never from the pre-lock snapshot. The worker takes the same
         // lesson row FOR UPDATE before it inserts a note or stamps a transcript,
         // so a note committed in that window would otherwise survive the discard
-        // and a transcript stamped in it would be orphaned PERMANENTLY (the
-        // notes-assets container has no lifecycle rule) while the audit and the
-        // admin 410 both say the owner deleted it.
+        // and a transcript stamped in it would be orphaned for the 90 days its
+        // lifecycle rule takes to collect it, while the audit and the admin 410
+        // both say the owner deleted it.
         const lockedJobs = await tx
           .select()
           .from(noteJobs)
@@ -1067,6 +1068,13 @@ export function lessonsRouter(deps: Deps): Router {
             transcriptDeleted = true;
           } catch (err) {
             console.error("lesson discard: transcript delete failed", path, err);
+          }
+        }
+        for (const noteId of claimed.cascadable) {
+          try {
+            await deps.notesAssets.deletePrefix(narrationPrefix(noteId));
+          } catch (err) {
+            console.error("lesson discard: narration purge failed", noteId, err);
           }
         }
       }

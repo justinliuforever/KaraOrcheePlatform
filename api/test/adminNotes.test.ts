@@ -49,6 +49,10 @@ function makeFakeQueue(): FakeQueue {
       if (q.throwNext) throw new Error("service bus unavailable");
       q.sent.push(body);
     },
+    async sendNarration(body) {
+      if (q.throwNext) throw new Error("service bus unavailable");
+      q.sent.push(body);
+    },
   };
   return q;
 }
@@ -56,14 +60,28 @@ function makeFakeQueue(): FakeQueue {
 interface FakeAssets extends NotesAssetsStore {
   body: unknown;
   reads: string[];
+  deleted: string[];
+  deletedPrefixes: string[];
 }
 function makeFakeAssets(): FakeAssets {
   const a: FakeAssets = {
     body: { text: "so let's fix the left hand in bars 3 to 5" },
     reads: [],
+    deleted: [],
+    deletedPrefixes: [],
     async readTranscript(path) {
       a.reads.push(path);
       return a.body;
+    },
+    readUrl(path) {
+      return `https://fake.blob/notes-assets/${path}?sig=fake`;
+    },
+    async copyAsset() {},
+    async deleteAsset(path) {
+      a.deleted.push(path);
+    },
+    async deletePrefix(prefix) {
+      a.deletedPrefixes.push(prefix);
     },
   };
   return a;

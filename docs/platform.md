@@ -38,7 +38,7 @@ review/send/retract/duplicate, student inbox/practiced/pin, `DELETE /v1/me`
 Worker `ca-notes-worker-dev` clones the pieces loop: AssemblyAI `universal-3-5-pro`
 (SAS handoff, keyterms OFF) → claude-sonnet-5 (deepseek fallback) → gates
 (quote-verbatim drop, measure-range demote, annotation floor); transcript
-derivative to `notes-assets` (survives the 90-day audio). Admin: `/admin/notes/*`
+derivative to `notes-assets` (deleted at 90d, the same clock as the audio). Admin: `/admin/notes/*`
 (pairing/subscription) + `/admin/note-jobs/*` (monitoring + break-glass transcript,
 audited). Entitlement resolver: trial = `max(trial_started_at, monetization_live_at)
 + 30d`; no config = beta-free.
@@ -50,8 +50,8 @@ audited). Entitlement resolver: trial = `max(trial_started_at, monetization_live
 | Container App | `ca-app-api-<env>` | The API — accounts, roles, invites, notes metadata, entitlements, SAS minting, IAP webhook |
 | Container Apps env | `cae-karaorchee-app-<env>` | Hosts API + (Phase B) notes worker job |
 | Postgres Flexible | `pg-karaorchee-app-<env>` | Relational truth: users, teacher↔student, referrals, invites, entitlements, metering |
-| Storage | `stkaraoapp<env>` | `piece-bundles/` (versioned, immutable) · `soundfont/` · `lesson-audio/` (private, Cool@30d, delete@90d) · `notes-assets/`. Public access OFF, SAS-only |
-| Service Bus | `sb-karaorchee-app-<env>` | Queue `notes-jobs` (+DLQ) for the ASR+LLM pipeline |
+| Storage | `stkaraoapp<env>` | `piece-bundles/` (versioned, immutable) · `soundfont/` · `lesson-audio/` (private, Cool@30d, delete@90d) · `notes-assets/` (`transcripts/` delete@90d, `narration/` Cool@30d and purged with its note). Public access OFF, SAS-only |
+| Service Bus | `sb-karaorchee-app-<env>` | Queue `notes-jobs` (+DLQ) for the ASR+LLM pipeline; `notes-narration` (+DLQ) for premium narration, its own lane so a minutes-long synthesis run never waits behind an ASR job |
 | Key Vault | `kv-karaorchee-app-<env>` | All keys/connection strings (company convention: key-based auth) |
 | App Insights + Log Analytics | `appi/log-karaorchee-app-<env>` | Logs, traces, alerts |
 
@@ -189,7 +189,7 @@ died without updating its job row; the wizard shows an eternal spinner).
 
 1. Which queue: `az servicebus queue show -g rg-karaorchee-app-dev --namespace-name
    sb-karaorchee-app-dev -n pieces-jobs --query countDetails` (repeat for
-   `pieces-preflight`, `notes-jobs`).
+   `pieces-preflight`, `notes-jobs`, `notes-narration`).
 2. Peek the poison message (Service Bus Explorer in the portal is easiest) → body carries
    `{jobId}`; look the job up on the Studio board and in worker logs
    (Log Analytics `ContainerAppConsoleLogs_CL | where Log_s contains "<jobId>"`).

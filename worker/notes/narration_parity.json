@@ -1,0 +1,218 @@
+{
+  "source": "KaraOrcheeAMT/App/Notes/Player/NoteReadAloudScript.swift",
+  "mirror": "KaraOrcheePlatform/worker/notes/narration.py",
+  "reader": "KaraOrcheePlatform/api/src/routes/notes.ts",
+  "contract": "THE cross-repo narration contract; the worker, the API and the app each assert this file, so a change on one side fails a test on the others instead of quietly ending premium narration. `lines` is the read-aloud script both the app and the worker must reproduce exactly. `canonical` is the single-clip space join the pre-rendered audio speaks (worker only — the app utters the lines as separate utterances). `textHash` is the FULL lowercase-hex sha256 of the spoken lines (glyph substitutions applied, empty lines dropped) joined by a single newline: it is the clip's staleness check, its on-device cache-key segment, and the `textHash` field on the wire. `wire` pins the endpoint, the queue message and a verbatim response sample.",
+  "overview": [
+    {
+      "case": "summary then the count",
+      "summary": "We worked on the left hand",
+      "stepCount": 7,
+      "lines": ["We worked on the left hand.", "7 things to work on."],
+      "canonical": "We worked on the left hand. 7 things to work on.",
+      "textHash": "3e6fef5a3a6d6a8c00851b448c4a885fbedbd1658fe11680cac9f3755cb4235d"
+    },
+    {
+      "case": "one step is singular",
+      "summary": null,
+      "stepCount": 1,
+      "lines": ["1 thing to work on."],
+      "canonical": "1 thing to work on.",
+      "textHash": "ae3d51a454157ea897c60a7eef225d2f31d58a4ce207edcc68c29f4514263f7e"
+    },
+    {
+      "case": "the summary keeps its own punctuation",
+      "summary": "Did we fix the left hand?",
+      "stepCount": 0,
+      "lines": ["Did we fix the left hand?"],
+      "canonical": "Did we fix the left hand?",
+      "textHash": "1b80c7c47ba4a0083a199f3b5adfd685b13c2979f579d9d4f30fdb9bc3f7488f"
+    },
+    {
+      "case": "nothing to say — no clip, no control",
+      "summary": "   ",
+      "stepCount": 0,
+      "lines": [],
+      "canonical": "",
+      "textHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "step": [
+    {
+      "case": "placed step: number, printed bars, instruction, quote",
+      "number": 3,
+      "isSelfOrigin": false,
+      "annotation": {
+        "instruction": "Even tone in the left hand",
+        "quote": "keep the left hand even",
+        "location": {"grounded": true, "measureStart": 92, "measureEnd": 94, "raw": "bars 92 to 94"}
+      },
+      "lines": ["Step 3.", "Bars 92 to 94.", "Even tone in the left hand.", "Your teacher said: keep the left hand even."],
+      "canonical": "Step 3. Bars 92 to 94. Even tone in the left hand. Your teacher said: keep the left hand even.",
+      "textHash": "02160e4551d22c50d1f8a0ea21cbd43e6c16354f79a58f929818846b512cf7bc"
+    },
+    {
+      "case": "a single bar says Bar, not Bars",
+      "number": 2,
+      "isSelfOrigin": false,
+      "annotation": {
+        "instruction": "Even tone in the left hand",
+        "quote": "keep the left hand even",
+        "location": {"grounded": false, "studentPin": {"measureStart": 12, "measureEnd": 12}}
+      },
+      "lines": ["Step 2.", "Bar 12.", "Even tone in the left hand.", "Your teacher said: keep the left hand even."],
+      "canonical": "Step 2. Bar 12. Even tone in the left hand. Your teacher said: keep the left hand even.",
+      "textHash": "93861ed64f079d0e2d4d2d64c24cbdaab43a7bb50fc2d33d27074916be96a94a"
+    },
+    {
+      "case": "unplaced with a referring phrase: the phrase, never a bar number",
+      "number": 4,
+      "isSelfOrigin": false,
+      "annotation": {
+        "instruction": "Even tone in the left hand",
+        "quote": "keep the left hand even",
+        "location": {"grounded": false, "raw": "those 2 bars where the change happens"}
+      },
+      "lines": ["Step 4.", "those 2 bars where the change happens.", "Even tone in the left hand.", "Your teacher said: keep the left hand even."],
+      "canonical": "Step 4. those 2 bars where the change happens. Even tone in the left hand. Your teacher said: keep the left hand even.",
+      "textHash": "a9591f87292792c73dd4eed66c1d6949b09bfa5917ad097a898e98ef085bd9ec"
+    },
+    {
+      "case": "the ordinary shape: no location at all, still whole sentences",
+      "number": 5,
+      "isSelfOrigin": false,
+      "annotation": {
+        "instruction": "Even tone in the left hand",
+        "quote": "keep the left hand even",
+        "location": {"grounded": false}
+      },
+      "lines": ["Step 5.", "Even tone in the left hand.", "Your teacher said: keep the left hand even."],
+      "canonical": "Step 5. Even tone in the left hand. Your teacher said: keep the left hand even.",
+      "textHash": "d212682d487a0d849d37f48b79edb2348dc3dba7d0050854d3eecac1fd4170f5"
+    },
+    {
+      "case": "no quote still reads",
+      "number": 1,
+      "isSelfOrigin": false,
+      "annotation": {
+        "instruction": "Even tone in the left hand",
+        "quote": null,
+        "location": {"grounded": false}
+      },
+      "lines": ["Step 1.", "Even tone in the left hand."],
+      "canonical": "Step 1. Even tone in the left hand.",
+      "textHash": "904e24d6dedd112633d7c1751bdacc98ff3301459ec97d94d87fa522ddc8d49c"
+    },
+    {
+      "case": "a self note never bylines a teacher",
+      "number": 1,
+      "isSelfOrigin": true,
+      "annotation": {
+        "instruction": "Even tone in the left hand",
+        "quote": "keep the left hand even",
+        "location": {"grounded": false}
+      },
+      "lines": ["Step 1.", "Even tone in the left hand.", "From your lesson: keep the left hand even."],
+      "canonical": "Step 1. Even tone in the left hand. From your lesson: keep the left hand even.",
+      "textHash": "90151093c33742ed6bf54819e5861cd2a20f83e7eccf62894b41f18154d683ff"
+    },
+    {
+      "case": "nothing to say — no clip",
+      "number": 1,
+      "isSelfOrigin": false,
+      "annotation": {
+        "instruction": "  ",
+        "quote": null,
+        "location": {"grounded": false}
+      },
+      "lines": [],
+      "canonical": "",
+      "textHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "an ungrounded measure range is not spoken as a bar number",
+      "number": 1,
+      "isSelfOrigin": false,
+      "annotation": {
+        "instruction": "Even tone in the left hand",
+        "quote": "keep the left hand even",
+        "location": {"grounded": false, "measureStart": 12, "measureEnd": 16}
+      },
+      "lines": ["Step 1.", "Even tone in the left hand.", "Your teacher said: keep the left hand even."],
+      "canonical": "Step 1. Even tone in the left hand. Your teacher said: keep the left hand even.",
+      "textHash": "e4fcd61ffc3bc07e93445ecc771e52226bdadb5757f84b1e40116cc5c88236ff"
+    },
+    {
+      "case": "a printed range this device cannot place is still spoken",
+      "number": 7,
+      "isSelfOrigin": false,
+      "deviceCannotResolveBars": true,
+      "annotation": {
+        "instruction": "Even tone in the left hand",
+        "quote": "keep the left hand even",
+        "location": {"grounded": true, "measureStart": 92, "measureEnd": 94}
+      },
+      "lines": ["Step 7.", "Bars 92 to 94.", "Even tone in the left hand.", "Your teacher said: keep the left hand even."],
+      "canonical": "Step 7. Bars 92 to 94. Even tone in the left hand. Your teacher said: keep the left hand even.",
+      "textHash": "6b028178670bc12b67b61a140bddd4a31d78a9cbb8336c0fb27505148937707e"
+    },
+    {
+      "case": "musical glyphs become words",
+      "number": 6,
+      "isSelfOrigin": false,
+      "annotation": {
+        "instruction": "Prepare the D → F♯ leap",
+        "quote": "3× slowly in B♭ major",
+        "location": {"grounded": false}
+      },
+      "lines": ["Step 6.", "Prepare the D → F♯ leap.", "Your teacher said: 3× slowly in B♭ major."],
+      "canonical": "Step 6. Prepare the D  to  F sharp leap. Your teacher said: 3 times  slowly in B flat major.",
+      "textHash": "a858b041c1509d230168887324ae90e9a470b6d7d6397f7445be39bb1bc33db6"
+    }
+  ],
+  "spoken": [
+    {"in": "D → F♯", "out": "D  to  F sharp"},
+    {"in": "B♭ major", "out": "B flat major"},
+    {"in": "Bars 4—8", "out": "Bars 4, 8"},
+    {"in": "3× slowly", "out": "3 times  slowly"},
+    {"in": "Your teacher said: keep the left hand even.", "out": "Your teacher said: keep the left hand even."}
+  ],
+  "wire": {
+    "voices": ["jessica", "george"],
+    "overviewClipId": "overview",
+    "endpoint": "/v1/notes/{noteId}/narration?voice={voice}",
+    "queue": "notes-narration",
+    "message": {
+      "noteId": "9a1c6f2e-4b7d-4c1a-9f30-2d5e8c7b1a04",
+      "voices": ["jessica", "george"],
+      "reqId": "req_2f8c1d"
+    },
+    "response": {
+      "noteId": "9a1c6f2e-4b7d-4c1a-9f30-2d5e8c7b1a04",
+      "voice": "jessica",
+      "voices": ["jessica", "george"],
+      "expiresAt": "2026-07-24T12:15:00.000Z",
+      "clips": [
+        {
+          "clipId": "overview",
+          "annotationId": null,
+          "kind": "overview",
+          "url": "https://stkaraoappdev.blob.core.windows.net/notes-assets/narration/9a1c6f2e-4b7d-4c1a-9f30-2d5e8c7b1a04/jessica/overview.mp3?sp=r&sr=b&se=2026-07-24T12%3A15%3A00Z&sv=2024-11-04&sig=not-a-real-signature",
+          "bytes": 33792,
+          "textHash": "3e6fef5a3a6d6a8c00851b448c4a885fbedbd1658fe11680cac9f3755cb4235d",
+          "updatedAt": "2026-07-24T12:00:00.000Z"
+        },
+        {
+          "clipId": "b2d4e6f8-1234-4a5b-8c9d-0e1f2a3b4c5d",
+          "annotationId": "b2d4e6f8-1234-4a5b-8c9d-0e1f2a3b4c5d",
+          "kind": "step",
+          "url": "https://stkaraoappdev.blob.core.windows.net/notes-assets/narration/9a1c6f2e-4b7d-4c1a-9f30-2d5e8c7b1a04/jessica/b2d4e6f8-1234-4a5b-8c9d-0e1f2a3b4c5d.mp3?sp=r&sr=b&se=2026-07-24T12%3A15%3A00Z&sv=2024-11-04&sig=not-a-real-signature",
+          "bytes": 57344,
+          "textHash": "02160e4551d22c50d1f8a0ea21cbd43e6c16354f79a58f929818846b512cf7bc",
+          "updatedAt": "2026-07-24T12:00:00.000Z"
+        }
+      ],
+      "pending": ["c3e5a7b9-5678-4d6e-9f01-2a3b4c5d6e7f"]
+    }
+  }
+}

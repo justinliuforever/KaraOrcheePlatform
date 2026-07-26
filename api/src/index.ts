@@ -4,6 +4,7 @@ import { createBlobCatalogStore, createBlobStudioStore } from "./storage";
 import { createBlobLessonStore } from "./notes/lessons_store";
 import { createBlobNotesAssetsStore } from "./notes/assets_store";
 import { createServiceBusQueue, createServiceBusNotesQueue } from "./queue";
+import { NARRATION_QUEUE } from "./notes/narration";
 import { verifierFromConfig } from "./auth";
 import { createServer } from "./server";
 import { createLogAnalyticsOpsStore } from "./opslogs";
@@ -25,7 +26,7 @@ function main(): void {
     ? createServiceBusQueue(config.serviceBus.connectionString, "pieces-jobs", "pieces-preflight")
     : undefined;
   const notesQueue = config.serviceBus
-    ? createServiceBusNotesQueue(config.serviceBus.connectionString, "notes-jobs")
+    ? createServiceBusNotesQueue(config.serviceBus.connectionString, "notes-jobs", NARRATION_QUEUE)
     : undefined;
   const lessons = config.storage
     ? createBlobLessonStore(config.storage.connectionString)
@@ -38,7 +39,12 @@ function main(): void {
     ? createLogAnalyticsOpsStore(config.logAnalyticsWorkspaceId)
     : undefined;
   const opsQueue = config.serviceBus
-    ? createServiceBusOpsStore(config.serviceBus.connectionString, ["pieces-jobs", "pieces-preflight", "notes-jobs"])
+    ? createServiceBusOpsStore(config.serviceBus.connectionString, [
+        "pieces-jobs",
+        "pieces-preflight",
+        "notes-jobs",
+        NARRATION_QUEUE,
+      ])
     : undefined;
 
   const app = createServer({

@@ -72,6 +72,8 @@ resource containers 'Microsoft.Storage/storageAccounts/blobServices/containers@2
 ]
 
 // Raw lesson audio is only needed until notes are produced + a dispute window.
+// Applying this by CLI needs `az storage account management-policy create` — the
+// `update --policy @file` form is rejected, and create upserts.
 resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
   parent: st
   name: 'default'
@@ -92,6 +94,40 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
             }
           }
         }
+        // A transcript is the recording in another encoding — verbatim lesson speech,
+        // often a minor's. The app tells users the audio is gone from the cloud at 90
+        // days, so its verbatim derivative expires on the same clock. The note, its
+        // annotations and their quotes are the durable record and are unaffected.
+        {
+          name: 'notes-transcripts-delete'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['notes-assets/transcripts/'] }
+            actions: {
+              baseBlob: {
+                delete: { daysAfterModificationGreaterThan: 90 }
+              }
+            }
+          }
+        }
+        // Narration is machine-spoken NOTE text, not a recording of anyone, and the
+        // note it belongs to never expires — so no time-based delete: it is purged
+        // with its note (note/lesson/account deletion). A future prefix holding a
+        // teacher's REAL voice is a recording and needs the 90-day rule above.
+        {
+          name: 'notes-narration-cool'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['notes-assets/narration/'] }
+            actions: {
+              baseBlob: {
+                tierToCool: { daysAfterModificationGreaterThan: 30 }
+              }
+            }
+          }
+        }
       ]
     }
   }
@@ -107,6 +143,20 @@ resource sb 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' = {
 resource notesQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
   parent: sb
   name: 'notes-jobs'
+  properties: {
+    maxDeliveryCount: 5
+    lockDuration: 'PT5M'
+    deadLetteringOnMessageExpiration: true
+    defaultMessageTimeToLive: 'P1D'
+  }
+}
+
+// Narration's own lane. A synthesis run is minutes long and must neither wait behind an
+// ASR job nor hold one's lock; the worker consumes it on a separate thread. Redelivery
+// costs nothing already paid for — a clip whose content hash still matches is skipped.
+resource notesNarrationQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
+  parent: sb
+  name: 'notes-narration'
   properties: {
     maxDeliveryCount: 5
     lockDuration: 'PT5M'
