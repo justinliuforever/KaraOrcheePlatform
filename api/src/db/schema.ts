@@ -371,7 +371,7 @@ export const noteAnnotations = pgTable("note_annotations", {
 // narration/<note_id>/<voice>/<clip_id>.mp3 in notes-assets. A table rather than a
 // manifest column on notes: generation is per (note, voice) and upserts one clip at a
 // time (two voices can run concurrently without clobbering each other), the annotation
-// link is a real FK instead of a string convention, character spend is a SUM, and note
+// link is a real FK instead of a string convention, vendor spend is a SUM, and note
 // list queries stay free of manifests nobody asked for.
 export const noteNarrationClips = pgTable("note_narration_clips", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -389,7 +389,11 @@ export const noteNarrationClips = pgTable("note_narration_clips", {
   // joined by "\n" (worker/notes/narration_parity.json). Stored WHOLE — the app compares
   // the whole digest, and a truncated one can never equal it.
   textHash: text("text_hash").notNull(),
-  chars: integer("chars").notNull(),
+  chars: integer("chars").notNull(), // characters SENT — what the ceiling gates on
+  // What the vendor's meter charged, from its character-cost header. Account drain is
+  // SUM(credits), never SUM(chars) — the rate is not 1:1. NULL = the header was
+  // unreadable; a duplicate's copy synthesizes nothing and records 0.
+  credits: integer("credits"),
   bytes: integer("bytes").notNull(),
   model: text("model").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

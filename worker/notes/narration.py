@@ -10,8 +10,14 @@ app rather than described in prose.
 
 Voice config (model + seed + settings) is frozen so a character sounds identical across
 batches, and content_hash over [text, voice_id, MODEL, SEED, SETTINGS] is what makes an
-unchanged clip free on a re-run. The vendor bills per character: nothing here may
-synthesize without first passing the per-note ceiling.
+unchanged clip free on a re-run. Nothing here may synthesize without first passing the
+per-note ceiling.
+
+`chars` and `credits` are not the same quantity and never convert into each other here.
+`chars` is what this worker sends — the only cost knowable BEFORE a request, so it is
+what the ceiling gates on. `credits` is what the vendor's meter charges, taken from its
+per-request character-cost header; its rate is not 1:1 and is not published anywhere the
+worker can read. Account drain is SUM(credits) — a sum of chars is not a charge.
 """
 from __future__ import annotations
 
@@ -32,6 +38,7 @@ SEED = 42
 SETTINGS = {"stability": 0.5, "similarity_boost": 0.75, "style": 0.0,
             "speed": 0.9, "use_speaker_boost": True}
 API_BASE = "https://api.elevenlabs.io/v1/text-to-speech"
+COST_HEADER = "character-cost"
 # Stored exactly as the vendor returns it: one lossy encode, not two. Speech energy is
 # essentially all under 8 kHz, so a music bitrate buys nothing a second encoder could
 # only degrade. Part of content_hash — a clip at another bitrate is another artifact.
@@ -42,9 +49,10 @@ ASSETS_CONTAINER = "notes-assets"
 CONFIG_KEY = "notes_narration"
 KEY_ENV = "ELEVENLABS_API_KEY"
 
-# Bounds the characters ONE run may send the vendor, summed over every voice — that sum
-# is the account drain, not the length of the script. Sized off the longest real note on
-# dev (17 annotations, ~3.6k chars of script) read in both voices, with headroom.
+# Bounds the characters ONE run may send the vendor, summed over every voice — not the
+# length of the script, and NOT credits: it buys a different, larger number of them.
+# Sized off the longest real note on dev (17 annotations, ~3.6k chars of script) read in
+# both voices, with headroom.
 DEFAULT_MAX_CHARS = 12000
 DEFAULT_VOICES = ["jessica", "george"]
 DEFAULT_MODE = "eager"
@@ -240,8 +248,14 @@ def load_config(conn) -> NarrationConfig:
 
 # ── synthesis ─────────────────────────────────────────────────────────────────────
 
+@dataclass(frozen=True)
+class Synthesized:
+    audio: bytes
+    credits: int | None  # vendor-metered cost; None when the header is missing
+
+
 class Synthesizer:
-    def synth(self, text: str, voice_id: str) -> bytes:
+    def synth(self, text: str, voice_id: str) -> Synthesized:
         raise NotImplementedError
 
 
@@ -257,7 +271,8 @@ def transient(status: int) -> bool:
     return status == 429 or status >= 500
 
 
-def post_with_retry(send, attempts: int = 3, sleep=time.sleep) -> bytes:
+def post_with_retry(send, attempts: int = 3, sleep=time.sleep):
+    """Returns the whole response, not just its body: the billed cost is a header."""
     for i in range(attempts):
         last = i == attempts - 1
         try:
@@ -269,10 +284,25 @@ def post_with_retry(send, attempts: int = 3, sleep=time.sleep) -> bytes:
             continue
         if not transient(r.status_code):
             r.raise_for_status()
-            return r.content
+            return r
         if last:
             raise RuntimeError(f"elevenlabs transient {r.status_code}")
         sleep(min(2 ** i, 15))
+
+
+def vendor_credits(headers) -> int | None:
+    """What the vendor says this request cost. Unreadable or absent = unknown, never a
+    guess: a fabricated number here would read as a real charge in the ledger."""
+    try:
+        raw = (headers or {}).get(COST_HEADER)
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        return round(float(raw))
+    except (TypeError, ValueError):
+        return None
 
 
 class ElevenLabsSynthesizer(Synthesizer):
@@ -281,9 +311,9 @@ class ElevenLabsSynthesizer(Synthesizer):
         self._key = api_key
         self._attempts = attempts
 
-    def synth(self, text: str, voice_id: str) -> bytes:
+    def synth(self, text: str, voice_id: str) -> Synthesized:
         _refuse_under_test()
-        return post_with_retry(
+        r = post_with_retry(
             lambda: requests.post(
                 f"{API_BASE}/{voice_id}?output_format={OUTPUT_FORMAT}",
                 headers={"xi-api-key": self._key, "Content-Type": "application/json"},
@@ -291,6 +321,7 @@ class ElevenLabsSynthesizer(Synthesizer):
                       "voice_settings": SETTINGS},
                 timeout=180),
             self._attempts)
+        return Synthesized(r.content, vendor_credits(r.headers))
 
 
 def build_synthesizer() -> Synthesizer | None:
@@ -340,13 +371,13 @@ def existing_hashes(conn, note_id: str, voice: str) -> dict[str, str]:
 
 
 def record_clip(conn, note_id: str, voice: str, clip: Clip, path: str,
-                chash: str, size: int) -> None:
+                chash: str, size: int, credits: int | None) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """INSERT INTO note_narration_clips
                    (note_id, annotation_id, voice, clip_id, kind, blob_path,
-                    content_hash, text_hash, chars, bytes, model)
-               VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    content_hash, text_hash, chars, credits, bytes, model)
+               VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (note_id, voice, clip_id) DO UPDATE SET
                    annotation_id = EXCLUDED.annotation_id,
                    kind = EXCLUDED.kind,
@@ -354,11 +385,12 @@ def record_clip(conn, note_id: str, voice: str, clip: Clip, path: str,
                    content_hash = EXCLUDED.content_hash,
                    text_hash = EXCLUDED.text_hash,
                    chars = EXCLUDED.chars,
+                   credits = EXCLUDED.credits,
                    bytes = EXCLUDED.bytes,
                    model = EXCLUDED.model,
                    updated_at = now()""",
             (note_id, clip.annotation_id, voice, clip.clip_id, clip.kind, path,
-             chash, clip.text_hash, clip.chars, size, MODEL))
+             chash, clip.text_hash, clip.chars, credits, size, MODEL))
     conn.commit()
 
 
@@ -393,7 +425,7 @@ def narrate(conn, blob, note_id: str, voices, synth: Synthesizer | None = None,
 
     todo = pending(conn, note_id, clips, voices)
     if not todo:
-        return {"status": "cached", "clips": len(clips), "chars": 0}
+        return {"status": "cached", "clips": len(clips), "chars": 0, "credits": 0}
     spend = sum(clip.chars for _, clip, _ in todo)
     if spend > max_chars:
         # Hard stop BEFORE the first request: a partial run on a runaway note would
@@ -407,31 +439,38 @@ def narrate(conn, blob, note_id: str, voices, synth: Synthesizer | None = None,
         return {"status": "unconfigured"}
 
     container = blob.get_container_client(ASSETS_CONTAINER)
-    made = failed = spent = 0
+    made = failed = spent = billed = unmetered = 0
     stop_at = time.time() + deadline_sec
     for voice, clip, chash in todo:
         if time.time() >= stop_at:
             jlog(event="narration_deadline", note=str(note_id), made=made)
             break
         try:
-            audio = synth.synth(clip.text, VOICES[voice])
+            out = synth.synth(clip.text, VOICES[voice])
             path = blob_path(note_id, voice, clip.clip_id)
             container.get_blob_client(path).upload_blob(
-                audio, overwrite=True,
+                out.audio, overwrite=True,
                 content_settings=_audio_content_settings(),
                 # Mirrors the manifest row so a blob-listing read path can hand the
                 # client a text hash without a second query.
                 metadata={"texthash": clip.text_hash, "contenthash": chash,
                           "clipid": clip.clip_id, "voice": voice})
-            record_clip(conn, note_id, voice, clip, path, chash, len(audio))
+            record_clip(conn, note_id, voice, clip, path, chash, len(out.audio),
+                        out.credits)
             made += 1
             spent += clip.chars
+            if out.credits is None:
+                unmetered += 1
+            else:
+                billed += out.credits
         except Exception as err:
             failed += 1
             jlog(event="narration_clip_failed", note=str(note_id), voice=voice,
                  clip=clip.clip_id, error=str(err)[:200])
+    # credits is only a floor while unmetered > 0: those clips were billed unreadably.
     return {"status": "ok" if not failed else "partial", "clips": len(clips),
-            "made": made, "failed": failed, "chars": spent}
+            "made": made, "failed": failed, "chars": spent,
+            "credits": billed, "unmetered": unmetered}
 
 
 def _audio_content_settings():

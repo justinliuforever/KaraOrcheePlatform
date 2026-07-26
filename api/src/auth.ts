@@ -65,8 +65,14 @@ export function verifierFromConfig(auth: {
 }
 
 // Fail-closed: unconfigured -> 503; missing/invalid/expired token -> 401. No bypass.
+// THE chokepoint for every authenticated route, which is why the caching headers live
+// here: everything downstream is per-identity (an inbox, a roster, a note body) and
+// nothing but the bearer distinguishes two callers' responses. Set before verification
+// so 401s and 503s carry them too, and never on the public catalog, which stays cacheable.
 export function requireAuth(verifier?: AuthVerifier): RequestHandler {
   return async (req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.vary("Authorization"); // appends — cors() may already have set Vary: Origin
     if (!verifier) {
       res.status(503).json({ error: "auth_not_configured", message: "KaraOrchee is having trouble right now." });
       return;

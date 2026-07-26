@@ -14,6 +14,7 @@ import {
   narrationClipPath,
   narrationPrefix,
 } from "../notes/narration";
+import { notifyNoteSent } from "../notes/push";
 import {
   devices,
   noteAnnotations,
@@ -294,7 +295,15 @@ export function notesRouter(deps: Deps): Router {
           console.error("note.send: narration enqueue failed", note.id, err);
         }
       }
-      await userAudit(deps, req, "note.send", { type: "note", id: note.id }, { studentId, narrationQueued });
+      // The out-of-app signal, and the only one: without it a note sent hours after the
+      // lesson is discovered by pulling to refresh. It runs after the row is committed and
+      // swallows everything, so a dead APNs costs the notification and nothing else.
+      const pushed = await notifyNoteSent(deps, { studentId, noteId: note.id });
+      await userAudit(deps, req, "note.send", { type: "note", id: note.id }, {
+        studentId,
+        narrationQueued,
+        push: pushed,
+      });
       res.json(updated);
     }),
   );
@@ -361,6 +370,8 @@ export function notesRouter(deps: Deps): Router {
           contentHash: row.contentHash,
           textHash: row.textHash,
           chars: row.chars,
+          // A copy is a blob copy: the vendor was never called, so it drained nothing.
+          credits: 0,
           bytes: row.bytes,
           model: row.model,
         });

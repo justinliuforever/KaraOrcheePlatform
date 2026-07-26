@@ -1,0 +1,1 @@
+ALTER TABLE "note_narration_clips" ADD COLUMN "credits" integer;

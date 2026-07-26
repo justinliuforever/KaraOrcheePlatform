@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ApnsConfig } from "./notes/push";
 
 export interface Config {
   databaseUrl: string;
@@ -6,6 +7,7 @@ export interface Config {
   storage: { connectionString: string } | null;
   serviceBus: { connectionString: string } | null;
   auth: { tenantId: string; tenantName: string; audience: string } | null;
+  apns: ApnsConfig | null;
   adminOrigins: string[];
   logAnalyticsWorkspaceId: string | null;
   // Repeat-structure pieces build and review fine, but the shipped app still assumes
@@ -25,7 +27,21 @@ const envSchema = z.object({
   SERVICEBUS_CONNECTION_STRING: z.string().min(1).optional(),
   LOG_ANALYTICS_WORKSPACE_ID: z.string().uuid().optional(),
   APP_SUPPORTS_REPEATS: z.enum(["true", "false"]).optional(),
+  APNS_KEY_ID: z.string().min(1).optional(),
+  APNS_TEAM_ID: z.string().min(1).optional(),
+  APNS_PRIVATE_KEY: z.string().min(1).optional(),
+  APNS_BUNDLE_ID: z.string().min(1).default("com.karaorchee.karaorcheeamt"),
+  APNS_ENVIRONMENT: z.enum(["sandbox", "production"]).default("production"),
 });
+
+// The .p8 arrives through a shell, a JSON ARM payload and a container env var, and each
+// of those hops mangles a different thing about a multi-line PEM. Base64 is the shape
+// that survives all three; the literal forms are accepted so a hand-set value still works.
+export function normalizePrivateKey(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.includes("BEGIN PRIVATE KEY")) return trimmed.replace(/\\n/g, "\n");
+  return Buffer.from(trimmed, "base64").toString("utf8").trim();
+}
 
 export function parseConfig(env: NodeJS.ProcessEnv = process.env):
   | { ok: true; config: Config }
@@ -63,6 +79,35 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env):
     };
   }
 
+  // Same all-or-nothing rule as auth: a half-set APNs group is a deployment mistake and
+  // says so at boot. Wholly unset is a supported state — no key, no pushes, sends unaffected.
+  const apnsVars = {
+    APNS_KEY_ID: e.APNS_KEY_ID,
+    APNS_TEAM_ID: e.APNS_TEAM_ID,
+    APNS_PRIVATE_KEY: e.APNS_PRIVATE_KEY,
+  };
+  const apnsSet = Object.entries(apnsVars).filter(([, v]) => v);
+  let apns: Config["apns"] = null;
+  if (apnsSet.length > 0 && apnsSet.length < 3) {
+    const missing = Object.entries(apnsVars)
+      .filter(([, v]) => !v)
+      .map(([k]) => k);
+    errors.push(`apns group incomplete; missing: ${missing.join(", ")}`);
+  } else if (apnsSet.length === 3) {
+    const privateKey = normalizePrivateKey(e.APNS_PRIVATE_KEY!);
+    if (!privateKey.includes("BEGIN PRIVATE KEY")) {
+      errors.push("APNS_PRIVATE_KEY is not a PKCS#8 PEM (expected the .p8 text, or its base64)");
+    } else {
+      apns = {
+        keyId: e.APNS_KEY_ID!,
+        teamId: e.APNS_TEAM_ID!,
+        privateKey,
+        bundleId: e.APNS_BUNDLE_ID,
+        environment: e.APNS_ENVIRONMENT,
+      };
+    }
+  }
+
   if (errors.length > 0) return { ok: false, errors };
 
   return {
@@ -77,6 +122,7 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env):
         ? { connectionString: e.SERVICEBUS_CONNECTION_STRING }
         : null,
       auth,
+      apns,
       adminOrigins: (e.ADMIN_ORIGINS ?? "")
         .split(",")
         .map((s) => s.trim())

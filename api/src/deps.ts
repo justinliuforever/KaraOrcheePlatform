@@ -7,6 +7,7 @@ import type { OpsLogsStore } from "./opslogs";
 import type { OpsQueueStore } from "./opsqueue";
 import type { LessonStore } from "./notes/lessons_store";
 import type { NotesAssetsStore } from "./notes/assets_store";
+import type { PushSender } from "./notes/push";
 
 export interface Deps {
   db?: Db;
@@ -16,6 +17,8 @@ export interface Deps {
   notesQueue?: NotesQueue;
   lessons?: LessonStore;
   notesAssets?: NotesAssetsStore;
+  // Absent until the APNs key is configured: every send still completes, silently.
+  push?: PushSender;
   auth?: AuthVerifier;
   corsOrigins?: string[];
   opsLogs?: OpsLogsStore;

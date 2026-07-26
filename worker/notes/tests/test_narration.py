@@ -26,21 +26,35 @@ GEORGE = narration.VOICES["george"]
 # ── fakes ────────────────────────────────────────────────────────────────────────
 
 class FakeSynth:
-    """Records what it was asked to say. `fail_on` matches on the clip text."""
+    """Records what it was asked to say. `fail_on` matches on the clip text. Meters at a
+    rate deliberately far from 1:1 — a fake that billed one credit per character would
+    let a credits-are-characters regression pass every assertion in this file."""
 
-    def __init__(self, fail_on=()):
+    RATE = 0.55
+
+    def __init__(self, fail_on=(), meterless=False):
         self.calls = []
         self.fail_on = set(fail_on)
+        self.meterless = meterless
 
     def synth(self, text, voice_id):
         self.calls.append((voice_id, text))
         if text in self.fail_on:
             raise RuntimeError("vendor 500")
-        return b"mp3:" + hashlib.sha256(text.encode()).digest()[:8]
+        audio = b"mp3:" + hashlib.sha256(text.encode()).digest()[:8]
+        return narration.Synthesized(audio, None if self.meterless else self.billed(text))
+
+    @classmethod
+    def billed(cls, text):
+        return round(len(text) * cls.RATE)
 
     @property
     def chars(self):
         return sum(len(t) for _, t in self.calls)
+
+    @property
+    def credits(self):
+        return sum(self.billed(t) for _, t in self.calls if t not in self.fail_on)
 
 
 class Settings:
@@ -106,11 +120,11 @@ class FakeCursor:
                           if k[0] == note_id and k[1] == voice]
         elif "INSERT INTO note_narration_clips" in text:
             (note_id, annotation_id, voice, clip_id, kind, path,
-             chash, thash, chars, size, model) = params
+             chash, thash, chars, credits, size, model) = params
             self.db.clips[(note_id, voice, clip_id)] = {
                 "annotation_id": annotation_id, "kind": kind, "blob_path": path,
                 "content_hash": chash, "text_hash": thash, "chars": chars,
-                "bytes": size, "model": model}
+                "credits": credits, "bytes": size, "model": model}
             self._rows = []
         else:
             raise AssertionError(f"unexpected sql: {text}")
@@ -294,7 +308,7 @@ def test_unchanged_text_is_never_resynthesized(blob):
     second = FakeSynth()
     result = narration.narrate(conn, blob, NOTE, ["jessica", "george"], synth=second)
     assert second.calls == []
-    assert result == {"status": "cached", "clips": 3, "chars": 0}
+    assert result == {"status": "cached", "clips": 3, "chars": 0, "credits": 0}
 
 
 def test_only_the_changed_clip_is_paid_for_again(blob):
@@ -397,6 +411,63 @@ def test_the_ceiling_is_read_from_config_not_hardcoded(blob, monkeypatch):
     assert narration.narration_stage(conn, blob, NOTE)["status"] == "over_budget"
 
 
+def test_the_ceiling_gates_on_characters_sent_not_on_credits(blob):
+    conn = db()
+    clips = narration.plan_clips("We worked on the left hand", conn.annotations, False)
+    script = sum(c.chars for c in clips)
+    would_bill = sum(FakeSynth.billed(c.text) for c in clips)
+    assert would_bill < script  # otherwise this test proves nothing
+
+    synth = FakeSynth()
+    result = narration.narrate(conn, blob, NOTE, ["jessica"], synth=synth,
+                               max_chars=script - 1)
+    assert result["status"] == "over_budget"
+    assert result["chars"] == script
+    assert synth.calls == []
+
+
+# ── what the vendor actually bills ───────────────────────────────────────────────
+
+@pytest.mark.parametrize("value,expected", [
+    ("239", 239), (239, 239), ("238.6", 239), ("0", 0),
+    (None, None), ("", None), ("not-a-number", None),
+])
+def test_the_cost_header_is_read_or_left_unknown(value, expected):
+    headers = {} if value is None else {narration.COST_HEADER: value}
+    assert narration.vendor_credits(headers) == expected
+
+
+def test_a_missing_header_object_is_unknown_not_zero():
+    assert narration.vendor_credits(None) is None
+
+
+def test_the_ledger_records_what_the_vendor_billed_not_what_we_sent(blob):
+    conn = db()
+    synth = FakeSynth()
+    result = narration.narrate(conn, blob, NOTE, ["jessica", "george"], synth=synth)
+
+    assert result["credits"] == synth.credits
+    assert result["unmetered"] == 0
+    assert result["chars"] == synth.chars
+    assert result["credits"] != result["chars"]
+
+    billed = {t: FakeSynth.billed(t) for _, t in synth.calls}
+    for row in conn.clips.values():
+        assert row["credits"] in billed.values()
+        assert row["credits"] != row["chars"]
+    assert sum(r["credits"] for r in conn.clips.values()) == synth.credits
+
+
+def test_an_unreadable_meter_is_unknown_rather_than_a_made_up_charge(blob):
+    conn = db()
+    synth = FakeSynth(meterless=True)
+    result = narration.narrate(conn, blob, NOTE, ["jessica"], synth=synth)
+
+    assert result["made"] == 3 and result["unmetered"] == 3
+    assert result["credits"] == 0
+    assert all(row["credits"] is None for row in conn.clips.values())
+
+
 # ── fail closed ──────────────────────────────────────────────────────────────────
 
 def test_one_failing_clip_does_not_stop_the_others(blob):
@@ -405,7 +476,8 @@ def test_one_failing_clip_does_not_stop_the_others(blob):
     synth = FakeSynth(fail_on=[doomed])
     result = narration.narrate(conn, blob, NOTE, ["jessica"], synth=synth)
     assert result == {"status": "partial", "clips": 3, "made": 2, "failed": 1,
-                      "chars": result["chars"]}
+                      "chars": result["chars"], "credits": synth.credits,
+                      "unmetered": 0}
     assert (NOTE, "jessica", "a1") not in conn.clips
     assert (NOTE, "jessica", "a2") in conn.clips
 
@@ -550,7 +622,8 @@ class Resp:
 
 def test_a_transient_failure_is_retried():
     responses = iter([Resp(503), Resp(429), Resp(200, b"audio")])
-    assert narration.post_with_retry(lambda: next(responses), sleep=lambda *_: None) == b"audio"
+    got = narration.post_with_retry(lambda: next(responses), sleep=lambda *_: None)
+    assert got.content == b"audio"
 
 
 def test_a_client_error_is_not_retried():

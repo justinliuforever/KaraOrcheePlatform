@@ -9,6 +9,7 @@ import { verifierFromConfig } from "./auth";
 import { createServer } from "./server";
 import { createLogAnalyticsOpsStore } from "./opslogs";
 import { createServiceBusOpsStore } from "./opsqueue";
+import { createApnsSender } from "./notes/push";
 
 function main(): void {
   const config = loadConfig();
@@ -35,6 +36,7 @@ function main(): void {
     ? createBlobNotesAssetsStore(config.storage.connectionString)
     : undefined;
   const auth = config.auth ? verifierFromConfig(config.auth) : undefined;
+  const push = config.apns ? createApnsSender(config.apns) : undefined;
   const opsLogs = config.logAnalyticsWorkspaceId
     ? createLogAnalyticsOpsStore(config.logAnalyticsWorkspaceId)
     : undefined;
@@ -55,6 +57,7 @@ function main(): void {
     notesQueue,
     lessons,
     notesAssets,
+    push,
     auth,
     corsOrigins: config.adminOrigins,
     opsLogs,

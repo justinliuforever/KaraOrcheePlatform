@@ -32,6 +32,7 @@ import type { NotesAssetsStore } from "../src/notes/assets_store";
 import { createBlobNotesAssetsStore } from "../src/notes/assets_store";
 import { narrationClipPath, narrationPrefix } from "../src/notes/narration";
 import type { NotesQueue } from "../src/queue";
+import { NOTE_ARRIVED_ALERT, noteArrivedPayload, type PushSender } from "../src/notes/push";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -165,11 +166,45 @@ function makeFakeQueue(): FakeQueue {
   return q;
 }
 
+// APNs stand-in. `gone` names the tokens APNs would report dead; `throwNext` is the
+// outage. Neither may reach the teacher who pressed Send.
+interface FakePush extends PushSender {
+  calls: { tokens: string[]; noteId: string }[];
+  gone: Set<string>;
+  throwNext: boolean;
+}
+function makeFakePush(): FakePush {
+  const p: FakePush = {
+    calls: [],
+    gone: new Set(),
+    throwNext: false,
+    async sendNoteArrived(tokens, noteId) {
+      if (p.throwNext) throw new Error("apns unreachable");
+      p.calls.push({ tokens: [...tokens], noteId });
+      return tokens.map((token) => ({ token, ok: !p.gone.has(token), gone: p.gone.has(token) }));
+    },
+  };
+  return p;
+}
+
 let fakeLessons: FakeLessons;
 let fakeQueue: FakeQueue;
 let fakeAssets: FakeAssets;
+let fakePush: FakePush;
 
 function makeApp() {
+  return createServer({
+    db,
+    auth: verifier,
+    lessons: fakeLessons,
+    notesQueue: fakeQueue,
+    notesAssets: fakeAssets,
+    push: fakePush,
+  });
+}
+
+// The shipped state until the founder installs the APNs key: no sender at all.
+function makeAppWithoutPush() {
   return createServer({
     db,
     auth: verifier,
@@ -346,6 +381,7 @@ beforeAll(async () => {
   fakeLessons = makeFakeLessons();
   fakeQueue = makeFakeQueue();
   fakeAssets = makeFakeAssets();
+  fakePush = makeFakePush();
 
   await db.orm.insert(pieces).values({
     id: "seed_piece",
@@ -376,6 +412,9 @@ beforeEach(() => {
   fakeAssets.deleted.length = 0;
   fakeAssets.deletedPrefixes.length = 0;
   fakeAssets.signed.length = 0;
+  fakePush.throwNext = false;
+  fakePush.calls.length = 0;
+  fakePush.gone.clear();
 });
 
 // ── 1. users/sync ────────────────────────────────────────────────────────────────
@@ -2994,6 +3033,145 @@ describe("devices", () => {
     await request(makeApp()).delete("/v1/devices/apns-token-B").set("Authorization", `Bearer ${devU1.token}`);
     rows = await db.orm.select().from(devices).where(eq(devices.token, "apns-token-B"));
     expect(rows.length).toBe(0);
+  });
+});
+
+// ── 8b. Push on send ────────────────────────────────────────────────────────────────
+
+describe("push on send", () => {
+  let pTeacher: TestUser;
+  let pStudent: TestUser;
+
+  beforeAll(async () => {
+    pTeacher = await makeUser({ oid: "push-teacher", name: "Push Tessa", role: "teacher" });
+    pStudent = await makeUser({ oid: "push-student", name: "Push Sam", role: "student" });
+    await linkActive(pTeacher.id, pStudent.id);
+  });
+
+  beforeEach(async () => {
+    await db.orm.delete(devices);
+  });
+
+  async function register(user: TestUser, token: string) {
+    await request(makeApp())
+      .post("/v1/devices")
+      .set("Authorization", `Bearer ${user.token}`)
+      .send({ token });
+  }
+
+  async function send(app: ReturnType<typeof makeApp>) {
+    const { note } = await seedNote({
+      teacherId: pTeacher.id,
+      studentId: pStudent.id,
+      pieceId: "seed_piece",
+    });
+    const res = await request(app)
+      .post(`/v1/notes/${note.id}/send`)
+      .set("Authorization", `Bearer ${pTeacher.token}`)
+      .send({});
+    return { res, noteId: note.id };
+  }
+
+  it("the payload carries the note id and NO note content", () => {
+    const payload = noteArrivedPayload("note-123") as {
+      aps: { alert: { title: string; body: string } };
+      noteId: string;
+    };
+    expect(payload).toEqual({
+      aps: {
+        alert: { title: "New practice note", body: "Your teacher sent you a note. Open the app to read it." },
+        sound: "default",
+        "thread-id": "notes",
+      },
+      noteId: "note-123",
+    });
+    // The alert is a constant: nothing about the lesson can reach a lock screen through it.
+    expect(payload.aps.alert).toEqual({ ...NOTE_ARRIVED_ALERT });
+    const wire = JSON.stringify(payload);
+    for (const leak of ["lessonSummary", "practicePlan", "Nice sense of line today", "Czerny", "Push Sam", "Push Tessa"]) {
+      expect(wire).not.toContain(leak);
+    }
+  });
+
+  it("a send notifies every device the student registered, and only that student's", async () => {
+    await register(pStudent, "push-student-phone");
+    await register(pStudent, "push-student-ipad");
+    await register(pTeacher, "push-teacher-phone");
+
+    const { res, noteId } = await send(makeApp());
+    expect(res.status).toBe(200);
+    expect(fakePush.calls.length).toBe(1);
+    expect(fakePush.calls[0]!.noteId).toBe(noteId);
+    expect([...fakePush.calls[0]!.tokens].sort()).toEqual(["push-student-ipad", "push-student-phone"]);
+  });
+
+  it("a stale token is pruned by the send that discovered it, live ones untouched", async () => {
+    await register(pStudent, "push-live");
+    await register(pStudent, "push-stale");
+    fakePush.gone.add("push-stale");
+
+    const { res } = await send(makeApp());
+    expect(res.status).toBe(200);
+    const rows = await db.orm.select().from(devices).where(eq(devices.userId, pStudent.id));
+    expect(rows.map((r) => r.token)).toEqual(["push-live"]);
+  });
+
+  it("a token a signed-out device de-registered receives nothing", async () => {
+    await register(pStudent, "push-signed-out");
+    await request(makeApp())
+      .delete("/v1/devices/push-signed-out")
+      .set("Authorization", `Bearer ${pStudent.token}`);
+
+    const { res } = await send(makeApp());
+    expect(res.status).toBe(200);
+    expect(fakePush.calls.length).toBe(0);
+  });
+
+  it("a token re-registered by a second account stops notifying the first", async () => {
+    await register(pStudent, "shared-device");
+    // Same phone, next student signs in: POST /v1/devices rebinds the token.
+    await register(student, "shared-device");
+
+    const { res } = await send(makeApp());
+    expect(res.status).toBe(200);
+    expect(fakePush.calls.length).toBe(0);
+  });
+
+  it("a push that throws neither fails nor rolls back the send", async () => {
+    await register(pStudent, "push-outage");
+    fakePush.throwNext = true;
+
+    const { res, noteId } = await send(makeApp());
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("sent");
+    expect(res.body.sentAt).not.toBeNull();
+    const [row] = await db.orm.select().from(notes).where(eq(notes.id, noteId));
+    expect(row!.status).toBe("sent");
+    // A transient outage must never be read as a dead token.
+    const rows = await db.orm.select().from(devices).where(eq(devices.userId, pStudent.id));
+    expect(rows.length).toBe(1);
+  });
+
+  it("with no APNs key configured the send still completes", async () => {
+    await register(pStudent, "push-unconfigured");
+    const { res, noteId } = await send(makeAppWithoutPush());
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("sent");
+    const [row] = await db.orm.select().from(notes).where(eq(notes.id, noteId));
+    expect(row!.status).toBe("sent");
+    const rows = await db.orm.select().from(devices).where(eq(devices.userId, pStudent.id));
+    expect(rows.length).toBe(1);
+  });
+
+  it("a note that fails validation never notifies", async () => {
+    await register(pStudent, "push-never");
+    const { note } = await seedNote({ teacherId: pTeacher.id, studentId: pStudent.id, pieceId: null, pieceLabel: null });
+    const res = await request(makeApp())
+      .post(`/v1/notes/${note.id}/send`)
+      .set("Authorization", `Bearer ${pTeacher.token}`)
+      .send({});
+    expect(res.status).toBe(400);
+    expect(fakePush.calls.length).toBe(0);
   });
 });
 
