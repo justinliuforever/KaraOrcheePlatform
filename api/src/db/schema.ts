@@ -305,6 +305,9 @@ export const noteJobs = pgTable("note_jobs", {
   // updated_at - created_at silently includes the human gap before Retry was tapped.
   startedAt: timestamp("started_at", { withTimezone: true }),
   transcriptPath: text("transcript_path"), // notes-assets, durable (survives audio deletion)
+  // Raw model output for a run the gates rejected or repaired. Lives under the same
+  // transcripts/ prefix on purpose — the 90-day lifecycle rule keys on that prefix.
+  modelOutputPath: text("model_output_path"),
   metrics: jsonb("metrics").notNull().default({}), // asr/llm timings, annotation + grounding counts
   createdBy: uuid("created_by").references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

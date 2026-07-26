@@ -18,6 +18,12 @@ param operatorObjectId string
 
 var tags = { product: 'karaorchee-app', env: env }
 
+@description('Expire lesson transcripts at 90 days. Changes retention of data that already exists — founder sign-off required before enabling.')
+param transcriptRetentionEnabled bool = false
+
+@description('Move narration older than 30 days to cool storage. Cool-tier reads bill extra, so this can cost more than it saves if students revisit old notes.')
+param narrationCoolTieringEnabled bool = false
+
 resource logws 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: 'log-karaorchee-app-${env}'
   location: location
@@ -94,13 +100,28 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
             }
           }
         }
+        // Deleted/overwritten blob VERSIONS only. managementPolicies is replace-all, so
+        // omitting a live rule here silently drops it on the next deploy.
+        {
+          name: 'notes-assets-purge-deleted-versions'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['notes-assets/'] }
+            actions: {
+              version: {
+                delete: { daysAfterCreationGreaterThan: 30 }
+              }
+            }
+          }
+        }
         // A transcript is the recording in another encoding — verbatim lesson speech,
         // often a minor's. The app tells users the audio is gone from the cloud at 90
         // days, so its verbatim derivative expires on the same clock. The note, its
         // annotations and their quotes are the durable record and are unaffected.
         {
           name: 'notes-transcripts-delete'
-          enabled: true
+          enabled: transcriptRetentionEnabled
           type: 'Lifecycle'
           definition: {
             filters: { blobTypes: ['blockBlob'], prefixMatch: ['notes-assets/transcripts/'] }
@@ -117,7 +138,7 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
         // teacher's REAL voice is a recording and needs the 90-day rule above.
         {
           name: 'notes-narration-cool'
-          enabled: true
+          enabled: narrationCoolTieringEnabled
           type: 'Lifecycle'
           definition: {
             filters: { blobTypes: ['blockBlob'], prefixMatch: ['notes-assets/narration/'] }

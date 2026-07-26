@@ -1,5 +1,17 @@
 # Piece-bundle publisher
 
+> **SUPERSEDED — do not run this to publish a piece.** Publishing goes through the Pieces
+> Studio wizard in the admin console, which runs the gates, writes the registry and rebuilds
+> `catalog.json` from SQL (`api/src/catalog_build.ts`). SQL is the catalog truth now.
+> `publish_piece.py` writes `catalog.json` directly from a hand-maintained `METADATA` dict,
+> which means (a) the next registry rebuild silently discards whatever it wrote, and (b) its
+> catalog shape is the 2026-07-05 one — no books, works, composers, difficulty, facts,
+> thumbnails or capability gating, all of which live pieces now carry.
+>
+> Kept as the record of the original bundle layout and catalog contract, both of which the
+> Studio still honours. `_retired_backfill_sql.py` is retired for a sharper reason: it wrote
+> catalog→SQL, the direction that reverts Library edits.
+
 Publishes an app piece bundle (score events, staff geometry, per-device SVGs) to the
 dev blob store `stkaraoappdev` / container `piece-bundles`, then updates `catalog.json`
 which the platform API serves at `GET /v1/catalog`.

@@ -1,5 +1,11 @@
 # Notation-detail fidelity — deep research digest (2026-07-13)
 
+> **CLOSED — historical record.** The work this research authorized shipped on 2026-07-14
+> (see Outcome, below). Open questions 1 and 2 were answered by the Dolet round-trip and are
+> no longer open; 3 and 4 were made moot by the shipped approach. Read the Outcome first —
+> the sections above it are the reasoning that got us there, and finding 2's "Sibelius 26.6
+> compatibility UNTESTED" was superseded within a day.
+
 103-agent adversarially-verified research run (20 claims confirmed 3-0, 5 refuted, 4 open).
 Full result: session task wh82ntkha. Trigger: colleague's Sibelius-engraved scores lose
 fingerings/expression detail in our rendering (example: La Pastorale, job 39729a7a).

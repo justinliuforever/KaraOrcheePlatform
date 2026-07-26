@@ -69,7 +69,7 @@ function makeFakeAssets(): FakeAssets {
     reads: [],
     deleted: [],
     deletedPrefixes: [],
-    async readTranscript(path) {
+    async readJson(path) {
       a.reads.push(path);
       return a.body;
     },
@@ -572,6 +572,31 @@ describe("note-jobs monitoring", () => {
     expect(res.body).not.toHaveProperty("transcript");
   });
 
+  it("answers 'can the recorder retry this?' on the detail, independently of admin requeue", async () => {
+    const { job } = await seedJob(teacher.id, {
+      status: "failed",
+      failureCode: "no_speech",
+      attempts: 1,
+    }, { status: "submitted" });
+    const res = await request(app())
+      .get(`/admin/note-jobs/${job.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    // no_speech is a categorical cap of 0 — a re-run would be byte-identical.
+    expect(res.body.retry).toMatchObject({ allowed: false, cap: 0, attempts: 1 });
+    expect(res.body.retry.reason).toBe("retry_exhausted");
+
+    const retryable = await seedJob(teacher.id, {
+      status: "failed",
+      failureCode: "asr_error",
+      attempts: 1,
+    }, { status: "submitted" });
+    const ok = await request(app())
+      .get(`/admin/note-jobs/${retryable.job.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(ok.body.retry).toMatchObject({ allowed: true, cap: 3, attempts: 1, reason: null });
+  });
+
   it("404s an unknown job", async () => {
     const res = await request(app())
       .get("/admin/note-jobs/00000000-0000-0000-0000-000000000000")
@@ -826,6 +851,94 @@ describe("transcript break-glass", () => {
     expect(fakeAssets.reads).not.toContain(null);
     // Nothing was read, so nothing is audited as read.
     expect((await auditFor("transcript.view")).length).toBe(before);
+  });
+});
+
+// ── Model-output break-glass ─────────────────────────────────────────────────────
+
+describe("model output break-glass", () => {
+  let teacher: typeof users.$inferSelect;
+  let jobWithOutput: string;
+  let jobWithout: string;
+  const path = "transcripts/model-output/rejected.json";
+  const reason = "Founder reported processing failed on a device test this morning.";
+
+  beforeAll(async () => {
+    teacher = await mkUser({ displayName: "Model Output Teacher", isTeacher: true });
+    const a = await seedJob(teacher.id, {
+      status: "failed",
+      failureCode: "thin_note",
+      modelOutputPath: path,
+      metrics: { annotations_in: 3, kept: 1, dropped: 2, drop_reasons: { unverifiable_quote: 2 } },
+    });
+    jobWithOutput = a.job.id;
+    const b = await seedJob(teacher.id, { status: "ready_for_review" });
+    jobWithout = b.job.id;
+  });
+
+  it("requires a reason and the transcript capability, and audits neither without them", async () => {
+    const before = (await auditFor("model_output.view")).length;
+    const short = await request(app())
+      .get(`/admin/note-jobs/${jobWithOutput}/model-output?reason=short`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(short.status).toBe(400);
+    expect(short.body.error).toBe("reason_required");
+
+    const noFlag = await request(app())
+      .get(`/admin/note-jobs/${jobWithOutput}/model-output?reason=${encodeURIComponent(reason)}`)
+      .set("Authorization", `Bearer ${admin2Token}`);
+    expect(noFlag.status).toBe(403);
+    expect(noFlag.body.error).toBe("transcript_forbidden");
+    expect((await auditFor("model_output.view")).length).toBe(before);
+  });
+
+  it("returns what the model produced and audits the read with its reason", async () => {
+    fakeAssets.body = {
+      outcome: "thin_note",
+      attempts: [{ n: 1, model: "claude-sonnet-5", error: null, text: '{"annotations": []}' }],
+      evidence: { drops: [{ index: 0, reason: "unverifiable_quote", instruction: "Keep the wrist loose", quote: "made up" }] },
+    };
+    const res = await request(app())
+      .get(`/admin/note-jobs/${jobWithOutput}/model-output?reason=${encodeURIComponent(reason)}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.modelOutput).toEqual(fakeAssets.body);
+    expect(fakeAssets.reads).toContain(path);
+    const evt = (await auditFor("model_output.view")).find((a) => a.subjectId === jobWithOutput);
+    expect((evt!.detail as { reason: string }).reason).toBe(reason);
+  });
+
+  it("409s when nothing was rejected, and 410s once the owner discarded the lesson", async () => {
+    const none = await request(app())
+      .get(`/admin/note-jobs/${jobWithout}/model-output?reason=${encodeURIComponent(reason)}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(none.status).toBe(409);
+    expect(none.body.error).toBe("model_output_not_recorded");
+
+    const { job } = await seedJob(teacher.id, {
+      status: "failed",
+      failureCode: "thin_note",
+      // Exactly the shape the discard transaction leaves behind.
+      modelOutputPath: null,
+      transcriptPath: null,
+      discardedAt: new Date(),
+    });
+    const before = (await auditFor("model_output.view")).length;
+    const gone = await request(app())
+      .get(`/admin/note-jobs/${job.id}/model-output?reason=${encodeURIComponent(reason)}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(gone.status).toBe(410);
+    expect(gone.body.error).toBe("model_output_discarded");
+    expect((await auditFor("model_output.view")).length).toBe(before);
+  });
+
+  it("surfaces the path on the jobs list so the panel knows there is evidence to open", async () => {
+    const res = await request(app())
+      .get("/admin/note-jobs")
+      .set("Authorization", `Bearer ${adminToken}`);
+    const row = res.body.items.find((r: { id: string }) => r.id === jobWithOutput);
+    expect(row.modelOutputPath).toBe(path);
+    expect(row.metrics.drop_reasons).toEqual({ unverifiable_quote: 2 });
   });
 });
 

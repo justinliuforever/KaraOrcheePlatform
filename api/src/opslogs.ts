@@ -102,12 +102,37 @@ const STATUS_CLASSES: Record<string, [number, number]> = {
   "5xx": [500, 600],
 };
 
+// Fallback for worker lines with no `level`: already-ingested logs, and any lane not
+// yet redeployed. New events belong in the emitting worker, not in this list.
+const WORKER_ERROR_EVENTS = [
+  "error",
+  "dead-letter",
+  "fail",
+  "asr_fail",
+  "asset_delete_failed",
+  "gate_fail",
+  "llm_invalid",
+  "narration_failed",
+  "narration_lane_down",
+  "transcript_delete_failed",
+  "worker_crash",
+];
+const WORKER_WARN_EVENTS = [
+  "drop",
+  "llm_repair",
+  "model_output_unwritten",
+  "narration_clip_failed",
+  "narration_deadline",
+  "narration_over_budget",
+  "narration_unconfigured",
+];
+
 // Base projection: physical → logical, entirely inside KQL so the API result is
 // already logical fields. column_ifexists() tolerates schema regressions.
 const BASE = `ContainerAppConsoleLogs_CL
 | extend ['raw'] = column_ifexists("Log_s", "")
 | extend kind0 = tostring(column_ifexists("Log_kind_s", ""))
-| extend ['kind'] = case(kind0 == "http", "http", kind0 == "worker", "worker", "raw")
+| extend ['kind'] = case(kind0 == "http", "http", kind0 in ("worker", "notes-worker"), "worker", "raw")
 | extend ['source'] = iff(ContainerAppName_s contains "worker", "worker", "api")
 | extend ['status'] = toint(column_ifexists("Log_status_d", ""))
 | extend ['ms'] = todouble(column_ifexists("Log_ms_d", ""))
@@ -119,10 +144,16 @@ const BASE = `ContainerAppConsoleLogs_CL
 | extend ['job'] = tostring(coalesce(column_ifexists("Log_job_g", ""), column_ifexists("Log_job_s", "")))
 | extend ['event'] = tostring(column_ifexists("Log_event_s", ""))
 | extend ['stream'] = tostring(column_ifexists("Stream_s", "stdout"))
+| extend level0 = tostring(column_ifexists("Log_level_s", ""))
+| extend outcome0 = tostring(column_ifexists("Log_status_s", ""))
 | extend ['severity'] = case(
+    // A worker that stamps its own level wins; the arms below are the fallback.
+    level0 in ("error", "warn", "info"), level0,
     ['kind'] == "http" and ['status'] >= 500, "error",
     ['kind'] == "http" and ['status'] >= 400, "warn",
-    ['kind'] == "worker" and ['event'] in ("error", "dead-letter", "fail"), "error",
+    ['kind'] == "worker" and ['event'] in (${WORKER_ERROR_EVENTS.map(kqlString).join(", ")}), "error",
+    ['kind'] == "worker" and outcome0 == "fail", "error",
+    ['kind'] == "worker" and ['event'] in (${WORKER_WARN_EVENTS.map(kqlString).join(", ")}), "warn",
     ['kind'] == "raw" and ['stream'] == "stderr", "warn",
     "info")`;
 

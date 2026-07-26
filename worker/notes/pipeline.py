@@ -23,10 +23,17 @@ class GateFail(Exception):
     app renders copy and the retry cap keys off it — hints are prose and cannot
     carry it (hints[0] is shown to the user verbatim)."""
 
-    def __init__(self, message: str, hints: list[str] | None = None, code: str = "unknown"):
+    def __init__(self, message: str, hints: list[str] | None = None, code: str = "unknown",
+                 evidence: dict | None = None):
         super().__init__(message)
         self.hints = hints or []
         self.code = code
+        # What the gate saw. `drops` holds verbatim instruction/quote text, so this
+        # belongs in the model-output artifact and never in the note_jobs row.
+        self.evidence = evidence or {}
+        # Stamped by the worker before the failure row is written.
+        self.metrics: dict | None = None
+        self.artifact: str | None = None
 
 
 def build_turns(utterances: list[dict]) -> str:
@@ -48,7 +55,8 @@ def check_transcript(text: str, utterances: list[dict]) -> dict:
             "Very little speech was detected in this recording.",
             ["The lesson may have been mostly playing, or the phone was too far from the teacher.",
              "Next time, keep the phone within a few feet of where you talk."],
-            code="no_speech")
+            code="no_speech",
+            evidence={"transcript_words": words, "min_transcript_words": MIN_TRANSCRIPT_WORDS})
     speakers = {u.get("speaker") for u in utterances if u.get("speaker")}
     return {"transcript_words": words, "speakers": len(speakers)}
 
@@ -76,9 +84,28 @@ def quote_in_transcript(quote: str, transcript: str) -> bool:
     return bool(q) and q in _norm(transcript)
 
 
+def drop_reasons(drops: list[dict]) -> dict:
+    out: dict = {}
+    for d in drops:
+        reason = str(d.get("reason", "unknown"))
+        out[reason] = out.get(reason, 0) + 1
+    return out
+
+
+DROP_TEXT_CHARS = 600  # the model can emit an arbitrarily long instruction
+
+
+def _drop(index: int, reason: str, **fields) -> dict:
+    return {"index": index, "reason": reason,
+            **{k: (v[:DROP_TEXT_CHARS] if isinstance(v, str) else v) for k, v in fields.items()}}
+
+
 def normalize_note(obj: dict, transcript: str, measure_count: int | None):
-    """LLM object -> (content, annotation rows, warnings). Raises ValueError on
-    shape problems (caller retries once with the validator message)."""
+    """LLM object -> (content, annotation rows, warnings, drops). Raises ValueError on
+    shape problems (caller retries once with the validator message).
+
+    `warnings` is the operator-readable summary kept on the job row; `drops` names the
+    rejected annotation and the gate that rejected it, for the artifact."""
     summary = obj.get("lesson_summary")
     if not isinstance(summary, str) or not summary.strip():
         raise ValueError("lesson_summary missing or empty")
@@ -101,15 +128,21 @@ def normalize_note(obj: dict, transcript: str, measure_count: int | None):
 
     annotations = []
     warnings: list[str] = []
-    for a in raw_annotations:
+    drops: list[dict] = []
+    for i, a in enumerate(raw_annotations):
         if not isinstance(a, dict):
+            drops.append(_drop(i, "not_an_object"))
             continue
         instruction = a.get("instruction")
         if not isinstance(instruction, str) or not instruction.strip():
+            drops.append(_drop(i, "empty_instruction", quote=a.get("quote")
+                               if isinstance(a.get("quote"), str) else None))
             continue
         quote = a.get("quote") if isinstance(a.get("quote"), str) else ""
         if not quote_in_transcript(quote, transcript):
             warnings.append(f"dropped_unverifiable_quote: {instruction[:60]}")
+            drops.append(_drop(i, "unverifiable_quote", instruction=instruction, quote=quote,
+                               category=a.get("category") if isinstance(a.get("category"), str) else None))
             continue
         category = a.get("category") if a.get("category") in CATEGORIES else "other"
         loc_in = a.get("location") if isinstance(a.get("location"), dict) else {}
@@ -148,7 +181,9 @@ def normalize_note(obj: dict, transcript: str, measure_count: int | None):
             "Too little teaching talk was detected to build a useful note.",
             ["The recording may be mostly playing, or the teacher's voice may be unclear.",
              "Naming the piece gives the note writer something to anchor to — add it, then try once more."],
-            code="thin_note")
+            code="thin_note",
+            evidence={"annotations_in": len(raw_annotations), "kept": len(annotations),
+                      "min_annotations": MIN_ANNOTATIONS, "drops": drops})
 
     content = {"lessonSummary": summary.strip(), "practicePlan": plan}
-    return content, annotations, warnings
+    return content, annotations, warnings, drops

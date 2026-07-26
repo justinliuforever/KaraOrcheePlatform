@@ -1,0 +1,1 @@
+ALTER TABLE "note_jobs" ADD COLUMN "model_output_path" text;

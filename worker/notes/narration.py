@@ -29,6 +29,8 @@ from dataclasses import dataclass
 
 import requests
 
+from obs import jlog
+
 VOICES = {
     "jessica": "cgSgspJ2msm6clMCkdW9",
     "george": "JBFqnCBsd6RMkjVDRZzb",
@@ -59,10 +61,6 @@ DEFAULT_MODE = "eager"
 # Narration runs after the note is already delivered; this only stops a slow vendor
 # from holding the queue message for the rest of the lock.
 DEADLINE_SEC = 240
-
-
-def jlog(**fields) -> None:
-    print(json.dumps({"kind": "notes-worker", **fields}), flush=True)
 
 
 # ── the spoken script — mirrors NoteReadAloudScript.swift ─────────────────────────

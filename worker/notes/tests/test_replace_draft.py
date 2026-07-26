@@ -353,7 +353,7 @@ def test_process_seeds_metrics_with_owner_role(monkeypatch):
     monkeypatch.setattr(main, "generate", lambda s, u: SimpleNamespace(
         text="x", model="test-model", in_tok=10, out_tok=20))
     monkeypatch.setattr(main, "extract_json", lambda t: dict(ORIGINAL))
-    monkeypatch.setattr(main, "normalize_note", lambda obj, text, mc: (CONTENT, ANNS, []))
+    monkeypatch.setattr(main, "normalize_note", lambda obj, text, mc: (CONTENT, ANNS, [], []))
 
     main.process(conn, blob, "cs", "job-9", req_id="req-1")
 
@@ -394,7 +394,7 @@ def _process_env(monkeypatch, *, asr=None, normalize=None):
         text="x", model="test-model", in_tok=10, out_tok=20))
     monkeypatch.setattr(main, "extract_json", lambda t: dict(ORIGINAL))
     monkeypatch.setattr(main, "normalize_note",
-                        normalize or (lambda obj, text, mc: (CONTENT, ANNS, [])))
+                        normalize or (lambda obj, text, mc: (CONTENT, ANNS, [], [])))
 
 
 LIVE_LESSON = {"SELECT status FROM lesson_sessions": ("submitted",)}

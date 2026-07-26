@@ -6,6 +6,26 @@ The version shown in the sidebar (`vX.Y.Z · <sha>`) has two parts:
 - **sha** — the git commit the running build was made from (injected by
   `scripts/deploy.sh`); changes on every deploy, needs no ceremony.
 
+## Unreleased — still shipping as 0.9.0
+
+Deployed to dev, no version bump: the sidebar still reads 0.9.0 because a bump needs
+founder sign-off. Shipped 2026-07-21/26, across B1.5 Wave 1, Wave 2, and the R4/R5
+review rounds:
+
+- **Users**: an `organization` field, and the split consent timestamps
+  (solo / teacher) surfaced on the user panel.
+- **Pairings**: reverse invites — a student can invite a teacher, so the page shows
+  invite `direction`, and invite history rather than only live codes. Roster
+  enrichments and a trust-watch tab for reviewing pairings.
+- **Ops → Notes Jobs**: `failure_code` on the job row (it drives both the app's copy
+  and the retry cap), discard as a first-class terminal state distinct from failure,
+  and post-hoc lesson metadata on the panel.
+- Break-glass transcript viewing now gates on `users.can_view_transcripts` rather
+  than plain admin.
+
+What is NOT in the console: narration. Clips, credits and the `notes_narration`
+config row are worker- and API-side only, editable today by SQL alone.
+
 ## 0.9.0 — 2026-07-20 · The Notes era
 
 Founder-signed bump (2026-07-20: decisions on the B1-7 memo delegated to and

@@ -18,6 +18,7 @@ import { notifyNoteSent } from "../notes/push";
 import {
   devices,
   noteAnnotations,
+  noteJobs,
   noteNarrationClips,
   notes,
   pieces,
@@ -574,9 +575,24 @@ export function notesRouter(deps: Deps): Router {
         res.status(403).json({ error: "self_note_only", message: "Notes from your teacher can't be deleted." });
         return;
       }
-      await db.transaction(async (tx) => {
+      // The model output records how THIS note was written, so it goes with the note.
+      // The transcript belongs to the lesson and waits for the lesson's own discard.
+      const modelOutputPath = await db.transaction(async (tx) => {
         await tx.delete(noteAnnotations).where(eq(noteAnnotations.noteId, note.id));
         await tx.delete(notes).where(eq(notes.id, note.id));
+        if (!note.noteJobId) return null;
+        // RETURNING would hand back the nulled value — read the path first.
+        const [job] = await tx
+          .select({ path: noteJobs.modelOutputPath })
+          .from(noteJobs)
+          .where(eq(noteJobs.id, note.noteJobId))
+          .limit(1);
+        if (!job?.path) return null;
+        await tx
+          .update(noteJobs)
+          .set({ modelOutputPath: null, updatedAt: sql`now()` })
+          .where(eq(noteJobs.id, note.noteJobId));
+        return job.path;
       });
       await userAudit(deps, req, "note.self_delete", { type: "note", id: note.id });
       if (deps.notesAssets) {
@@ -584,6 +600,13 @@ export function notesRouter(deps: Deps): Router {
           await deps.notesAssets.deletePrefix(narrationPrefix(note.id));
         } catch (err) {
           console.error("note.self_delete: narration purge failed", note.id, err);
+        }
+        if (modelOutputPath) {
+          try {
+            await deps.notesAssets.deleteAsset(modelOutputPath);
+          } catch (err) {
+            console.error("note.self_delete: model output purge failed", modelOutputPath, err);
+          }
         }
       }
       res.json({ ok: true });

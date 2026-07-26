@@ -776,7 +776,7 @@ def delivered(monkeypatch):
         {"lessonSummary": "s"},
         [{"category": "technique", "instruction": "i", "quote": "q",
           "location": {"grounded": False}}],
-        []))
+        [], []))
     return JobConn()
 
 

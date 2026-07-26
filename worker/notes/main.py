@@ -26,21 +26,24 @@ from azure.storage.blob import (BlobSasPermissions, BlobServiceClient,
 
 from llm import generate
 from narration import narrate_on_demand, narration_stage, targets_from_message
-from pipeline import GateFail, build_turns, check_transcript, extract_json, normalize_note
+from obs import jlog
+from pipeline import (GateFail, build_turns, check_transcript, drop_reasons,
+                      extract_json, normalize_note)
 from prompt import build_system, build_user
 
 QUEUE = "notes-jobs"
 NARRATION_QUEUE = "notes-narration"
 AUDIO_CONTAINER = "lesson-audio"
 ASSETS_CONTAINER = "notes-assets"
+TRANSCRIPT_PREFIX = "transcripts/"
+# Under transcripts/ deliberately: the notes-assets lifecycle rule that expires
+# verbatim lesson content at 90 days matches that prefix, and this is the same content.
+MODEL_OUTPUT_PREFIX = "transcripts/model-output/"
+MODEL_OUTPUT_MAX_CHARS = 100_000
 ASR_BASE = "https://api.assemblyai.com/v2"
 # Validated 2026-07-03: plural priority list; keyterms/prompt stay OFF (both
 # tested and rejected — over-bias, hallucinated numbers).
 ASR_MODELS = ["universal-3-5-pro", "universal-2"]
-
-
-def jlog(**fields) -> None:
-    print(json.dumps({"kind": "notes-worker", **fields}), flush=True)
 
 
 def env(name: str) -> str:
@@ -104,17 +107,20 @@ def stamp_transcript(conn, job_id: str, path: str) -> bool:
     return landed
 
 
-def delete_transcript_blob(blob, path: str) -> None:
+def delete_asset_blob(blob, path: str) -> None:
     try:
         blob.get_container_client(ASSETS_CONTAINER).get_blob_client(path).delete_blob()
     except Exception as err:
-        jlog(event="transcript_delete_failed", path=path, error=str(err)[:200])
+        jlog(event="asset_delete_failed", path=path, error=str(err)[:200])
 
 
 def record_gate_fail(conn, job_id: str, gf: GateFail) -> None:
-    update_job(conn, job_id, status="failed", stage=None, failure_code=gf.code,
-               error=str(gf), failure_hints=json.dumps(gf.hints))
-    jlog(job=job_id, event="gate_fail", code=gf.code, error=str(gf))
+    cols = {"status": "failed", "stage": None, "failure_code": gf.code,
+            "error": str(gf), "failure_hints": json.dumps(gf.hints)}
+    if gf.metrics is not None:
+        cols["metrics"] = json.dumps(gf.metrics)
+    update_job(conn, job_id, **cols)
+    jlog(job=job_id, event="gate_fail", code=gf.code, error=str(gf), artifact=gf.artifact)
 
 
 def mark_worker_crash(conn, job_id: str) -> None:
@@ -131,6 +137,72 @@ def mark_worker_crash(conn, job_id: str) -> None:
                WHERE id = %s AND status <> 'ready_for_review'""",
             (job_id,))
     conn.commit()
+
+
+def stamp_model_output(conn, job_id: str, path: str) -> bool:
+    """Same live-lesson guard as stamp_transcript: an artifact whose lesson was
+    discarded mid-write must not survive behind a column the discard already nulled."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE note_jobs j SET model_output_path = %s, updated_at = now()
+               FROM lesson_sessions l
+               WHERE j.id = %s AND l.id = j.lesson_session_id AND l.status <> 'canceled'""",
+            (path, job_id))
+        landed = cur.rowcount > 0
+    conn.commit()
+    return landed
+
+
+def attempt_record(n: int, result, error: str | None) -> dict:
+    return {"n": n, "model": result.model, "in_tok": result.in_tok, "out_tok": result.out_tok,
+            "error": error, "text": (result.text or "")[:MODEL_OUTPUT_MAX_CHARS]}
+
+
+def model_output_payload(job_id: str, outcome: str, stage: str, piece_desc, measure_count,
+                         attempts: list[dict], parsed, evidence: dict | None) -> dict:
+    """What the model produced and what rejected it. The prompt itself is deliberately
+    absent — it is the stored transcript plus the two inputs recorded here, and copying
+    it in would put the same verbatim speech under a second retention clock."""
+    return {
+        "job_id": job_id,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "outcome": outcome,
+        "stage": stage,
+        "piece": piece_desc,
+        "measure_count": measure_count,
+        "attempts": attempts,
+        "parsed": parsed,
+        "evidence": evidence or {},
+    }
+
+
+def save_model_output(conn, blob, job_id: str, lesson_id: str, payload: dict) -> str | None:
+    """Diagnostics only — every failure here is swallowed. A job must never fail, or
+    lose a note it already produced, because its evidence could not be stored."""
+    path = f"{MODEL_OUTPUT_PREFIX}{job_id}.json"
+    try:
+        if lesson_canceled(conn, lesson_id):
+            return None
+        blob.get_container_client(ASSETS_CONTAINER).get_blob_client(path).upload_blob(
+            json.dumps(payload), overwrite=True,
+            content_settings=ContentSettings(content_type="application/json"))
+        if not stamp_model_output(conn, job_id, path):
+            delete_asset_blob(blob, path)
+            return None
+        return path
+    except Exception as err:
+        jlog(job=job_id, event="model_output_unwritten", error=str(err)[:200])
+        return None
+
+
+def gate_counts(evidence: dict) -> dict:
+    """Numeric evidence only: everything else a gate records is verbatim lesson text."""
+    return {k: v for k, v in evidence.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+
+def llm_metrics(t0: float, result) -> dict:
+    return {"llm_secs": round(time.time() - t0, 1), "llm_model": result.model,
+            "llm_in_tok": result.in_tok, "llm_out_tok": result.out_tok}
 
 
 def abort_discarded(conn, job_id: str, reason: str) -> None:
@@ -387,10 +459,10 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
     #
     # The 60-minute stuck-job hatch can fire while ASR is still running
     # (ASR_POLL_MAX alone is 40 min), so a discard can land between the job
-    # starting and this write. notes-assets has NO lifecycle rule — a transcript
-    # re-uploaded after a discard is permanent, and the audit trail would say it
-    # was deleted. Check before the upload, and let the stamp itself re-check.
-    transcript_path = f"transcripts/{job_id}.json"
+    # starting and this write. A transcript re-uploaded after a discard survives its
+    # full 90-day lifecycle while the audit trail says it was deleted. Check before
+    # the upload, and let the stamp itself re-check.
+    transcript_path = f"{TRANSCRIPT_PREFIX}{job_id}.json"
     if lesson_canceled(conn, lesson_id):
         abort_discarded(conn, job_id, "lesson canceled during asr")
         return
@@ -400,11 +472,15 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
                     "audio_duration": asr.get("audio_duration")}),
         overwrite=True, content_settings=ContentSettings(content_type="application/json"))
     if not stamp_transcript(conn, job_id, transcript_path):
-        delete_transcript_blob(blob, transcript_path)
+        delete_asset_blob(blob, transcript_path)
         abort_discarded(conn, job_id, "lesson canceled during transcript upload")
         return
 
-    metrics.update(check_transcript(text, utterances))
+    try:
+        metrics.update(check_transcript(text, utterances))
+    except GateFail as gf:
+        gf.metrics = {**metrics, **gate_counts(gf.evidence)}
+        raise
 
     measure_count = piece_measures(piece_facts)
     piece_desc = f'"{piece_title}" by {piece_composer}' if piece_title else piece_label
@@ -413,32 +489,53 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
 
     t1 = time.time()
     result = generate(system, user)
-    parsed = None
+    obj = None
+    rejected: list[dict] = []
     try:
-        obj = extract_json(result.text)
-        parsed = normalize_note(obj, text, measure_count)
-    except ValueError as err:
-        # GateFail is not a ValueError, so a content gate never lands here — only
-        # a malformed model response, which earns exactly one repair pass.
-        jlog(job=job_id, event="llm_repair", error=str(err)[:200])
-        result = generate(system, user + f"\n\nYour previous output failed validation: {err}. "
-                                         "Output ONLY the corrected ```json block.")
         try:
             obj = extract_json(result.text)
             parsed = normalize_note(obj, text, measure_count)
-        except ValueError as err2:
-            update_job(conn, job_id, status="failed", stage=None,
-                       failure_code="llm_invalid", error=f"llm_invalid: {err2}"[:500])
-            jlog(job=job_id, event="llm_invalid", error=str(err2)[:200])
-            return
-    content, annotations, warnings = parsed
+        except ValueError as err:
+            # GateFail is not a ValueError, so a content gate never lands here — only
+            # a malformed model response, which earns exactly one repair pass.
+            rejected.append(attempt_record(1, result, str(err)))
+            jlog(job=job_id, event="llm_repair", error=str(err)[:200])
+            result = generate(system, user + f"\n\nYour previous output failed validation: {err}. "
+                                             "Output ONLY the corrected ```json block.")
+            obj = extract_json(result.text)
+            parsed = normalize_note(obj, text, measure_count)
+    except ValueError as err2:
+        rejected.append(attempt_record(len(rejected) + 1, result, str(err2)))
+        metrics.update(llm_metrics(t1, result))
+        artifact = save_model_output(conn, blob, job_id, lesson_id, model_output_payload(
+            job_id, "llm_invalid", "llm", piece_desc, measure_count, rejected, obj, None))
+        update_job(conn, job_id, status="failed", stage=None, failure_code="llm_invalid",
+                   error=f"llm_invalid: {err2}"[:500], metrics=json.dumps(metrics))
+        jlog(job=job_id, event="llm_invalid", error=str(err2)[:200], artifact=artifact)
+        return
+    except GateFail as gf:
+        rejected.append(attempt_record(len(rejected) + 1, result, None))
+        metrics.update(llm_metrics(t1, result))
+        metrics.update(gate_counts(gf.evidence))
+        gf.metrics = metrics
+        gf.artifact = save_model_output(conn, blob, job_id, lesson_id, model_output_payload(
+            job_id, gf.code, "gates", piece_desc, measure_count, rejected, obj, gf.evidence))
+        raise
+    content, annotations, warnings, drops = parsed
+    metrics.update(llm_metrics(t1, result))
     metrics.update({
-        "llm_secs": round(time.time() - t1, 1), "llm_model": result.model,
-        "llm_in_tok": result.in_tok, "llm_out_tok": result.out_tok,
         "annotations": len(annotations),
         "grounded": sum(1 for a in annotations if a["location"].get("grounded")),
         "warnings": warnings,
+        "dropped": len(drops),
+        "drop_reasons": drop_reasons(drops),
     })
+    # A note that shipped after a repair, or short of annotations a gate dropped, needs
+    # the same evidence a failed one does.
+    if rejected or drops:
+        save_model_output(conn, blob, job_id, lesson_id, model_output_payload(
+            job_id, "delivered", "gates", piece_desc, measure_count, rejected, obj,
+            {"kept": len(annotations), "drops": drops}))
 
     update_job(conn, job_id, stage="gates")
     note_id = replace_draft(conn, job_id, lesson_id, content, obj, annotations)
@@ -483,8 +580,10 @@ def narration_loop(sb_cs: str, db_url: str, blob: BlobServiceClient) -> None:
                         with psycopg.connect(db_url) as conn:
                             narrate_on_demand(conn, blob, note_id, voices, body.get("reqId"))
                         receiver.complete_message(msg)
-                    except Exception:
+                    except Exception as err:
                         traceback.print_exc()
+                        jlog(event="narration_failed", queue=NARRATION_QUEUE,
+                             error=str(err)[:200] or type(err).__name__)
                         try:
                             # Redelivery costs nothing it already paid for: clips whose
                             # content hash still matches are skipped on the retry.
@@ -526,8 +625,11 @@ def main() -> None:
                             record_gate_fail(conn, job_id, gf)
                     processed = True
                     receiver.complete_message(msg)
-                except Exception:
+                except Exception as err:
                     traceback.print_exc()
+                    # The traceback is unstructured stderr; this line carries the job id.
+                    jlog(job=job_id, event="worker_crash",
+                         error=f"{type(err).__name__}: {err}"[:200])
                     marked_failed = False
                     if job_id and not processed:
                         try:

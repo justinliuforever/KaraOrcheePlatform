@@ -171,11 +171,13 @@ export function usersRouter(deps: Deps): Router {
       const lessonIdsForAssets = myLessons.map((l) => l.id);
       const myJobs = lessonIdsForAssets.length
         ? await db
-            .select({ transcriptPath: noteJobs.transcriptPath })
+            .select({ transcriptPath: noteJobs.transcriptPath, modelOutputPath: noteJobs.modelOutputPath })
             .from(noteJobs)
             .where(inArray(noteJobs.lessonSessionId, lessonIdsForAssets))
         : [];
-      const transcriptPaths = myJobs.map((j) => j.transcriptPath).filter((p): p is string => !!p);
+      const transcriptPaths = myJobs
+        .flatMap((j) => [j.transcriptPath, j.modelOutputPath])
+        .filter((p): p is string => !!p);
 
       // Narration follows the note row: purged for the copies destroyed below, kept
       // for the SENT notes that stay with their students.

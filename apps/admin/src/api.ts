@@ -779,6 +779,7 @@ export interface NoteJobRow {
   failureHints: string[];
   metrics: NoteJobMetrics;
   transcriptPath: string | null;
+  modelOutputPath: string | null;
   // Worker-written cause of a failure; null on a healthy job or a pre-0016 row.
   failureCode: string | null;
   discardedAt: string | null;
@@ -810,6 +811,9 @@ export interface NoteJobsResponse {
 }
 
 export interface NoteJobDetail {
+  // Whether the RECORDER's own Retry is still available — the admin requeue is uncapped
+  // and says nothing about what the person who reported the failure can do.
+  retry: { allowed: boolean; reason: string | null; attempts: number; cap: number };
   job: {
     id: string;
     lessonSessionId: string;
@@ -819,6 +823,9 @@ export interface NoteJobDetail {
     failureHints: string[];
     attempts: number;
     transcriptPath: string | null;
+    modelOutputPath: string | null;
+    failureCode: string | null;
+    discardedAt: string | null;
     metrics: NoteJobMetrics;
     createdBy: string | null;
     createdAt: string;
@@ -855,6 +862,44 @@ export interface NoteTranscriptResponse {
   jobId: string;
   transcriptPath: string;
   transcript: NoteTranscript;
+}
+
+// One LLM call and its verdict. `text` is the model's raw output, `error` the validator
+// message that rejected it (null when a content gate, not the parser, did the rejecting).
+export interface ModelOutputAttempt {
+  n: number;
+  model?: string;
+  in_tok?: number;
+  out_tok?: number;
+  error?: string | null;
+  text?: string;
+}
+
+export interface ModelOutputDrop {
+  index: number;
+  reason: string;
+  instruction?: string | null;
+  quote?: string | null;
+  category?: string | null;
+}
+
+export interface NoteModelOutput {
+  job_id?: string;
+  created_at?: string;
+  outcome?: string;
+  stage?: string;
+  piece?: string | null;
+  measure_count?: number | null;
+  attempts?: ModelOutputAttempt[];
+  parsed?: unknown;
+  evidence?: { drops?: ModelOutputDrop[]; [k: string]: unknown };
+  [k: string]: unknown;
+}
+
+export interface NoteModelOutputResponse {
+  jobId: string;
+  modelOutputPath: string;
+  modelOutput: NoteModelOutput;
 }
 
 export interface NotesActivity {
@@ -987,6 +1032,9 @@ export function requeueNoteJob(id: string): Promise<{ job: NoteJobDetail["job"] 
 }
 export function getNoteTranscript(id: string, reason: string): Promise<NoteTranscriptResponse> {
   return api(`/admin/note-jobs/${id}/transcript?reason=${encodeURIComponent(reason)}`);
+}
+export function getNoteModelOutput(id: string, reason: string): Promise<NoteModelOutputResponse> {
+  return api(`/admin/note-jobs/${id}/model-output?reason=${encodeURIComponent(reason)}`);
 }
 
 // User activity aggregate

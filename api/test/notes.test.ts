@@ -111,7 +111,7 @@ function makeFakeAssets(): FakeAssets {
     put(path, bytes = 4096) {
       a.blobs.set(path, bytes);
     },
-    async readTranscript(p) {
+    async readJson(p) {
       a.reads.push(p);
       return { text: "transcript" };
     },
@@ -1145,6 +1145,7 @@ describe("lesson metadata lifecycle", () => {
     failureCode?: string | null;
     attempts?: number;
     transcriptPath?: string | null;
+    modelOutputPath?: string | null;
     metrics?: Record<string, unknown>;
     movedAgoMs?: number;
   } = {}) {
@@ -1156,6 +1157,7 @@ describe("lesson metadata lifecycle", () => {
         failureCode: opts.failureCode ?? null,
         attempts: opts.attempts ?? 0,
         transcriptPath: opts.transcriptPath ?? null,
+        modelOutputPath: opts.modelOutputPath ?? null,
         metrics: opts.metrics ?? {},
         createdBy: mdT.id,
         startedAt: new Date(),
@@ -1468,6 +1470,9 @@ describe("lesson metadata lifecycle", () => {
       failureCode: "thin_note",
       attempts: 1,
       transcriptPath: `transcripts/${lesson.id}.json`,
+      // The model output quotes the lesson verbatim, so the discard owes it the same
+      // deletion it owes the transcript.
+      modelOutputPath: `transcripts/model-output/${lesson.id}.json`,
       // r4_verify M1: metrics.warnings is verbatim lesson content.
       metrics: { asr_secs: 12, warnings: ["dropped_unverifiable_quote: keep your wrist relaxed on"] },
     });
@@ -1487,9 +1492,11 @@ describe("lesson metadata lifecycle", () => {
     expect(jobRow).toBeTruthy(); // the stub survives: the only record the failure happened
     expect(jobRow!.discardedAt).not.toBeNull();
     expect(jobRow!.transcriptPath).toBeNull();
+    expect(jobRow!.modelOutputPath).toBeNull();
     expect(jobRow!.metrics).toEqual({ asr_secs: 12 }); // counts survive, content does not
     expect(fakeLessons.deleted).toContain(lesson.audioPath);
     expect(fakeAssets.deleted).toContain(`transcripts/${lesson.id}.json`);
+    expect(fakeAssets.deleted).toContain(`transcripts/model-output/${lesson.id}.json`);
     const noteRows = await db.orm.select().from(notes).where(eq(notes.id, note.id));
     expect(noteRows.length).toBe(0);
     const annRows = await db.orm

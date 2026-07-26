@@ -992,6 +992,7 @@ export function lessonsRouter(deps: Deps): Router {
             .set({
               discardedAt: sql`now()`,
               transcriptPath: null,
+              modelOutputPath: null, // quotes the lesson verbatim, like the transcript
               // metrics.warnings carries up to 60 characters of the model's
               // instruction per dropped annotation — verbatim lesson content about
               // a named student. A discard that promises to delete the transcript
@@ -1023,7 +1024,9 @@ export function lessonsRouter(deps: Deps): Router {
           row,
           cascadable,
           jobs: lockedJobs,
-          transcriptPaths: lockedJobs.map((j) => j.transcriptPath).filter((p): p is string => Boolean(p)),
+          transcriptPaths: lockedJobs
+            .flatMap((j) => [j.transcriptPath, j.modelOutputPath])
+            .filter((p): p is string => Boolean(p)),
         };
       }).catch((err) => {
         if (err instanceof DiscardRaced) return "raced" as const;

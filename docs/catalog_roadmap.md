@@ -3,6 +3,18 @@
 Status: decisions locked 2026-07-08 (founder + research); implementation slices by feature.
 This is the north star for every additive migration — build against this picture, never improvise.
 
+**Where the build stands, 2026-07-26.** Everything marked BUILD-NOW shipped, plus several
+things this page filed as later: `works` + work membership, `instrumentation`, `facts`,
+`tags`, `display`, `thumbnail_url` / `row_icon_url`, `first_published_at`, `books[]` with
+covers, the composer registry (its own tab in admin), Tier-1 and Tier-2 reference audio,
+capability gating on `/v1/catalog`, and the staging sweeper. Still unbuilt and still correct
+as written: `arrangement_of` / `arrangement_kind` (no same-instrument variant has been
+uploaded yet), `book_memberships` (no cross-work compilation yet), and the entire
+multi-instrument section below — the corpus is 95 piano pieces, the violin and guitar
+soundfonts sit in the `soundfont/` container unused, and no app build gates on instrument.
+The soundfont license research and the ear-gated verdicts remain the record of that decision
+and are not superseded by the delay.
+
 ## The three structural axes
 
 Every content form reduces to one of three axes:

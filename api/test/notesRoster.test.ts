@@ -83,7 +83,7 @@ let fakeQueue: FakeQueue;
 const fakeAssets = {
   deleted: [] as string[],
   deletedPrefixes: [] as string[],
-  async readTranscript() {
+  async readJson() {
     return null;
   },
   readUrl(path: string) {

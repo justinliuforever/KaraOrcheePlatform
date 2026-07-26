@@ -13,50 +13,95 @@ email domain, and the container registry. Everything else lives in this repo + i
 | Region | centralus — subscription is Postgres-offer-restricted in eastus/eastus2/westus2/southcentralus (probed 2026-07-05 via capabilities API); centralus = nearest full-featured allowed region, whole platform co-located | same |
 | Subscription | `7f5d0970-fdd5-45ba-a9c2-635eb221f9c1` (KaraOrchee, Inc.) | same |
 
-Declared in `infra/main.bicep`; env differences are parameters only (SKUs, min replicas).
+Declared in `infra/main.bicep` — but see the drift warning under Resources: the template is
+no longer the whole picture. Env differences are parameters only (SKUs, min replicas).
 
-Dev API (live 2026-07-05): `https://ca-app-api-dev.graymoss-40d67a2f.centralus.azurecontainerapps.io`
+Dev API: `https://ca-app-api-dev.graymoss-40d67a2f.centralus.azurecontainerapps.io`
 — image `acrkaraorchee.azurecr.io/karaorchee-app/api:<tag>` (built via `az acr build`), secrets
-`dburl`/`storagecs` on the container app, AUTH_* env pointed at the CIAM iOS App Registration.
-Database `karaorchee_app` on `pg-karaorchee-app-dev` (migrations applied through 0011);
+`dburl`/`storagecs`/`sbcs` on the container app, AUTH_* env pointed at the CIAM iOS App
+Registration. Live as of 2026-07-26: api rev 47 and `ca-notes-worker-dev` rev 0000005 both on
+`a8e2429`; `ca-pieces-worker-dev` rev 0000026 still on `4ee6fc2` — the content pipeline has
+not needed a rebuild since the Library closeout, and that is expected, not drift.
+Database `karaorchee_app` on `pg-karaorchee-app-dev` (0021 applied as of api rev 47 — check
+`select count(*) from drizzle.__drizzle_migrations` against `ls api/drizzle/*.sql`, never this
+sentence);
 the Pieces Library is live truth (95 published pieces as of 2026-07-19 — Czerny 599, Burgmüller
 Op. 100, Hanon, flagship singles; every piece carries a first-page `thumbnail.webp` + `row_icon.webp`).
+The default `/v1/catalog` serves 12 of them: the other 83 use repeat structures and are gated
+behind `?caps=repeats` until the shipped app can play them.
 Composers are a registry (`composers` table: canonical name + aliases + portrait + years + bio;
 writes canonicalize through it — see `api/src/composer_canon.ts`). Publish gates (worker) enforce
 anchor coverage/p90 residual/endpoint/`-rend` schema splits/audio-map clamp; `render_generation`
 stamps staff.json + SVGs against cross-generation mixing. Corpus health tool: `tools/corpus_health/`.
 
-**Notes (Phase B) is LIVE on dev** (2026-07-20). Schema (migrations 0008–0011):
-`teacher_student_links`, `invites` (code+expiry+uses), `lesson_sessions`
-(offline-first, created at send time, `client_lesson_id` idempotency key),
-`note_jobs`, `notes` (draft→sent→retracted, `superseded_by`), `note_annotations`
-(location jsonb, printed-bar-number unit), `entitlements` (source-typed),
-`devices`, `platform_config`. End-user API: invite-code linking (no user search
-by design), `POST /v1/lessons` + write-SAS direct upload, teacher
+**Notes (Phase B) is LIVE on dev.** Schema (everything from migration 0008 on):
+`teacher_student_links`, `invites` (code+expiry+uses, `direction` — a student can invite a
+teacher), `lesson_sessions` (offline-first, created at send time, `client_lesson_id`
+idempotency key, `owner_role`), `note_jobs` (`failure_code` drives app copy and the retry
+cap; `discarded_at`), `notes` (draft→sent→retracted, `superseded_by`, `origin`),
+`note_annotations` (location jsonb, printed-bar-number unit), `note_narration_clips`
+(content-hash keyed, `credits` = the vendor's own metered number), `entitlements`
+(source-typed), `devices`, `platform_config`. On `users`: `organization`,
+`can_view_transcripts`, and split `solo_consent_at` / `teacher_consent_at`.
+
+**Recording is a capability, not a role**: a student records themselves and the resulting
+note is born `sent` to its owner with no review step; a teacher-recorded lesson produces a
+draft the teacher reviews. End-user API: invite-code linking in both directions (no user
+search by design), `POST /v1/lessons` + write-SAS direct upload, teacher
 review/send/retract/duplicate, student inbox/practiced/pin, `DELETE /v1/me`
-(Apple 5.1.1(v) — PII scrub + cascade + audio purge, CIAM Graph delete pending).
-Worker `ca-notes-worker-dev` clones the pieces loop: AssemblyAI `universal-3-5-pro`
-(SAS handoff, keyterms OFF) → claude-sonnet-5 (deepseek fallback) → gates
-(quote-verbatim drop, measure-range demote, annotation floor); transcript
-derivative to `notes-assets` (deleted at 90d, the same clock as the audio). Admin: `/admin/notes/*`
-(pairing/subscription) + `/admin/note-jobs/*` (monitoring + break-glass transcript,
-audited). Entitlement resolver: trial = `max(trial_started_at, monetization_live_at)
-+ 30d`; no config = beta-free.
+(Apple 5.1.1(v) — PII scrub + cascade + audio/transcript/narration purge, CIAM Graph delete
+pending). Authenticated responses carry `no-store` + `Vary: Authorization` from `requireAuth`.
+
+Worker `ca-notes-worker-dev` runs two Service Bus lanes on one process. **notes-jobs**:
+AssemblyAI (60-minute read SAS minted immediately before the vendor call so it cannot expire
+while queued; `speech_models` priority `universal-3-5-pro` then `universal-2`; keyterms and
+prompt both tested and left OFF) → claude-sonnet-5 with deepseek-v4-pro as availability
+fallback → gates: 50-word transcript floor, quote-verbatim drop, measure-range demote (an
+out-of-range bar number leaves the annotation unplaced rather than discarding it), and a
+2-annotation floor below which the job fails as `thin_note`. The quote gate is the structural
+one: an annotation whose quote is not in the transcript is dropped, which makes invented
+instructions impossible by construction. The transcript JSON is written to
+`notes-assets/transcripts/` as the durable derivative that outlives the raw audio — note
+that its 90-day expiry is designed but NOT applied, so transcripts currently never expire
+(`docs/open-items.md`). **notes-narration** on its own thread, so a minutes-long synthesis never
+waits behind an ASR job: ElevenLabs `eleven_multilingual_v2`, fixed seed and settings, two
+voices (jessica/george), clips keyed by a content hash over text+voice+model+seed+settings —
+a redelivery re-pays for nothing. Config lives in `platform_config.notes_narration`; no row
+means off. Narration failure never blocks a send; the app falls back to the device voice.
+Note-arrived push goes out over APNs direct — no key is set yet, so `apns: null` and sends
+proceed unpushed (`docs/runbooks/secret-rotation.md`).
+
+Admin: `/admin/notes/*` (pairing/subscription/roster/invite history/trust watch) +
+`/admin/note-jobs/*` (monitoring + break-glass transcript, audited, gated on
+`users.can_view_transcripts`). Entitlement resolver: teacher = free; no
+`monetization_live_at` = beta-free; otherwise trial =
+`max(trial_started_at, monetization_live_at) + 30d`, then lapsed locks only notes sent after
+the boundary.
 
 ## Resources (per env)
 
 | Resource | Name (`<env>` suffix) | Role |
 |---|---|---|
-| Container App | `ca-app-api-<env>` | The API — accounts, roles, invites, notes metadata, entitlements, SAS minting, IAP webhook |
-| Container Apps env | `cae-karaorchee-app-<env>` | Hosts API + (Phase B) notes worker job |
+| Container App | `ca-app-api-<env>` | The API — accounts, roles, invites, notes metadata, entitlements, SAS minting, APNs push. No IAP webhook: StoreKit is deliberately unbuilt (`docs/open-items.md`), though `entitlements.source` already reserves `apple_iap` |
+| Container Apps env | `cae-karaorchee-app-<env>` | Hosts the API and both workers (`ca-pieces-worker-<env>`, `ca-notes-worker-<env>`) |
 | Postgres Flexible | `pg-karaorchee-app-<env>` | Relational truth: users, teacher↔student, referrals, invites, entitlements, metering |
-| Storage | `stkaraoapp<env>` | `piece-bundles/` (versioned, immutable) · `soundfont/` · `lesson-audio/` (private, Cool@30d, delete@90d) · `notes-assets/` (`transcripts/` delete@90d, `narration/` Cool@30d and purged with its note). Public access OFF, SAS-only |
-| Service Bus | `sb-karaorchee-app-<env>` | Queue `notes-jobs` (+DLQ) for the ASR+LLM pipeline; `notes-narration` (+DLQ) for premium narration, its own lane so a minutes-long synthesis run never waits behind an ASR job |
-| Key Vault | `kv-karaorchee-app-<env>` | All keys/connection strings (company convention: key-based auth) |
+| Storage | `stkaraoapp<env>` | `piece-bundles/` (versioned, immutable) · `piece-sources/` · `soundfont/` · `lesson-audio/` (Cool@30d, delete@90d — **live**) · `notes-assets/` (`transcripts/`, `narration/`). Public access OFF, SAS-only |
+| Service Bus | `sb-karaorchee-app-<env>` | Four queues, each with a DLQ: `pieces-preflight` and `pieces-jobs` for the content pipeline; `notes-jobs` for ASR+LLM; `notes-narration` on its own lane so a minutes-long synthesis run never waits behind an ASR job |
+| Key Vault | `kv-karaorchee-app-<env>` | Holds `pg-admin-password` and nothing else. Every other credential is a Container Apps secret on its consumer — see `docs/runbooks/secret-rotation.md` |
 | App Insights + Log Analytics | `appi/log-karaorchee-app-<env>` | Logs, traces, alerts |
 
 Shared, pre-existing (NOT in this repo's Bicep): `comm-karaorchee` (ACS email, verified
 karaorchee.com sender), `acrkaraorchee` (images), CIAM tenant (below).
+
+⚠️ **Only `ca-app-api-<env>` is declared in Bicep.** Both worker container apps
+(`ca-pieces-worker-<env>`, `ca-notes-worker-<env>`) are CLI-created, and every app's image
+tag / secrets / env are applied by `az`. Re-running the deployment against a live env resets
+them. Same for storage lifecycle: of the three rules in `main.bicep` only
+`lesson-audio-cool-then-delete` is applied, the live policy carries one rule
+(`notes-assets-purge-deleted-versions`) that Bicep does not, and the policy is a single
+replace-all resource — deploying the template would both switch on the two founder-gated
+rules and drop the live one. Reconcile before creating prod. Retention decisions:
+`docs/open-items.md`.
 
 ## Identity (CIAM)
 
@@ -220,9 +265,9 @@ died without updating its job row; the wizard shows an eternal spinner).
   version insert + job flip), catalog rebuild AFTER commit — a half-failed publish leaves
   nothing live and retrying is idempotent. (pieceId, version) PK makes concurrent
   publishes collide loudly instead of corrupting.
-- Metadata edit boundary (future Pieces management page): catalog/display fields (title,
-  difficulty, rights note, book) = edit in place on the registry + catalog rebuild + audit;
-  anything baked into the bundle (score files) = new version through the studio.
+- Metadata edit boundary (shipped as the Pieces Library panel): catalog/display fields
+  (title, difficulty, rights note, book) = edit in place on the registry + catalog rebuild +
+  audit; anything baked into the bundle (score files) = new version through the studio.
 - Never GC a published v<N> bundle (rollback + stale app catalogs need it); only
   staging/<jobId>/ blobs of terminal non-published jobs may be swept later.
 - The four gates (worker `worker/pieces/`): 1 sanity (files parse, score non-empty);
@@ -246,5 +291,9 @@ died without updating its job row; the wizard shows an eternal spinner).
 2. Storage is private + SAS-only; the iOS app never holds an account key.
 3. Config is env-vars only, validated at boot. No `activeEnv`-style file switches.
 4. Piece bundles are immutable per version; re-publish = new version.
-5. Server is the entitlement truth (trial/IAP/activation codes); the client is a hint.
+5. Server is the entitlement truth (`entitlements.source` = trial | apple_iap | admin_grant |
+   org); the client is a hint, never a receipt.
 6. Money never renders in the iOS app (referral counts only) — App Review 3.1.1/3.2.2.
+7. `npm run db:migrate` runs BEFORE the revision that needs the columns, never as part of
+   container start. A missed 0007 in July made every live admin query 500 while the cached
+   catalog kept serving and hid it.

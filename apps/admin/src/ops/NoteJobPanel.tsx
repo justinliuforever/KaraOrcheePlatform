@@ -7,10 +7,12 @@ import {
   api,
   ApiError,
   getNoteJob,
+  getNoteModelOutput,
   getNoteTranscript,
   requeueNoteJob,
   type AdminUser,
   type NoteJobDetail,
+  type NoteModelOutput,
   type NoteTranscript,
 } from "../api";
 import { ErrorNote, PanelSection, Spinner } from "../components/ui";
@@ -53,12 +55,20 @@ function person(p: { email: string | null; displayName: string | null } | null):
 function transcriptErrorMessage(e: Error): string {
   if (e instanceof ApiError && e.code === "transcript_missing")
     return "No transcript found for this job — it may have failed before transcription.";
+  if (e instanceof ApiError && e.code === "model_output_missing")
+    return "The model-output record is gone from storage — it may have passed its 90-day expiry.";
   if (e instanceof ApiError && e.code === "notes_assets_not_configured")
     return "Transcript storage isn't configured on this environment.";
   if (e instanceof ApiError && e.code === "transcript_forbidden")
     return "Transcript access required — an existing holder can grant it from Users.";
   return e.message;
 }
+
+const DROP_REASONS: Record<string, string> = {
+  unverifiable_quote: "quote not found in the transcript",
+  empty_instruction: "no instruction text",
+  not_an_object: "malformed annotation",
+};
 
 export default function NoteJobPanel({ id, onClose }: { id: string; onClose: () => void }) {
   const qc = useQueryClient();
@@ -76,11 +86,13 @@ export default function NoteJobPanel({ id, onClose }: { id: string; onClose: () 
   const canViewTranscripts = me.data?.canViewTranscripts ?? false;
 
   const [confirmRequeue, setConfirmRequeue] = useState(false);
-  const [reasonOpen, setReasonOpen] = useState(false);
+  // Which artifact the reason dialog is about; null = closed.
+  const [reasonFor, setReasonFor] = useState<"transcript" | "model" | null>(null);
   const [reason, setReason] = useState("");
-  // Break-glass transcript is held in local state only (never react-query cache):
+  // Break-glass content is held in local state only (never react-query cache):
   // it leaves memory when the panel unmounts. { reason } is the accountability record.
   const [transcript, setTranscript] = useState<{ reason: string; body: NoteTranscript } | null>(null);
+  const [modelOutput, setModelOutput] = useState<{ reason: string; body: NoteModelOutput } | null>(null);
 
   const requeue = useMutation<unknown, Error>({
     mutationFn: () => requeueNoteJob(id),
@@ -106,15 +118,19 @@ export default function NoteJobPanel({ id, onClose }: { id: string; onClose: () 
     },
   });
 
-  const fetchTranscript = useMutation<{ reason: string; body: NoteTranscript }, Error>({
-    mutationFn: async () => {
+  const fetchArtifact = useMutation<void, Error, "transcript" | "model">({
+    mutationFn: async (which) => {
       const r = reason.trim();
-      const res = await getNoteTranscript(id, r);
-      return { reason: r, body: res.transcript };
+      if (which === "transcript") {
+        const res = await getNoteTranscript(id, r);
+        setTranscript({ reason: r, body: res.transcript });
+      } else {
+        const res = await getNoteModelOutput(id, r);
+        setModelOutput({ reason: r, body: res.modelOutput });
+      }
     },
-    onSuccess: (t) => {
-      setTranscript(t);
-      setReasonOpen(false);
+    onSuccess: () => {
+      setReasonFor(null);
       setReason("");
     },
   });
@@ -169,13 +185,40 @@ export default function NoteJobPanel({ id, onClose }: { id: string; onClose: () 
                     ? undefined
                     : "No transcript produced yet"
               }
-              onClick={() => setReasonOpen(true)}
+              onClick={() => setReasonFor("transcript")}
             >
               View transcript
+            </Button>
+            {/* SECURITY: model output quotes the lesson verbatim — same gate, same audit
+                (model_output.view). The server is the authority; this disable is UX only. */}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!job.modelOutputPath || !canViewTranscripts}
+              title={
+                !canViewTranscripts
+                  ? "Transcript access required — an existing holder can grant it from Users."
+                  : job.modelOutputPath
+                    ? undefined
+                    : "Nothing was rejected on this run, so no model output was captured"
+              }
+              onClick={() => setReasonFor("model")}
+            >
+              View model output
             </Button>
             {job.status !== "failed" && (
               <span className="text-xs text-ink-faint">Requeue is available on failed jobs only.</span>
             )}
+          </div>
+
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
+            <span className="text-ink-faint">Owner retry</span>
+            <ToneBadge tone={detail.data?.retry.allowed ? "ok" : "muted"}>
+              {detail.data?.retry.allowed ? "available" : (detail.data?.retry.reason ?? "unavailable")}
+            </ToneBadge>
+            <span className="tabular-nums">
+              {detail.data?.retry.attempts ?? 0} of {detail.data?.retry.cap ?? 0} attempts used
+            </span>
           </div>
 
           {job.error && (
@@ -292,19 +335,25 @@ export default function NoteJobPanel({ id, onClose }: { id: string; onClose: () 
       </AlertDialog>
 
       <Dialog
-        open={reasonOpen}
+        open={reasonFor !== null}
         onOpenChange={(o) => {
-          setReasonOpen(o);
-          if (!o) setReason("");
+          if (!o) {
+            setReasonFor(null);
+            setReason("");
+          }
         }}
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>View transcript — break-glass</DialogTitle>
+            <DialogTitle>
+              {reasonFor === "model" ? "View model output — break-glass" : "View transcript — break-glass"}
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-warn">
-              Transcripts are verbatim lesson content. This access is audited. State a reason.
+              {reasonFor === "model"
+                ? "Model output quotes the lesson verbatim. This access is audited. State a reason."
+                : "Transcripts are verbatim lesson content. This access is audited. State a reason."}
             </div>
             <div>
               <Label className="mb-1.5">Reason (at least 10 characters)</Label>
@@ -315,23 +364,111 @@ export default function NoteJobPanel({ id, onClose }: { id: string; onClose: () 
               />
               <p className="mt-1 text-[11px] text-ink-faint tabular-nums">{reason.trim().length}/10</p>
             </div>
-            {fetchTranscript.isError && <ErrorNote message={transcriptErrorMessage(fetchTranscript.error)} />}
+            {fetchArtifact.isError && <ErrorNote message={transcriptErrorMessage(fetchArtifact.error)} />}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setReasonOpen(false)}>
+            <Button variant="outline" onClick={() => setReasonFor(null)}>
               Cancel
             </Button>
             <Button
-              disabled={reason.trim().length < 10 || fetchTranscript.isPending}
-              onClick={() => fetchTranscript.mutate()}
+              disabled={reason.trim().length < 10 || fetchArtifact.isPending || reasonFor === null}
+              onClick={() => reasonFor && fetchArtifact.mutate(reasonFor)}
             >
-              {fetchTranscript.isPending ? "Opening…" : "Open transcript"}
+              {fetchArtifact.isPending ? "Opening…" : "Open"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {transcript && <TranscriptViewer data={transcript} onClose={() => setTranscript(null)} />}
+      {modelOutput && <ModelOutputViewer data={modelOutput} onClose={() => setModelOutput(null)} />}
+    </SlideOver>
+  );
+}
+
+function ModelOutputViewer({
+  data,
+  onClose,
+}: {
+  data: { reason: string; body: NoteModelOutput };
+  onClose: () => void;
+}) {
+  const { reason, body } = data;
+  const attempts = body.attempts ?? [];
+  const drops = body.evidence?.drops ?? [];
+  return (
+    <SlideOver
+      width="min(52vw, 720px)"
+      onClose={onClose}
+      header={
+        <div className="flex items-center gap-2.5">
+          <p className="text-sm font-semibold">Model output</p>
+          {body.outcome && <ToneBadge tone={body.outcome === "delivered" ? "ok" : "bad"}>{body.outcome}</ToneBadge>}
+          <span className="ml-auto" />
+          <Button variant="ghost" size="icon-xs" aria-label="Close" onClick={onClose}>
+            <X />
+          </Button>
+        </div>
+      }
+    >
+      <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-warn">
+        Break-glass access — this view is audited. Reason: {reason}
+      </div>
+
+      <PanelSection title="Rejected annotations" defaultOpen badge={`${drops.length}`}>
+        {drops.length === 0 ? (
+          <p className="text-xs text-ink-faint">No annotation was dropped by a gate.</p>
+        ) : (
+          <ul className="space-y-2">
+            {drops.map((d, i) => (
+              <li key={i} className="rounded-lg border border-line bg-card px-3 py-2">
+                <div className="flex items-center gap-2 text-[11px] text-ink-faint">
+                  <span className="tabular-nums">#{d.index}</span>
+                  <span>{DROP_REASONS[d.reason] ?? d.reason}</span>
+                  {d.category && <span>· {d.category}</span>}
+                </div>
+                {d.instruction && <p className="mt-1 text-sm break-words">{d.instruction}</p>}
+                {d.quote && (
+                  <p className="mt-1 text-xs italic text-ink-soft break-words">“{d.quote}”</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </PanelSection>
+
+      <PanelSection title="Model attempts" defaultOpen badge={`${attempts.length}`}>
+        {attempts.map((a) => (
+          <div key={a.n} className="mb-3">
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-faint">
+              <span>attempt {a.n}</span>
+              {a.model && <span>· {a.model}</span>}
+              <span className="tabular-nums">· {a.in_tok ?? 0} in / {a.out_tok ?? 0} out</span>
+            </div>
+            {a.error && (
+              <p className="mt-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-warn break-words">
+                {a.error}
+              </p>
+            )}
+            <pre className="mt-1 max-h-[40vh] overflow-auto rounded-xl border border-line bg-card p-3 text-[11px] whitespace-pre-wrap break-words">
+              {a.text || "(empty)"}
+            </pre>
+          </div>
+        ))}
+      </PanelSection>
+
+      <PanelSection title="Prompt inputs">
+        <div className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-xs">
+          <span className="text-ink-faint">Stage</span>
+          <span>{body.stage ?? "—"}</span>
+          <span className="text-ink-faint">Piece</span>
+          <span>{body.piece ?? "—"}</span>
+          <span className="text-ink-faint">Measure bound</span>
+          <span className="tabular-nums">{body.measure_count ?? "unbounded"}</span>
+          <span className="text-ink-faint">Captured</span>
+          <span className="tabular-nums">{body.created_at ? new Date(body.created_at).toLocaleString() : "—"}</span>
+        </div>
+      </PanelSection>
     </SlideOver>
   );
 }

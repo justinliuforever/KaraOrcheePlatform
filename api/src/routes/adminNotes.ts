@@ -6,6 +6,7 @@ import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireAdmin, audit } from "../admin";
 import { notesAccess } from "../notes/entitlement";
+import { DEFAULT_RETRY_CAP, RETRY_CAPS, retryDecision } from "./lessons";
 import {
   entitlements,
   invites,
@@ -440,6 +441,7 @@ export function adminNotesRouter(deps: Deps): Router {
           failureHints: noteJobs.failureHints,
           metrics: noteJobs.metrics,
           transcriptPath: noteJobs.transcriptPath,
+          modelOutputPath: noteJobs.modelOutputPath,
           discardedAt: noteJobs.discardedAt,
           startedAt: noteJobs.startedAt,
           createdAt: noteJobs.createdAt,
@@ -531,8 +533,18 @@ export function adminNotesRouter(deps: Deps): Router {
         .select({ id: notes.id, status: notes.status, studentId: notes.studentId })
         .from(notes)
         .where(eq(notes.noteJobId, job.id));
+      // The OWNER's retry, not this console's: admin requeue is deliberately uncapped.
+      const retry = lesson
+        ? retryDecision({ lessonStatus: lesson.status, pieceUpdatedAt: lesson.pieceUpdatedAt, job })
+        : { kind: "deny" as const, error: "not_retryable" };
       res.json({
         job,
+        retry: {
+          allowed: retry.kind === "allow",
+          reason: retry.kind === "deny" ? retry.error : null,
+          attempts: job.attempts,
+          cap: RETRY_CAPS[job.failureCode ?? ""] ?? DEFAULT_RETRY_CAP,
+        },
         lesson: lesson
           ? {
               id: lesson.id,
@@ -674,12 +686,61 @@ export function adminNotesRouter(deps: Deps): Router {
         res.status(503).json({ error: "notes_assets_not_configured", transcriptPath: job.transcriptPath });
         return;
       }
-      const transcript = await deps.notesAssets.readTranscript(job.transcriptPath);
+      const transcript = await deps.notesAssets.readJson(job.transcriptPath);
       if (transcript === null) {
         res.status(404).json({ error: "transcript_missing", transcriptPath: job.transcriptPath });
         return;
       }
       res.json({ jobId: id, transcriptPath: job.transcriptPath, transcript });
+    }),
+  );
+
+  // Quotes and instructions here are lifted verbatim from the lesson, so this is gated
+  // and audited exactly like the transcript it derives from.
+  router.get(
+    "/admin/note-jobs/:id/model-output",
+    wrap(async (req, res) => {
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      if (!req.adminUser!.canViewTranscripts) {
+        res.status(403).json({ error: "transcript_forbidden", message: "Your account doesn't have transcript access. An existing holder can grant it from Users." });
+        return;
+      }
+      const reason = typeof req.query.reason === "string" ? req.query.reason.trim() : "";
+      if (reason.length < 10) {
+        res.status(400).json({ error: "reason_required", message: "A reason of at least 10 characters is required to view model output." });
+        return;
+      }
+      const [job] = await db.select().from(noteJobs).where(eq(noteJobs.id, id)).limit(1);
+      if (!job) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (job.discardedAt) {
+        res.status(410).json({
+          error: "model_output_discarded",
+          message: "The owner deleted this recording, and its model output went with it.",
+        });
+        return;
+      }
+      if (!job.modelOutputPath) {
+        res.status(409).json({
+          error: "model_output_not_recorded",
+          message: "This job produced no rejected model output — nothing was captured.",
+        });
+        return;
+      }
+      await audit(deps, req, "model_output.view", { type: "note_job", id }, { reason, jobId: id });
+      if (!deps.notesAssets) {
+        res.status(503).json({ error: "notes_assets_not_configured", modelOutputPath: job.modelOutputPath });
+        return;
+      }
+      const modelOutput = await deps.notesAssets.readJson(job.modelOutputPath);
+      if (modelOutput === null) {
+        res.status(404).json({ error: "model_output_missing", modelOutputPath: job.modelOutputPath });
+        return;
+      }
+      res.json({ jobId: id, modelOutputPath: job.modelOutputPath, modelOutput });
     }),
   );
 

@@ -71,7 +71,7 @@ def test_quote_matching_normalizes_punctuation_and_case():
 
 
 def test_normalize_grounds_absolute_and_flags_deixis():
-    content, annotations, warnings = normalize_note(make_obj(), TRANSCRIPT, 32)
+    content, annotations, warnings, drops = normalize_note(make_obj(), TRANSCRIPT, 32)
     assert content["lessonSummary"].startswith("Great work")
     assert len(annotations) == 2
     absolute, deixis = annotations
@@ -84,7 +84,7 @@ def test_normalize_grounds_absolute_and_flags_deixis():
 
 
 def test_normalize_strips_est_minutes():
-    content, _, _ = normalize_note(make_obj(), TRANSCRIPT, 32)
+    content, _, _, _ = normalize_note(make_obj(), TRANSCRIPT, 32)
     assert "est_minutes" not in content["practicePlan"][0]
     assert content["practicePlan"][0]["steps"] == ["Slow, 5 clean reps", "Relaxed wrist"]
 
@@ -92,7 +92,7 @@ def test_normalize_strips_est_minutes():
 def test_measure_beyond_piece_demotes_not_fails():
     obj = make_obj()
     obj["annotations"][0]["location"].update({"measure_start": 40, "measure_end": 40})
-    _, annotations, warnings = normalize_note(obj, TRANSCRIPT, 32)
+    _, annotations, warnings, _ = normalize_note(obj, TRANSCRIPT, 32)
     assert annotations[0]["location"]["grounded"] is False
     assert any("measure_out_of_range" in w for w in warnings)
 
@@ -100,7 +100,7 @@ def test_measure_beyond_piece_demotes_not_fails():
 def test_no_measure_count_grounds_any_positive_measure():
     obj = make_obj()
     obj["annotations"][0]["location"].update({"measure_start": 40, "measure_end": 41})
-    _, annotations, _ = normalize_note(obj, TRANSCRIPT, None)
+    _, annotations, _, _ = normalize_note(obj, TRANSCRIPT, None)
     assert annotations[0]["location"]["grounded"] is True
     assert annotations[0]["location"]["measureEnd"] == 41
 
@@ -131,6 +131,6 @@ def test_unknown_category_and_type_fall_back():
     obj = make_obj()
     obj["annotations"][1]["category"] = "wizardry"
     obj["annotations"][1]["location"]["type"] = "telepathic"
-    _, annotations, _ = normalize_note(obj, TRANSCRIPT, 32)
+    _, annotations, _, _ = normalize_note(obj, TRANSCRIPT, 32)
     assert annotations[1]["category"] == "other"
     assert annotations[1]["location"]["type"] == "none"

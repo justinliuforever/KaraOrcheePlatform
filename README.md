@@ -1,20 +1,22 @@
 # KaraOrchee App Platform
 
-Dedicated cloud backend for the KaraOrchee iOS app (pieces catalog, admin console,
-content pipeline). Greenfield by decision — shares only the CIAM tenant, ACS email,
-and container registry with the rest of the company. **Not** the legacy `music_backend`.
+Dedicated cloud backend for the KaraOrchee iOS app: the pieces catalog and its content
+pipeline, the admin console, and Notes (lesson recording → transcription → practice notes →
+narration → push). Greenfield by decision — shares only the CIAM tenant, ACS email, and
+container registry with the rest of the company. **Not** the legacy `music_backend`.
 
 ## Repo map
 
 | Dir | What |
 |---|---|
 | `api/` | Platform API — TypeScript/Express, Postgres (drizzle), fail-closed CIAM auth. Tests: `cd api && npm test` (PGlite, real migration chain) |
-| `apps/admin/` | Admin console SPA (Pieces Studio wizard + Pieces Library + Users) — Vite/React/MSAL. Dev: `npm run dev` (localhost:5173) |
+| `apps/admin/` | Admin console SPA (Pieces Studio + Library + Collections + Users + Ops + Pairings + Subscriptions) — Vite/React/MSAL. Dev: `npm run dev` (localhost:5173) |
 | `worker/pieces/` | Content pipeline worker — Python, verovio/FluidSynth/playwright; two Service Bus lanes (preflight + full verification) |
-| `infra/` | Bicep for the Azure env (see drift warnings in `infra/main.bicep` header) |
-| `tools/publisher/` | CLI publishing tools (pre-Studio era) + retired one-shot backfills |
-| `docs/` | `platform.md` = resources/identity/laws · `catalog_roadmap.md` = entity model north star |
-| `scripts/` | `deploy.sh <api|worker|admin> [env]` — the only sanctioned deploy path |
+| `worker/notes/` | Notes worker — Python; two Service Bus lanes on one process (ASR+LLM on `notes-jobs`, ElevenLabs narration on `notes-narration`) |
+| `infra/` | Bicep — declares the API but neither worker; see the drift warning in `docs/platform.md` |
+| `tools/publisher/` | Pre-Studio CLI publishing tools. Superseded — read its README before running anything |
+| `docs/` | `platform.md` = resources/identity/laws · `open-items.md` = what is outstanding · `prod-checklist.md` · `runbooks/` · `catalog_roadmap.md` = entity model north star |
+| `scripts/` | `deploy.sh <api\|worker\|admin> [env]` — sanctioned for those three. The notes worker has no target and is deployed by hand |
 
 ## Environments
 

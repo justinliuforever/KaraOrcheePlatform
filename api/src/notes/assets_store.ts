@@ -18,8 +18,8 @@ export const ASSET_READ_SAS_MINUTES = 15;
 // deletion purges. Connection-string / shared-key auth only (project rule: never
 // credential-based — avoids token expiry).
 export interface NotesAssetsStore {
-  // Parsed transcript JSON, or null when the blob is absent.
-  readTranscript(path: string): Promise<unknown | null>;
+  // Parsed JSON derivative (transcript, model output), or null when the blob is absent.
+  readJson(path: string): Promise<unknown | null>;
   // Single-blob, read-only, HTTPS-only, minutes-long. Never container-scoped.
   readUrl(path: string): string;
   // Server-side copy inside the container — the whole point is that no audio crosses
@@ -69,7 +69,7 @@ export function createBlobNotesAssetsStore(connectionString: string): NotesAsset
   };
 
   return {
-    async readTranscript(path) {
+    async readJson(path) {
       try {
         const buf = await container.getBlockBlobClient(path).downloadToBuffer();
         return JSON.parse(buf.toString("utf8"));

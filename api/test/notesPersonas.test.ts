@@ -82,7 +82,7 @@ let fakeQueue: FakeQueue;
 const fakeAssets = {
   deleted: [] as string[],
   deletedPrefixes: [] as string[],
-  async readTranscript() {
+  async readJson() {
     return null;
   },
   readUrl(path: string) {
@@ -715,6 +715,36 @@ describe("self-note delete", () => {
     expect(annRows.length).toBe(0);
   });
 
+  it("takes the model output of the run that wrote it, and leaves the transcript alone", async () => {
+    const [lesson] = await db.orm
+      .insert(lessonSessions)
+      .values({ teacherId: owner.id, ownerRole: "student" })
+      .returning();
+    const [job] = await db.orm
+      .insert(noteJobs)
+      .values({
+        lessonSessionId: lesson!.id,
+        status: "ready_for_review",
+        transcriptPath: `transcripts/${lesson!.id}.json`,
+        modelOutputPath: `transcripts/model-output/${lesson!.id}.json`,
+      })
+      .returning();
+    const { note } = await seedSelfNote(owner.id, { noteJobId: job!.id, lessonSessionId: lesson!.id });
+
+    const res = await request(makeApp())
+      .delete(`/v1/me/notes/${note.id}`)
+      .set("Authorization", auth(owner));
+    expect(res.status).toBe(200);
+
+    expect(fakeAssets.deleted).toContain(`transcripts/model-output/${lesson!.id}.json`);
+    const [row] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job!.id));
+    expect(row!.modelOutputPath).toBeNull();
+    // The transcript belongs to the LESSON, not the note — it stays on its own clock
+    // until the lesson itself is discarded.
+    expect(fakeAssets.deleted).not.toContain(`transcripts/${lesson!.id}.json`);
+    expect(row!.transcriptPath).toBe(`transcripts/${lesson!.id}.json`);
+  });
+
   it("a teacher-origin sent note → 403 self_note_only and survives", async () => {
     const { note } = await seedNote({
       teacherId: teacherU.id,
@@ -832,11 +862,18 @@ describe("account delete (MC-1)", () => {
     expect(spare.status).toBe(201);
 
     const soloTranscript = `transcripts/${jobId}.json`;
-    await db.orm.update(noteJobs).set({ transcriptPath: soloTranscript }).where(eq(noteJobs.id, jobId));
+    const soloModelOutput = `transcripts/model-output/${jobId}.json`;
+    await db.orm
+      .update(noteJobs)
+      .set({ transcriptPath: soloTranscript, modelOutputPath: soloModelOutput })
+      .where(eq(noteJobs.id, jobId));
 
     const del = await request(makeApp()).delete("/v1/me").set("Authorization", auth(solo));
     expect(del.status).toBe(200);
     expect(fakeAssets.deleted).toContain(soloTranscript);
+    // Same lesson content in another encoding — a "full erase" that leaves it behind
+    // is not one.
+    expect(fakeAssets.deleted).toContain(soloModelOutput);
 
     // Zero strands: the self-note went via the received branch, then jobs/lessons.
     expect((await db.orm.select().from(notes).where(eq(notes.teacherId, solo.id))).length).toBe(0);
