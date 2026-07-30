@@ -194,8 +194,9 @@ def piece_tempo(piece_measures):
             bpm, src = TERM_BPM[key]
             return t.rstrip("."), bpm, src
     for t in candidates:
-        first = t.rstrip(". ").lower().split()[0] if t.strip() else ""
-        if first in TERM_BPM and first is not None:
+        head = t.rstrip(". ").lower().split()
+        first = head[0] if head else ""
+        if first and first in TERM_BPM:
             bpm, src = TERM_BPM[first]
             return t.rstrip("."), bpm, "prefix:" + src
     bpm, src = TERM_BPM[None]
@@ -222,10 +223,15 @@ def fix_start_repeats(piece_measures) -> int:
     it as "repeat from the beginning" — cascading into a quadratic expansion the
     structure gate rightly rejects. Injecting the forward barline encodes what the
     engraver actually hears on playback."""
-    # Sibelius's implicit repeat start = the start of the current SECTION, where
-    # sections are delimited by FINAL (light-heavy) barlines — verified against the
-    # engine's BarPlaybackOrderString on the real Hanon book (repeat at bar 17 jumps
-    # to 11 = the bar after the section-final at 10, NOT after the previous repeat).
+    # Implicit repeat start = the start of the current SECTION, sections divided by
+    # final (light-heavy) barlines — engine-verified on Hanon Part II (bar 17 returns
+    # to 11, the bar after the section-final at 10).
+    #
+    # Where a source omits the forward "||:" entirely, Sibelius instead replays from
+    # the piece start (Hanon 37/38, K.330 II: engine 160 where the section reading is
+    # 128). That is the notation defect showing through, not the intended music — we
+    # emit the conventional section reading, engine_crosscheck.py flags the piece, and
+    # the reviewer hears our reading in the preview audio before publishing.
     injected = 0
     section_start = 0
     explicit = True    # beginning-of-piece needs no barline (verovio agrees there)
@@ -248,9 +254,9 @@ def fix_start_repeats(piece_measures) -> int:
             target.insert(0, bl)
             injected += 1
             explicit = True  # one barline serves every backward in this section
-        is_final = any((bl.findtext("bar-style") or "") in ("light-heavy", "heavy")
-                       for bl in m.findall("barline"))
-        if is_final:
+        divider = any((bl.findtext("bar-style") or "") in ("light-heavy", "heavy")
+                      for bl in m.findall("barline"))
+        if divider:
             section_start = i + 1
             explicit = False
     return injected

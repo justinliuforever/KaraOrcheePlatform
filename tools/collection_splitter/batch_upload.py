@@ -161,13 +161,9 @@ def main():
     import os
     token = args.token or os.environ.get("ADMIN_TOKEN")
     if not token:
-        tf = Path.home() / ".karaorchee_admin_token"
-        if tf.exists():
-            token = tf.read_text().strip()
-    if not token and args.device_code:
-        token = acquire_token_device_code()
-    if not token:
-        raise SystemExit("need --token / ADMIN_TOKEN / --device-code")
+        sys.path.insert(0, str(Path(__file__).parent))
+        from admin_auth import token as auth_token
+        token = auth_token(interactive_ok=args.device_code)
     cfg = {}
     if args.title is not None: cfg["title"] = args.title
     if args.composer is not None: cfg["composer"] = args.composer
