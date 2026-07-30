@@ -108,6 +108,18 @@ def printed_range(location) -> tuple[int, int] | None:
     return None
 
 
+def spoken_range(location) -> tuple[int, int] | None:
+    """NoteStep.authoredBars. The bars the NOTE carries — a pin the STUDENT adds is local, and the clip
+    is one pre-rendered file for every device: a script that changes when a student pins orphans the clip
+    and the device voice reads that step for the rest of the note's life."""
+    loc = location if isinstance(location, dict) else {}
+    if loc.get("grounded") is True and isinstance(loc.get("measureStart"), int):
+        start = loc["measureStart"]
+        end = loc["measureEnd"] if isinstance(loc.get("measureEnd"), int) else start
+        return (start, end)
+    return None
+
+
 def attributed(quote: str, is_self_origin: bool) -> str:
     return f"From your lesson: {quote}" if is_self_origin else f"Your teacher said: {quote}"
 
@@ -124,7 +136,7 @@ def overview_lines(summary, step_count: int) -> list[str]:
 
 def step_lines(annotation: dict, number: int, is_self_origin: bool) -> list[str]:
     lines = []
-    bars = printed_range(annotation.get("location"))
+    bars = spoken_range(annotation.get("location"))
     if bars:
         lines.append(bars_spoken(*bars))
     else:
