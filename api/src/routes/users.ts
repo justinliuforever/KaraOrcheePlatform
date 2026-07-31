@@ -251,29 +251,39 @@ export function usersRouter(deps: Deps): Router {
       });
 
       await userAudit(deps, req, "account.delete", { type: "user", id: me.id });
+      // The delete sheet tells the person their audio and transcripts are destroyed, so a purge that
+      // fails may not vanish into a console line: each blob gets three attempts, and a survivor is
+      // reported as ONE structured event Ops can query and alert on. Transcripts matter most — the
+      // durable container has no lifecycle rule, so a missed one persists indefinitely.
+      const purge = async (label: string, key: string, act: () => Promise<unknown>) => {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            await act();
+            return;
+          } catch (err) {
+            if (attempt === 3) {
+              console.log(JSON.stringify({
+                kind: "purge_failed", op: "account.delete", label, key,
+                userId: me.id, reqId: req.reqId ?? null,
+                error: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
+              }));
+              return;
+            }
+            await new Promise((r) => setTimeout(r, 250 * attempt));
+          }
+        }
+      };
       if (deps.lessons) {
         for (const path of audioPaths) {
-          try {
-            await deps.lessons.deleteAudio(path);
-          } catch (err) {
-            console.error("account.delete: audio purge failed", path, err);
-          }
+          await purge("audio", path, () => deps.lessons!.deleteAudio(path));
         }
       }
       if (deps.notesAssets) {
         for (const path of transcriptPaths) {
-          try {
-            await deps.notesAssets.deleteAsset(path);
-          } catch (err) {
-            console.error("account.delete: transcript purge failed", path, err);
-          }
+          await purge("transcript", path, () => deps.notesAssets!.deleteAsset(path));
         }
         for (const noteId of purgedNoteIds) {
-          try {
-            await deps.notesAssets.deletePrefix(narrationPrefix(noteId));
-          } catch (err) {
-            console.error("account.delete: narration purge failed", noteId, err);
-          }
+          await purge("narration", noteId, () => deps.notesAssets!.deletePrefix(narrationPrefix(noteId)));
         }
       }
       res.json({ ok: true });
