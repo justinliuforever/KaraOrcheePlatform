@@ -12,6 +12,25 @@ from __future__ import annotations
 
 RIGHTS_NOTE = "Engraved by KaraOrchee, Inc."
 
+# Held by the 2026-07-30 adversarial review: each is a SOURCE defect the gates cannot
+# see, because the gate and the engine both read the same defective notation.
+REVIEW_HOLDS = {
+    "bach_invention_6": "source: forward repeat at m21 never closed — second half "
+                        "plays once instead of twice, page shows a dangling open repeat",
+    "mozart_k330_mvt2": "source: Dolet drops the two mid-bar ':||:' signs (it cannot "
+                        "emit a mid-bar barline) — sectioning is wrong",
+    "mozart_k331_mvt2": "source: no Menuetto D.C. — ships Menuetto→Trio→stop, ending "
+                        "in the subdominant",
+    "chopin_waltz_op34_2": "source: 50 fingerings exported as free text (stacked digits "
+                           "Dolet cannot split) — they pile up at the barline",
+}
+
+# Term-derived tempo is a fallback; these two were source-corrected by the review.
+TEMPO_OVERRIDE = {
+    "chopin_waltz_op34_2": 150,   # "Lento" here is not ♩=52: 204 bars must run ~5:00
+    "clementi_op36_5_1": 160,     # the engraver's own Sibelius MIDI tick-0 tempo
+}
+
 # Movement-name sources: Clementi/A-Info.docx, 巴赫的下载链接及版本信息.docx (BWV+key
 # table), Hanon Info.docx (book-part mapping), Chopin 信息.docx (edition provenance).
 CLEMENTI = [
@@ -215,11 +234,11 @@ def chopin_pieces():
 
 
 def all_pieces():
-    yield from clementi_pieces()
-    yield from bach_pieces()
-    yield from hanon_pieces()
-    yield from mozart_pieces()
-    yield from chopin_pieces()
+    for gen in (clementi_pieces, bach_pieces, hanon_pieces, mozart_pieces, chopin_pieces):
+        for p in gen():
+            if not p.get("blocked") and p["slug"] in REVIEW_HOLDS:
+                p["blocked"] = REVIEW_HOLDS[p["slug"]]
+            yield p
 
 
 if __name__ == "__main__":

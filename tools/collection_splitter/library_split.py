@@ -20,13 +20,49 @@ from split_collection import (  # noqa: E402
     LABEL_RE, carry_attributes, ensure_first_measure_attributes, fix_start_repeats,
     has_dc, inject_sound_tempo, piece_tempo,
 )
-from library_plan import all_pieces  # noqa: E402
+from library_plan import all_pieces, TEMPO_OVERRIDE  # noqa: E402
+
+
+def close_final_barline(seg):
+    """A split piece ends where the collection merely turned a page: normalize the
+    last measure to a final barline unless it already carries one (real case: Hanon
+    No. 12 ends light-light and renders as if cut off mid-page)."""
+    last = seg[-1]
+    for bl in last.findall("barline"):
+        if (bl.get("location") or "right") == "right":
+            style = bl.find("bar-style")
+            if style is not None and style.text in ("light-heavy", "heavy", "heavy-light"):
+                return False
+            if style is not None:
+                style.text = "light-heavy"
+                return True
+    bl = ET.SubElement(last, "barline", {"location": "right"})
+    ET.SubElement(bl, "bar-style").text = "light-heavy"
+    return True
 
 
 def load(path: Path):
     root = ET.parse(path).getroot()
     part = root.find("part")
     return root, part, part.findall("measure")
+
+
+def prevailing_tempo(measures) -> list[float | None]:
+    """The tempo in force at the START of each measure. A collection marks the tempo
+    once and it governs every following piece until the next mark — cutting a piece
+    out of the middle must carry that mark in, or the piece silently inherits a
+    fabricated default (real case: Hanon exercises 2-20 are ♩=60 from bar 1, not 100)."""
+    out, cur = [], None
+    for m in measures:
+        out.append(cur)
+        for d in m.findall("direction"):
+            s = d.find("sound")
+            if s is not None and s.get("tempo"):
+                try:
+                    cur = float(s.get("tempo"))
+                except ValueError:
+                    pass
+    return out
 
 
 def cut(src_root, src_part, measures, snapshots, start, end):
@@ -64,19 +100,34 @@ def main():
     for p in all_pieces():
         if p["src"] not in cache:
             root, part, measures = load(lib / p["src"])
-            cache[p["src"]] = (root, part, measures, carry_attributes(measures))
-        root, part, measures, snaps = cache[p["src"]]
+            cache[p["src"]] = (root, part, measures, carry_attributes(measures),
+                               prevailing_tempo(measures))
+        root, part, measures, snaps, tempo_at = cache[p["src"]]
         end = p["end"] if p["end"] is not None else len(measures)
         new_root, new_part, seg, strays = cut(root, part, measures, snaps, p["start"], end)
 
-        # Tempo: honour an in-file metronome mark, otherwise inject from the term map.
+        # Tempo, in order of authority: a mark inside this piece > the mark still in
+        # force at its first bar > the Italian term on its heading > the unmarked default.
         has_tempo = any(s.get("tempo") for s in new_root.iter("sound"))
         tempo_src = "in-file"
+        if p["slug"] in TEMPO_OVERRIDE:
+            for d in list(seg[0].findall("direction")):
+                if d.find("sound") is not None and d.find("sound").get("tempo"):
+                    seg[0].remove(d)
+            inject_sound_tempo(seg[0], TEMPO_OVERRIDE[p["slug"]])
+            tempo_src = f"override:{TEMPO_OVERRIDE[p['slug']]}"
+            has_tempo = True
         if not has_tempo:
-            term, bpm, src = piece_tempo(seg)
-            inject_sound_tempo(seg[0], bpm)
-            tempo_src = f"{src}:{term or 'unmarked'}"
+            carried = tempo_at[p["start"]]
+            if carried:
+                inject_sound_tempo(seg[0], int(round(carried)))
+                tempo_src = f"carried:{int(round(carried))}"
+            else:
+                term, bpm, src = piece_tempo(seg)
+                inject_sound_tempo(seg[0], bpm)
+                tempo_src = f"{src}:{term or 'unmarked'}"
         fixed = fix_start_repeats(seg)
+        closed = close_final_barline(seg)
 
         dest_dir = out / "held" if p["blocked"] else out
         dest = dest_dir / f"{p['slug']}.musicxml"
@@ -89,12 +140,13 @@ def main():
                                     if n.find("pitch") is not None),
                      "fingerings": len(new_part.findall(".//fingering")),
                      "tempo_source": tempo_src, "start_repeats_injected": fixed,
+                     "final_barline_closed": closed,
                      "strays_removed": strays, "dc_in_segment": has_dc(seg)})
 
     # Conservation per source file: every measure must land in exactly one piece
     # (except deliberately dropped tails, which are reported).
     cons = {}
-    for srcname, (root, part, measures, _) in cache.items():
+    for srcname, (root, part, measures, _, _tempo) in cache.items():
         used = sum(r["measures"] for r in rows if r["src"] == srcname)
         cons[srcname] = {"used": used, "total": len(measures),
                          "dropped": len(measures) - used}

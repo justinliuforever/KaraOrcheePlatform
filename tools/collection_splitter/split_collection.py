@@ -45,6 +45,17 @@ TERM_BPM = {
     "allegro vivace": (132, "default"),
     "poco allegro": (112, "default"),
     "poco vivace": (126, "default"),
+    # Sibelius playback dictionary defaults for the terms the corpus actually uses.
+    "presto": (168, "default"),
+    "prestissimo": (200, "default"),
+    "largo": (50, "default"),
+    "larghetto": (63, "default"),
+    "lento": (52, "default"),
+    "grave": (40, "default"),
+    "spiritoso": (120, "default"),
+    "con": (120, "default"),        # "Con spirito", "Con moto"
+    "un": (66, "default"),          # "Un poco adagio"
+    "air": (100, "default"),
 }
 
 ATTR_ORDER = ["divisions", "key", "time", "staves", "clef"]
