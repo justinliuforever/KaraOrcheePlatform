@@ -139,11 +139,15 @@ def clementi_pieces():
                 "start": start,
                 "end": movements[k][0] if k < len(movements) else None,
                 "slug": f"clementi_op36_{no}_{k}",
-                "title": f"Sonatina in {key}, Op. 36 No. {no}",
+                # Number BEFORE the key: the Library list sorts on title, so
+                # "Sonatina in <key>…" ordered the six sonatinas by key name
+                # (1,3,6,4,2,5). Number-first also matches the shipped house form
+                # ("Piano Sonata No. 10, K. 330").
+                "title": f"Sonatina No. {no} in {key}, Op. 36",
                 "subtitle": f"{roman}. {tempo}",
                 "composer": "Muzio Clementi",
                 "book": "clementi_op36", "book_index": idx,
-                "work_title": f"Sonatina in {key}, Op. 36 No. {no}",
+                "work_title": f"Sonatina No. {no} in {key}, Op. 36",
                 "work_catalogue": f"Op. 36 No. {no}", "work_type": "sonata",
                 "work_movements": len(movements), "work_index": k,
                 "blocked": "D.C. al Fine — Phase-D" if blocked == k else None,

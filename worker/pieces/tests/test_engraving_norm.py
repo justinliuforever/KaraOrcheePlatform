@@ -196,3 +196,96 @@ def test_tempo_metronome_gap_padded(tmp_path):
     assert "dolce cantabile.<" in text               # words without metronome untouched
     out2 = normalize_engraving(out, tmp_path)        # idempotent
     assert out2.read_text().count("ADANTINO.\u00a0\u00a0\u200d") == 1
+
+
+PEDAL_TOP_STAFF = """<direction placement="above">
+  <direction-type><pedal type="start" line="yes" default-y="-212"/></direction-type>
+  <staff>1</staff>
+</direction>"""
+
+PEDAL_NO_STAFF = """<direction>
+  <direction-type><pedal type="stop" line="yes"/></direction-type>
+  <sound/>
+</direction>"""
+
+
+def _pedal_xml(tmp_path, directions, staves=2):
+    p = tmp_path / "pedal.musicxml"
+    p.write_text(XML_TEMPLATE.format(staves=staves, m1_directions=directions,
+                                     m1_notes=RH_NOTE, m2_directions="",
+                                     m2_notes=LH_STACK_NOTE))
+    return p
+
+
+def _pedal_dirs(path):
+    root = ET.parse(path).getroot()
+    return [d for d in root.iter("direction")
+            if d.find("direction-type/pedal") is not None]
+
+
+def test_pedal_moves_to_bottom_staff_and_below(tmp_path):
+    out = normalize_engraving(_pedal_xml(tmp_path, PEDAL_TOP_STAFF), tmp_path)
+    d = _pedal_dirs(out)[0]
+    assert d.get("placement") == "below"
+    assert d.findtext("staff") == "2"
+
+
+def test_pedal_without_staff_gets_one_before_sound(tmp_path):
+    out = normalize_engraving(_pedal_xml(tmp_path, PEDAL_NO_STAFF), tmp_path)
+    d = _pedal_dirs(out)[0]
+    assert d.findtext("staff") == "2"
+    tags = [c.tag for c in d]
+    assert tags.index("staff") < tags.index("sound")
+
+
+def test_pedal_untouched_on_single_staff_score(tmp_path):
+    out = normalize_engraving(_pedal_xml(tmp_path, PEDAL_NO_STAFF, staves=1), tmp_path)
+    d = _pedal_dirs(out)[0]
+    assert d.get("placement") == "below"
+    assert d.find("staff") is None
+
+
+DYN_BELOW_S1 = """<direction placement="below">
+  <direction-type><dynamics><mf/></dynamics></direction-type>
+  <staff>1</staff>
+</direction>"""
+
+S2_ONLY_NOTE = """<note>
+  <pitch><step>C</step><octave>3</octave></pitch><duration>4</duration>
+  <staff>2</staff>
+</note>"""
+
+
+def test_dynamic_below_an_empty_staff_moves_above(tmp_path):
+    p = tmp_path / "orphan.musicxml"
+    p.write_text(XML_TEMPLATE.format(staves=2, m1_directions=DYN_BELOW_S1,
+                                     m1_notes=S2_ONLY_NOTE, m2_directions="",
+                                     m2_notes=S2_ONLY_NOTE))
+    root = ET.parse(normalize_engraving(p, tmp_path)).getroot()
+    d = next(d for d in root.iter("direction")
+             if d.find("direction-type/dynamics") is not None)
+    assert d.get("placement") == "above"
+
+
+def test_dynamic_stays_below_when_its_staff_sounds(tmp_path):
+    p = tmp_path / "sounding.musicxml"
+    p.write_text(XML_TEMPLATE.format(staves=2, m1_directions=DYN_BELOW_S1,
+                                     m1_notes=RH_NOTE, m2_directions="",
+                                     m2_notes=S2_ONLY_NOTE))
+    out = normalize_engraving(p, tmp_path)
+    root = ET.parse(out).getroot()
+    d = next(d for d in root.iter("direction")
+             if d.find("direction-type/dynamics") is not None)
+    assert d.get("placement") == "below"
+
+
+def test_bottom_staff_dynamic_never_moves(tmp_path):
+    below_s2 = DYN_BELOW_S1.replace("<staff>1</staff>", "<staff>2</staff>")
+    p = tmp_path / "bottom.musicxml"
+    p.write_text(XML_TEMPLATE.format(staves=2, m1_directions=below_s2,
+                                     m1_notes=RH_NOTE, m2_directions="",
+                                     m2_notes=RH_NOTE))
+    root = ET.parse(normalize_engraving(p, tmp_path)).getroot()
+    d = next(d for d in root.iter("direction")
+             if d.find("direction-type/dynamics") is not None)
+    assert d.get("placement") == "below"

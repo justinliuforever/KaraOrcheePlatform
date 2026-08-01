@@ -21,6 +21,13 @@ La Pastorale 2026-07-13):
    pick a note in the WRONG VOICE — a chord's whole fingering stack lands on a lone
    note sounding against it. Detected by shape (lone note, stacked multi-fingering,
    a uniquely matching unfingered chord sounding at that moment) and re-anchored.
+
+4. Piano pedal marks belong under the whole grand staff, but a pedal the editor
+   attached to the TOP staff and then dragged down exports as staff 1 + a large
+   negative default-y. verovio honours the staff and ignores the drag, so those
+   marks render between the staves while their neighbours sit below the system
+   (Chopin Op. 34 No. 1: 6 of 443 on staff 1). Fix: pedals go to the bottom staff,
+   placement below.
 """
 from __future__ import annotations
 import re
@@ -165,6 +172,59 @@ def _fix_fingering_placement(part) -> bool:
     return changed
 
 
+def _fix_pedal_placement(part) -> bool:
+    """Every pedal direction under the bottom staff, placement below — the piano
+    convention, and the only reading verovio can render consistently."""
+    n_staves = _staff_counts(part)
+    changed = False
+    for direction in part.iter("direction"):
+        if direction.find("direction-type/pedal") is None:
+            continue
+        if direction.get("placement") != "below":
+            direction.set("placement", "below")
+            changed = True
+        if n_staves < 2:
+            continue
+        staff = direction.find("staff")
+        if staff is None:
+            staff = ET.Element("staff")
+            # MusicXML order: direction-type+, offset?, voice?, staff?, sound?
+            sound = direction.find("sound")
+            direction.insert(list(direction).index(sound) if sound is not None
+                             else len(direction), staff)
+        if (staff.text or "").strip() != str(n_staves):
+            staff.text = str(n_staves)
+            changed = True
+    return changed
+
+
+def _fix_orphan_dynamic_placement(part) -> bool:
+    """A dynamic hung BELOW a staff that has no notes in that measure lands in the
+    inter-staff gap, where it displaces the neighbouring staff's fingering row away
+    from its noteheads. Put it above its (empty) staff instead — the notes it marks
+    are elsewhere anyway. Observed on Hanon No. 1, whose opening bars write both
+    hands on the bottom staff: the mf pushed the whole right-hand fingering row up.
+    """
+    n_staves = _staff_counts(part)
+    if n_staves < 2:
+        return False
+    changed = False
+    for measure in part.findall("measure"):
+        voiced = {(n.findtext("staff") or "1")
+                  for n in measure.findall("note") if n.find("rest") is None}
+        for direction in measure.findall("direction"):
+            if direction.find("direction-type/dynamics") is None:
+                continue
+            if direction.get("placement") != "below":
+                continue
+            staff = direction.findtext("staff") or "1"
+            if staff == str(n_staves) or staff in voiced:
+                continue  # bottom staff below is correct; a sounding staff keeps its side
+            direction.set("placement", "above")
+            changed = True
+    return changed
+
+
 def _drop_piece_number_words(part) -> str | None:
     """Remove the edition piece number ("3.") from measure 1 and return it so it
     can be preserved as metadata — the staff builder re-places it at the edition
@@ -233,6 +293,8 @@ def normalize_engraving(xml_path: Path, out_dir: Path) -> Path:
     for part in root.iter("part"):
         changed |= _reanchor_chord_fingerings(part)
         changed |= _fix_fingering_placement(part)
+        changed |= _fix_pedal_placement(part)
+        changed |= _fix_orphan_dynamic_placement(part)
         number = _drop_piece_number_words(part)
         if number:
             changed = True
