@@ -10,6 +10,7 @@ from __future__ import annotations
 import atexit
 import os
 import sys
+import time
 from pathlib import Path
 
 import msal
@@ -49,10 +50,24 @@ def token(interactive_ok: bool = True) -> str:
     if "user_code" not in flow:
         raise SystemExit(f"device flow unavailable: {flow}")
     print(flow["message"], flush=True)
-    result = app.acquire_token_by_device_flow(flow)
-    if "access_token" not in result:
-        raise SystemExit(f"sign-in failed: {result.get('error_description', result)}"[:400])
-    return result["access_token"]
+    # Poll the flow ourselves: MSAL only retries on the literal error code
+    # "authorization_pending", and this CIAM tenant answers a not-yet-approved
+    # device with a different code carrying AADSTS70016 — which made MSAL's own
+    # loop give up on the first poll, before the operator could type the code.
+    deadline = time.time() + int(flow.get("expires_in", 900))
+    interval = max(int(flow.get("interval", 5)), 5)
+    while time.time() < deadline:
+        result = app.acquire_token_by_device_flow(flow, exit_condition=lambda f: True)
+        if "access_token" in result:
+            return result["access_token"]
+        blob = f"{result.get('error', '')} {result.get('error_description', '')}"
+        if not ("AADSTS70016" in blob or "authorization_pending" in blob
+                or "slow_down" in blob):
+            raise SystemExit(f"sign-in failed: {blob}"[:400])
+        if "slow_down" in blob:
+            interval += 5
+        time.sleep(interval)
+    raise SystemExit("device code expired before it was approved — run this again")
 
 
 if __name__ == "__main__":
