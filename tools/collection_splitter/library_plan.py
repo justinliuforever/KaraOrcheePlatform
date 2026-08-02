@@ -17,8 +17,8 @@ RIGHTS_NOTE = "Engraved by KaraOrchee, Inc."
 REVIEW_HOLDS = {
     # bach_invention_6 released 2026-08-01: the engraver closed the repeat at
     # collection bar 255, engine playback 82 -> 124 measures, our expansion agrees.
-    "mozart_k330_mvt2": "source: Dolet drops the two mid-bar ':||:' signs (it cannot "
-                        "emit a mid-bar barline) — sectioning is wrong",
+    # mozart_k330_mvt2 released 2026-08-01: the engraver split displayed bars 8 and
+    # 28 into half-measures, so the four repeat sections now export as paired marks.
     "mozart_k331_mvt2": "source: no Menuetto D.C. — ships Menuetto→Trio→stop, ending "
                         "in the subdominant",
     "chopin_waltz_op34_2": "source: 50 fingerings exported as free text (stacked digits "
@@ -72,7 +72,11 @@ MOZART = {
     "K330": {
         "title": "Piano Sonata No. 10, K. 330",
         "movements": [(0, "I", "Allegro moderato"), (150, "II", "Andante cantabile")],
-        "end": 218,  # m218-303 are 86 empty bars — third movement not engraved yet
+        # 2026-08-01 re-export split displayed bars 8 and 28 of movement II into
+        # half-measures so Dolet could emit their mid-bar repeats: 304 -> 306 bars,
+        # and the movement now ends at index 220. The 86-bar rest-only tail (the
+        # unengraved third movement) is still there and still dropped.
+        "end": 220,
         "note": "third movement absent from the source file (86 rest-only bars stripped)",
     },
     "K331": {
