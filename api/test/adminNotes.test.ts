@@ -981,3 +981,66 @@ describe("user notes-activity", () => {
     expect(res.status).toBe(404);
   });
 });
+
+// ── v0.9: the label an admin action can outlive ─────────────────────────────────
+
+describe("admin actions honour the label's lifetime", () => {
+  it("revoking a code retires its label and never returns it to the console", async () => {
+    const t = await mkUser({ displayName: "Label Teacher", isTeacher: true });
+    const [row] = await db.orm
+      .insert(invites)
+      .values({ code: "ADLBL1", teacherId: t.id, intendedLabel: "Emma", expiresAt: daysAgo(-7) })
+      .returning();
+
+    const res = await request(app())
+      .post(`/admin/notes/invites/${row!.id}/revoke`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.invite.intendedLabel).toBeNull();
+
+    const [after] = await db.orm.select().from(invites).where(eq(invites.id, row!.id));
+    expect(after!.intendedLabel).toBeNull();
+    expect(after!.revokedAt).not.toBeNull();
+  });
+
+  it("re-linking a removed pair dates the relationship from today, not from its first spell", async () => {
+    const t = await mkUser({ displayName: "Relink Teacher", isTeacher: true });
+    const s = await mkUser({ displayName: "Relink Student", isStudent: true });
+    await db.orm.insert(teacherStudentLinks).values({
+      teacherId: t.id,
+      studentId: s.id,
+      status: "removed",
+      createdAt: daysAgo(400),
+      removedAt: daysAgo(30),
+    });
+
+    const res = await request(app())
+      .post("/admin/notes/links")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ teacherId: t.id, studentId: s.id });
+    expect(res.status).toBe(200);
+    expect(res.body.link.rejoinedAt).not.toBeNull();
+
+    const [row] = await db.orm
+      .select()
+      .from(teacherStudentLinks)
+      .where(and(eq(teacherStudentLinks.teacherId, t.id), eq(teacherStudentLinks.studentId, s.id)));
+    expect(row!.rejoinedAt).not.toBeNull();
+    expect(row!.createdAt.getTime()).toBeLessThan(daysAgo(300).getTime());
+  });
+
+  it("re-attesting an ALREADY active pair does not restate when it began", async () => {
+    const t = await mkUser({ displayName: "Reattest Teacher", isTeacher: true });
+    const s = await mkUser({ displayName: "Reattest Student", isStudent: true });
+    await db.orm.insert(teacherStudentLinks).values({
+      teacherId: t.id, studentId: s.id, status: "active", createdAt: daysAgo(100),
+    });
+
+    const res = await request(app())
+      .post("/admin/notes/links")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ teacherId: t.id, studentId: s.id });
+    expect(res.status).toBe(200);
+    expect(res.body.link.rejoinedAt).toBeNull();
+  });
+});

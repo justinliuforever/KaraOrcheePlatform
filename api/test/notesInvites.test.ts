@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import request from "supertest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   generateKeyPair,
   exportJWK,
@@ -712,5 +712,272 @@ describe("every rejection carries a message", () => {
     expect(read("src/routes/lessons.ts")).toContain(roleRequired);
     expect(read("src/routes/links.ts")).toContain(teacherOnly);
     expect(read("src/routes/notes.ts")).toContain(teacherOnly);
+  });
+});
+
+// ── v0.9: a code is a named seat ────────────────────────────────────────────────
+
+function seats(u: TestUser) {
+  return request(makeApp()).get("/v1/invites?include=seats").set("Authorization", auth(u));
+}
+
+function dismiss(u: TestUser, id: string) {
+  return request(makeApp()).post(`/v1/invites/${id}/dismiss`).set("Authorization", auth(u)).send({});
+}
+
+describe("labelled invite seats", () => {
+  it("an unlabelled mint is still idempotent — the old one-live-code rule, untouched", async () => {
+    const t = await makeUser("pi-lbl-plain", "Plain Teacher", "teacher");
+    const a = await mint(t);
+    const b = await mint(t);
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(200);
+    expect(b.body.code).toBe(a.body.code);
+    expect(a.body.intendedLabel).toBeNull();
+  });
+
+  it("two different labels hold two live codes at once", async () => {
+    const t = await makeUser("pi-lbl-two", "Two Teacher", "teacher");
+    const emma = await mint(t, { intendedLabel: "Emma" });
+    const jack = await mint(t, { intendedLabel: "Jack" });
+    expect(emma.status).toBe(201);
+    expect(jack.status).toBe(201);
+    expect(jack.body.code).not.toBe(emma.body.code);
+    // Labelled codes live on the seats endpoint; the legacy list is unlabelled-only.
+    const open = await seats(t);
+    expect(open.body.map((r: { intendedLabel: string }) => r.intendedLabel).sort()).toEqual(["Emma", "Jack"]);
+  });
+
+  it("minting the same label twice returns the same code and never relabels", async () => {
+    const t = await makeUser("pi-lbl-same", "Same Teacher", "teacher");
+    const first = await mint(t, { intendedLabel: "Emma" });
+    const again = await mint(t, { intendedLabel: "Emma" });
+    expect(again.status).toBe(200);
+    expect(again.body.code).toBe(first.body.code);
+    expect(again.body.intendedLabel).toBe("Emma");
+  });
+
+  it("a labelled code and an unlabelled code are different seats", async () => {
+    const t = await makeUser("pi-lbl-slot", "Slot Teacher", "teacher");
+    const plain = await mint(t);
+    const named = await mint(t, { intendedLabel: "Emma" });
+    expect(named.body.code).not.toBe(plain.body.code);
+    const plainAgain = await mint(t, {});
+    expect(plainAgain.body.code).toBe(plain.body.code);
+  });
+
+  it("a code for your teacher cannot be named", async () => {
+    const s = await makeUser("pi-lbl-reverse", "Reverse Student", "student");
+    const res = await mint(s, { direction: "student_to_teacher", consent: true, intendedLabel: "Mr Smith" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("invalid_label");
+    expect(typeof res.body.message).toBe("string");
+  });
+
+  it("an over-long label is refused with a sentence, not a truncation", async () => {
+    const t = await makeUser("pi-lbl-long", "Long Teacher", "teacher");
+    const res = await mint(t, { intendedLabel: "x".repeat(41) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("invalid_label");
+    expect(res.body.message).toMatch(/too long/i);
+  });
+
+  it("a whitespace-only label is stored as no label, not as a blank name", async () => {
+    const t = await makeUser("pi-lbl-blank", "Blank Teacher", "teacher");
+    const res = await mint(t, { intendedLabel: "   " });
+    expect(res.status).toBe(201);
+    expect(res.body.intendedLabel).toBeNull();
+  });
+
+  it("the tenth live code is the last one — the eleventh is refused, and nothing is minted", async () => {
+    const t = await makeUser("pi-lbl-cap", "Cap Teacher", "teacher");
+    for (let i = 0; i < 10; i++) {
+      const res = await mint(t, { intendedLabel: `Student ${i}` });
+      expect(res.status).toBe(201);
+    }
+    const over = await mint(t, { intendedLabel: "Eleventh" });
+    expect(over.status).toBe(409);
+    expect(over.body.error).toBe("too_many_codes");
+    expect(over.body.message).toMatch(/10 invite codes/);
+    const open = await seats(t);
+    expect(open.body.length).toBe(10);
+  });
+
+  it("an existing seat can still be re-fetched when the cap is full", async () => {
+    const t = await makeUser("pi-lbl-cap2", "Cap2 Teacher", "teacher");
+    let firstCode = "";
+    for (let i = 0; i < 10; i++) {
+      const res = await mint(t, { intendedLabel: `Pupil ${i}` });
+      if (i === 0) firstCode = res.body.code;
+    }
+    const again = await mint(t, { intendedLabel: "Pupil 0" });
+    expect(again.status).toBe(200);
+    expect(again.body.code).toBe(firstCode);
+  });
+
+  it("redemption retires the label — a seat that became a person stops naming a child", async () => {
+    const t = await makeUser("pi-lbl-redeem-t", "Redeem Teacher", "teacher");
+    const s = await makeUser("pi-lbl-redeem-s", "Redeem Student");
+    const code = (await mint(t, { intendedLabel: "Emma" })).body.code;
+    const res = await redeem(s, { code, consent: true });
+    expect(res.status).toBe(201);
+    const [row] = await db.orm.select().from(invites).where(eq(invites.code, code));
+    expect(row!.intendedLabel).toBeNull();
+    expect(row!.usedCount).toBe(1);
+  });
+
+  it("revoking retires the label too", async () => {
+    const t = await makeUser("pi-lbl-revoke", "Revoke Teacher", "teacher");
+    const made = await mint(t, { intendedLabel: "Emma" });
+    const del = await request(makeApp())
+      .delete(`/v1/invites/${made.body.id}`)
+      .set("Authorization", auth(t));
+    expect(del.status).toBe(200);
+    const [row] = await db.orm.select().from(invites).where(eq(invites.id, made.body.id));
+    expect(row!.intendedLabel).toBeNull();
+    expect(row!.revokedAt).not.toBeNull();
+  });
+});
+
+describe("seats and dismissal", () => {
+  it("seats carry live and expired codes, and drop the redeemed one", async () => {
+    const t = await makeUser("pi-seat-mix", "Seat Teacher", "teacher");
+    const s = await makeUser("pi-seat-student", "Seat Student");
+    const liveOne = await mint(t, { intendedLabel: "Live" });
+    const [expired] = await db.orm
+      .insert(invites)
+      .values({ code: "SEATEX", teacherId: t.id, intendedLabel: "Lapsed", expiresAt: daysFromNow(-1) })
+      .returning();
+    const used = await mint(t, { intendedLabel: "Joined" });
+    await redeem(s, { code: used.body.code, consent: true });
+
+    const res = await seats(t);
+    expect(res.status).toBe(200);
+    const byCode = new Map(res.body.map((r: { code: string; state: string }) => [r.code, r.state]));
+    expect(byCode.get(liveOne.body.code)).toBe("active");
+    expect(byCode.get("SEATEX")).toBe("expired");
+    expect(byCode.has(used.body.code)).toBe(false);
+    expect(expired!.id).toBeTruthy();
+  });
+
+  it("a live code cannot be dismissed — hiding a code that still works is the one surprise", async () => {
+    const t = await makeUser("pi-seat-live", "Live Seat Teacher", "teacher");
+    const made = await mint(t, { intendedLabel: "Emma" });
+    const res = await dismiss(t, made.body.id);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("code_still_live");
+    expect(typeof res.body.message).toBe("string");
+  });
+
+  it("dismissing an expired code hides the seat and leaves history reading expired", async () => {
+    const t = await makeUser("pi-seat-dismiss", "Dismiss Teacher", "teacher");
+    const [row] = await db.orm
+      .insert(invites)
+      .values({ code: "SEATDI", teacherId: t.id, intendedLabel: "Nobody", expiresAt: daysFromNow(-1) })
+      .returning();
+    const res = await dismiss(t, row!.id);
+    expect(res.status).toBe(200);
+
+    const after = await seats(t);
+    expect(after.body.some((r: { code: string }) => r.code === "SEATDI")).toBe(false);
+
+    const history = await request(makeApp())
+      .get("/v1/invites?include=history")
+      .set("Authorization", auth(t));
+    const seen = history.body.find((r: { code: string }) => r.code === "SEATDI");
+    expect(seen.state).toBe("expired");
+    const [stored] = await db.orm.select().from(invites).where(eq(invites.code, "SEATDI"));
+    expect(stored!.revokedAt).toBeNull();
+    expect(stored!.intendedLabel).toBeNull();
+  });
+
+  it("dismiss is idempotent and refuses a code that is not yours", async () => {
+    const t = await makeUser("pi-seat-mine", "Mine Teacher", "teacher");
+    const other = await makeUser("pi-seat-other", "Other Teacher", "teacher");
+    const [row] = await db.orm
+      .insert(invites)
+      .values({ code: "SEATMI", teacherId: t.id, expiresAt: daysFromNow(-1) })
+      .returning();
+    expect((await dismiss(t, row!.id)).status).toBe(200);
+    expect((await dismiss(t, row!.id)).status).toBe(200);
+    const stranger = await dismiss(other, row!.id);
+    expect(stranger.status).toBe(404);
+    expect(typeof stranger.body.message).toBe("string");
+  });
+});
+
+describe("a refused redeem does not spend the code", () => {
+  // The route's refusals THROW from inside the transaction. This pins the reason:
+  // drizzle commits a callback that returns, so the old `return` kept the claim and
+  // burned a single-use code for a redeemer who was turned away.
+  it("a throw rolls the use-count claim back; a plain return commits it", async () => {
+    const t = await makeUser("pi-burn-teacher", "Burn Teacher", "teacher");
+    const [thrown] = await db.orm
+      .insert(invites)
+      .values({ code: "BURNAA", teacherId: t.id, expiresAt: daysFromNow(7) })
+      .returning();
+    const [returned] = await db.orm
+      .insert(invites)
+      .values({ code: "BURNBB", teacherId: t.id, expiresAt: daysFromNow(7) })
+      .returning();
+
+    await expect(
+      db.orm.transaction(async (tx) => {
+        await tx
+          .update(invites)
+          .set({ usedCount: sql`${invites.usedCount} + 1` })
+          .where(eq(invites.id, thrown!.id));
+        throw new Error("refused");
+      }),
+    ).rejects.toThrow("refused");
+
+    await db.orm.transaction(async (tx) => {
+      await tx
+        .update(invites)
+        .set({ usedCount: sql`${invites.usedCount} + 1` })
+        .where(eq(invites.id, returned!.id));
+      return { refused: true };
+    });
+
+    const [a] = await db.orm.select().from(invites).where(eq(invites.id, thrown!.id));
+    const [b] = await db.orm.select().from(invites).where(eq(invites.id, returned!.id));
+    expect(a!.usedCount).toBe(0);
+    expect(b!.usedCount).toBe(1);
+  });
+
+  it("every in-transaction refusal leaves the transaction by throwing", async () => {
+    const src = readFileSync(join(__dirname, "..", "src", "routes", "links.ts"), "utf8");
+    const start = src.indexOf("outcomeLink = await db.transaction");
+    const body = src.slice(start, src.indexOf("} catch (err) {", start));
+    expect(start).toBeGreaterThan(0);
+    expect(body.match(/throw new RedeemRefusal/g)?.length).toBe(4);
+    expect(body).not.toMatch(/return \{ kind:/);
+  });
+});
+
+describe("a revoked code is never a seat", () => {
+  it("revoking removes the seat outright — a screen must not offer a code that cannot be redeemed", async () => {
+    const t = await makeUser("pi-seat-revoked", "Revoked Seat Teacher", "teacher");
+    const made = await mint(t, { intendedLabel: "Emma" });
+    const before = await seats(t);
+    expect(before.body.some((r: { code: string }) => r.code === made.body.code)).toBe(true);
+
+    await request(makeApp()).delete(`/v1/invites/${made.body.id}`).set("Authorization", auth(t));
+
+    const after = await seats(t);
+    expect(after.body.some((r: { code: string }) => r.code === made.body.code)).toBe(false);
+  });
+
+  it("a labelled seat stays out of the legacy live-codes list a shipped client reads", async () => {
+    const t = await makeUser("pi-legacy-list", "Legacy Teacher", "teacher");
+    const plain = await mint(t);
+    const named = await mint(t, { intendedLabel: "Emma" });
+    const legacy = await liveCodes(t);
+    const codes = legacy.body.map((r: { code: string }) => r.code);
+    expect(codes).toEqual([plain.body.code]);
+    expect(codes).not.toContain(named.body.code);
+    // And the legacy row is the legacy shape — the new columns stay off that wire.
+    expect(Object.keys(legacy.body[0])).not.toContain("intendedLabel");
+    expect(Object.keys(legacy.body[0])).not.toContain("dismissedAt");
   });
 });

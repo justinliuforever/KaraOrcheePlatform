@@ -190,8 +190,15 @@ export function usersRouter(deps: Deps): Router {
             sql`(${teacherStudentLinks.teacherId} = ${me.id} OR ${teacherStudentLinks.studentId} = ${me.id})`,
             eq(teacherStudentLinks.status, "active"),
           ));
-        await tx.update(invites).set({ revokedAt: sql`now()` })
+        // Labels name other people — often children who never signed up. They cannot
+        // outlive the account that wrote them.
+        await tx.update(invites).set({ revokedAt: sql`now()`, intendedLabel: null })
           .where(and(eq(invites.teacherId, me.id), isNull(invites.revokedAt)));
+        await tx.update(invites).set({ intendedLabel: null })
+          .where(and(
+            eq(invites.teacherId, me.id),
+            sql`${invites.intendedLabel} IS NOT NULL`,
+          ));
 
         // As STUDENT: the received-note copies are the student's data — delete them.
         const received = await tx.select({ id: notes.id }).from(notes).where(eq(notes.studentId, me.id));

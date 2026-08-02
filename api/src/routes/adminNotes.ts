@@ -145,7 +145,16 @@ export function adminNotesRouter(deps: Deps): Router {
       if (existing) {
         [link] = await db
           .update(teacherStudentLinks)
-          .set({ status: "active", createdVia: "admin", consentAt: sql`now()`, removedAt: null, updatedAt: sql`now()` })
+          .set({
+            status: "active",
+            createdVia: "admin",
+            consentAt: sql`now()`,
+            removedAt: null,
+            // Only when a pair is genuinely re-forming: re-attesting an ACTIVE link
+            // must not restate today as the day the relationship began.
+            ...(existing.status === "removed" ? { rejoinedAt: sql`now()` } : {}),
+            updatedAt: sql`now()`,
+          })
           .where(eq(teacherStudentLinks.id, existing.id))
           .returning();
       } else {
@@ -228,9 +237,11 @@ export function adminNotesRouter(deps: Deps): Router {
         res.status(404).json({ error: "not_found" });
         return;
       }
+      // The label is usually a child's first name. It dies with the code here exactly
+      // as it does on the teacher's own revoke, and never reaches the admin console.
       const [row] = await db
         .update(invites)
-        .set({ revokedAt: sql`coalesce(${invites.revokedAt}, now())` })
+        .set({ revokedAt: sql`coalesce(${invites.revokedAt}, now())`, intendedLabel: null })
         .where(eq(invites.id, id))
         .returning();
       await audit(deps, req, "invite.admin_revoke", { type: "invite", id });

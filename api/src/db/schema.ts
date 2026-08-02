@@ -214,6 +214,9 @@ export const teacherStudentLinks = pgTable(
     // "Lessons may be recorded" acceptance at redeem (parent for minors).
     consentAt: timestamp("consent_at", { withTimezone: true }),
     removedAt: timestamp("removed_at", { withTimezone: true }),
+    // Reactivation overwrites this row, so created_at stops meaning "linked" the
+    // moment a pair re-forms; the join date renders from coalesce(rejoined_at, created_at).
+    rejoinedAt: timestamp("rejoined_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -239,10 +242,20 @@ export const invites = pgTable("invites", {
   // column asserted a targeted delivery that never happened. Pre-existing rows keep
   // their value for the audit trail.
   sentToEmail: text("sent_to_email"),
+  // Who the issuer says this code is for, private to them. Often a minor's first
+  // name, so it is nulled the moment the code dies or its redeemer erases.
+  intendedLabel: text("intended_label"),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  // Issuer stopped caring about a code that expired unused. NEVER a revoke — code
+  // history has to keep reading "expired", not "revoked".
+  dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   check("ck_invite_direction", sql`${t.direction} IN ('teacher_to_student', 'student_to_teacher')`),
+  // Deliberately NOT unique per (issuer, direction, label): liveness includes
+  // expires_at > now(), which no index predicate can express, and a spent code must
+  // never block reusing its label. The mint transaction's issuer row-lock enforces it.
+  index("ix_invites_issuer_direction").on(t.teacherId, t.direction),
 ]);
 
 // One recorded lesson. The row is created at SEND time (recording is fully local
@@ -279,6 +292,7 @@ export const lessonSessions = pgTable("lesson_sessions", {
 }, (t) => [
   unique("uq_lesson_client_id").on(t.teacherId, t.clientLessonId),
   check("ck_lesson_owner_role", sql`${t.ownerRole} IN ('teacher', 'student')`),
+  index("ix_lesson_sessions_teacher_student_started").on(t.teacherId, t.studentId, t.startedAt),
 ]);
 
 // One ASR+LLM run per submitted lesson. Worker owns status/stage; SB message is
@@ -348,6 +362,8 @@ export const notes = pgTable("notes", {
   // can run two workers on the same delivery (draining ACA replica steals SB
   // messages) — the race loser hits this instead of double-inserting.
   uniqueIndex("uq_note_self_per_job").on(t.noteJobId).where(sql`${t.origin} = 'self'`),
+  index("ix_notes_teacher_student_sent").on(t.teacherId, t.studentId, t.sentAt),
+  index("ix_notes_student_sent").on(t.studentId, t.sentAt),
 ]);
 
 // Annotations are rows (not embedded JSON): per-item student done_at and future
@@ -367,7 +383,9 @@ export const noteAnnotations = pgTable("note_annotations", {
   practiceReceipt: jsonb("practice_receipt"), // FOLLOW-session corroboration, additive
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  index("ix_note_annotations_note").on(t.noteId),
+]);
 
 // Pre-rendered premium narration: one row per (note, voice, clip), where clip_id is
 // "overview" or the annotation id and the audio sits at

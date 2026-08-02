@@ -13,6 +13,18 @@ export interface NotesAccess {
   lockedAfter?: string;
 }
 
+async function monetizationLiveAt(deps: Deps): Promise<Date | null> {
+  const [live] = await deps
+    .db!.orm.select()
+    .from(platformConfig)
+    .where(eq(platformConfig.key, "monetization_live_at"))
+    .limit(1);
+  const raw = live?.value;
+  const at = typeof raw === "string" ? new Date(raw) : null;
+  if (!at || Number.isNaN(at.getTime()) || at > new Date()) return null;
+  return at;
+}
+
 // Trial expiry = max(trial_started_at, monetization_live_at) + 30d, so beta
 // testers get a fresh clock the day the paywall goes live. monetization_live_at
 // unset = paywall not launched = everything free.
@@ -20,21 +32,55 @@ export async function notesAccess(deps: Deps, user: User): Promise<NotesAccess> 
   if (user.isTeacher) return { status: "teacher_free" };
 
   const db = deps.db!.orm;
-  const [live] = await db
-    .select()
-    .from(platformConfig)
-    .where(eq(platformConfig.key, "monetization_live_at"))
-    .limit(1);
-  const liveAtRaw = live?.value;
-  const liveAt = typeof liveAtRaw === "string" ? new Date(liveAtRaw) : null;
-  if (!liveAt || Number.isNaN(liveAt.getTime()) || liveAt > new Date()) {
-    return { status: "beta_free" };
-  }
+  const liveAt = await monetizationLiveAt(deps);
+  if (!liveAt) return { status: "beta_free" };
 
   const rows = await db
     .select()
     .from(entitlements)
     .where(and(eq(entitlements.userId, user.id), inArray(entitlements.status, ["active", "grace"])));
+  return resolveAccess(user, liveAt, rows);
+}
+
+// Same rule, one round trip for a whole roster. The per-student call issued a
+// platform_config read AND an entitlements read each, which is what made a
+// 40-student roster ~90 queries.
+export async function notesAccessMany(deps: Deps, people: User[]): Promise<Map<string, NotesAccess>> {
+  const out = new Map<string, NotesAccess>();
+  const students: User[] = [];
+  for (const u of people) {
+    if (u.isTeacher) out.set(u.id, { status: "teacher_free" });
+    else students.push(u);
+  }
+  if (!students.length) return out;
+
+  const liveAt = await monetizationLiveAt(deps);
+  if (!liveAt) {
+    for (const u of students) out.set(u.id, { status: "beta_free" });
+    return out;
+  }
+  const rows = await deps
+    .db!.orm.select()
+    .from(entitlements)
+    .where(and(
+      inArray(entitlements.userId, students.map((u) => u.id)),
+      inArray(entitlements.status, ["active", "grace"]),
+    ));
+  const byUser = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const list = byUser.get(r.userId) ?? [];
+    list.push(r);
+    byUser.set(r.userId, list);
+  }
+  for (const u of students) out.set(u.id, resolveAccess(u, liveAt, byUser.get(u.id) ?? []));
+  return out;
+}
+
+function resolveAccess(
+  user: User,
+  liveAt: Date,
+  rows: (typeof entitlements.$inferSelect)[],
+): NotesAccess {
   const now = new Date();
   const current = rows.filter((r) => !r.expiresAt || r.expiresAt > now);
   if (current.some((r) => r.status === "active")) return { status: "active" };

@@ -19,6 +19,9 @@ import {
   noteJobs,
   notes,
   noteAnnotations,
+  pieces,
+  platformConfig,
+  entitlements,
 } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { LessonStore } from "../src/notes/lessons_store";
@@ -716,5 +719,406 @@ describe("admin trust watch", () => {
     expect(row).toBeTruthy();
     expect(row.lessons28d).toBe(8);
     expect(row.highVolume).toBe(true);
+  });
+});
+
+// ── v0.9: the roster carries the caption's subject ──────────────────────────────
+
+describe("roster payload v2", () => {
+  // linkedDaysAgo matters: a pair that started today outranks every note inside it,
+  // by design — a new student belongs at the top of the roster on the day they join.
+  async function linked(prefix: string, linkedDaysAgo = 0): Promise<{ t: TestUser; s: TestUser }> {
+    const t = await makeUser({ oid: `nr-${prefix}-t`, name: `${prefix} Teacher`, role: "teacher" });
+    const s = await makeUser({ oid: `nr-${prefix}-s`, name: `${prefix} Student`, role: "student" });
+    await db.orm.insert(teacherStudentLinks).values({
+      teacherId: t.id,
+      studentId: s.id,
+      consentAt: new Date(),
+      createdAt: daysAgo(linkedDaysAgo),
+    });
+    return { t, s };
+  }
+
+  // seedNote leaves its lesson row undated, and lastLessonAt falls back to the row's
+  // created_at — i.e. now. Any test about ordering has to put the lesson in the past
+  // too, or "the lesson happened" drowns out the signal under test.
+  async function backdateLessons(teacherId: string, at: Date) {
+    await db.orm
+      .update(lessonSessions)
+      .set({ startedAt: at, createdAt: at })
+      .where(eq(lessonSessions.teacherId, teacherId));
+  }
+
+  function roster(u: TestUser) {
+    return request(makeApp()).get("/v1/me/students").set("Authorization", auth(u));
+  }
+
+  async function rowFor(t: TestUser, studentId: string) {
+    const res = await roster(t);
+    expect(res.status).toBe(200);
+    return res.body.items.find((i: { studentId: string }) => i.studentId === studentId);
+  }
+
+  it("a standing note wins over a newer retracted one", async () => {
+    const { t, s } = await linked("v2-standing");
+    await seedNote({
+      teacherId: t.id, studentId: s.id, status: "sent",
+      pieceLabel: "Fur Elise", sentAt: daysAgo(3),
+    });
+    const later = await seedNote({
+      teacherId: t.id, studentId: s.id, status: "retracted",
+      pieceLabel: "Minuet in G", sentAt: daysAgo(1),
+    });
+    await db.orm.update(notes).set({ retractedAt: daysAgo(1) }).where(eq(notes.id, later.note.id));
+
+    const row = await rowFor(t, s.id);
+    expect(row.latestNote.pieceTitle).toBe("Fur Elise");
+    expect(row.latestNote.status).toBe("sent");
+  });
+
+  it("with nothing standing, the retracted note is the subject", async () => {
+    const { t, s } = await linked("v2-retracted");
+    const only = await seedNote({
+      teacherId: t.id, studentId: s.id, status: "retracted",
+      pieceLabel: "Arabesque", sentAt: daysAgo(2),
+    });
+    await db.orm.update(notes).set({ retractedAt: daysAgo(1) }).where(eq(notes.id, only.note.id));
+
+    const row = await rowFor(t, s.id);
+    expect(row.latestNote.status).toBe("retracted");
+    expect(row.latestNote.retractedAt).not.toBeNull();
+  });
+
+  it("a catalog note names its piece even though piece_label is null", async () => {
+    const { t, s } = await linked("v2-catalog");
+    await db.orm.insert(pieces).values({
+      id: "nr-v2-bwv846",
+      title: "Prelude in C",
+      composer: "J. S. Bach",
+    });
+    const seeded = await seedNote({
+      teacherId: t.id, studentId: s.id, status: "sent",
+      pieceLabel: null, sentAt: daysAgo(1),
+    });
+    await db.orm.update(notes).set({ pieceId: "nr-v2-bwv846" }).where(eq(notes.id, seeded.note.id));
+
+    const row = await rowFor(t, s.id);
+    expect(row.latestNote.pieceTitle).toBe("Prelude in C");
+  });
+
+  it("the step count describes the latest note, not a lifetime", async () => {
+    const { t, s } = await linked("v2-steps");
+    const old = await seedNote({
+      teacherId: t.id, studentId: s.id, status: "sent",
+      pieceLabel: "Old Piece", sentAt: daysAgo(9),
+    });
+    const oldSteps = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, old.note.id));
+    for (const a of oldSteps) {
+      await db.orm.update(noteAnnotations).set({ doneAt: daysAgo(8) }).where(eq(noteAnnotations.id, a.id));
+    }
+    const fresh = await seedNote({
+      teacherId: t.id, studentId: s.id, status: "sent",
+      pieceLabel: "New Piece", sentAt: daysAgo(1),
+    });
+    const freshSteps = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, fresh.note.id));
+    await db.orm.update(noteAnnotations).set({ doneAt: daysAgo(0) }).where(eq(noteAnnotations.id, freshSteps[0]!.id));
+
+    const row = await rowFor(t, s.id);
+    expect(row.latestNote.pieceTitle).toBe("New Piece");
+    expect(row.latestNote.stepCount).toBe(2);
+    expect(row.latestNote.doneCount).toBe(1);
+    // The lifetime pair still ships one more release, and still counts everything.
+    expect(row.practicedTotal).toBe(4);
+    expect(row.practicedDone).toBe(3);
+  });
+
+  it("ticking a step on an OLDER note still moves the student up the roster", async () => {
+    const { t, s } = await linked("v2-tick", 60);
+    const newestSend = daysAgo(10);
+    const tickedAt = daysAgo(1);
+    const old = await seedNote({
+      teacherId: t.id, studentId: s.id, status: "sent",
+      pieceLabel: "Older", sentAt: daysAgo(20),
+    });
+    await seedNote({
+      teacherId: t.id, studentId: s.id, status: "sent",
+      pieceLabel: "Newer", sentAt: newestSend,
+    });
+    await backdateLessons(t.id, daysAgo(20));
+    const before = await rowFor(t, s.id);
+    expect(new Date(before.lastActivityAt).getTime()).toBe(newestSend.getTime());
+
+    const oldSteps = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, old.note.id));
+    await db.orm.update(noteAnnotations).set({ doneAt: tickedAt }).where(eq(noteAnnotations.id, oldSteps[0]!.id));
+
+    const after = await rowFor(t, s.id);
+    expect(new Date(after.lastActivityAt).getTime()).toBe(tickedAt.getTime());
+    // The caption still belongs to the newest note — only the ordering moved.
+    expect(after.latestNote.pieceTitle).toBe("Newer");
+  });
+
+  it("a read receipt moves the roster order without a new note", async () => {
+    const { t, s } = await linked("v2-read", 60);
+    const openedAt = daysAgo(2);
+    const seeded = await seedNote({
+      teacherId: t.id, studentId: s.id, status: "sent",
+      pieceLabel: "Opened", sentAt: daysAgo(6),
+    });
+    await db.orm.update(notes).set({ readAt: openedAt }).where(eq(notes.id, seeded.note.id));
+    await backdateLessons(t.id, daysAgo(6));
+    const row = await rowFor(t, s.id);
+    expect(new Date(row.lastActivityAt).getTime()).toBe(openedAt.getTime());
+    expect(new Date(row.latestNote.readAt).getTime()).toBe(openedAt.getTime());
+  });
+
+  // Enforced by the teacher scoping, not by an origin filter: a solo note is authored
+  // by the student, so it can never match this teacher's id.
+  it("a student's own solo recording stays out of their teacher's roster", async () => {
+    const { t, s } = await linked("v2-solo");
+    await seedSelfNote(s.id);
+    const row = await rowFor(t, s.id);
+    expect(row.latestNote).toBeNull();
+  });
+
+  it("a brand-new pair reports no note and still sorts by when it started", async () => {
+    const { t, s } = await linked("v2-fresh");
+    const row = await rowFor(t, s.id);
+    expect(row.latestNote).toBeNull();
+    expect(row.lastNoteAt).toBeNull();
+    expect(row.lastActivityAt).not.toBeNull();
+  });
+});
+
+describe("a resumed relationship tells the truth about when it started", () => {
+  it("linkedAt reports the rejoin and firstLinkedAt keeps the original spell", async () => {
+    const t = await makeUser({ oid: "nr-rejoin-t", name: "Rejoin Teacher", role: "teacher" });
+    const s = await makeUser({ oid: "nr-rejoin-s", name: "Rejoin Student", role: "student" });
+    const firstSpell = daysAgo(400);
+    const [link] = await db.orm
+      .insert(teacherStudentLinks)
+      .values({
+        teacherId: t.id,
+        studentId: s.id,
+        status: "removed",
+        removedAt: daysAgo(30),
+        createdAt: firstSpell,
+        consentAt: firstSpell,
+      })
+      .returning();
+
+    const made = await request(makeApp())
+      .post("/v1/invites")
+      .set("Authorization", auth(t))
+      .send({ rejoinUserId: s.id, intendedLabel: "Rejoin Student" });
+    expect(made.status).toBe(201);
+    const back = await request(makeApp())
+      .post("/v1/invites/redeem")
+      .set("Authorization", auth(s))
+      .send({ code: made.body.code, consent: true });
+    expect(back.status).toBe(201);
+
+    const detail = await request(makeApp())
+      .get(`/v1/me/students/${s.id}`)
+      .set("Authorization", auth(t));
+    expect(detail.status).toBe(200);
+    expect(new Date(detail.body.firstLinkedAt).getTime()).toBe(firstSpell.getTime());
+    expect(new Date(detail.body.linkedAt).getTime()).toBeGreaterThan(daysAgo(1).getTime());
+
+    const list = await request(makeApp()).get("/v1/me/students").set("Authorization", auth(t));
+    const row = list.body.items.find((i: { studentId: string }) => i.studentId === s.id);
+    expect(new Date(row.linkedAt).getTime()).toBeGreaterThan(daysAgo(1).getTime());
+    expect(link!.id).toBeTruthy();
+  });
+
+  it("a first-time pair has no firstLinkedAt to report", async () => {
+    const t = await makeUser({ oid: "nr-firstlink-t", name: "First Teacher", role: "teacher" });
+    const s = await makeUser({ oid: "nr-firstlink-s", name: "First Student", role: "student" });
+    const made = await request(makeApp()).post("/v1/invites").set("Authorization", auth(t)).send({});
+    await request(makeApp())
+      .post("/v1/invites/redeem")
+      .set("Authorization", auth(s))
+      .send({ code: made.body.code, consent: true });
+    const detail = await request(makeApp())
+      .get(`/v1/me/students/${s.id}`)
+      .set("Authorization", auth(t));
+    expect(detail.body.firstLinkedAt).toBeNull();
+  });
+});
+
+describe("student detail carries the lessons the history interleaves", () => {
+  it("a lesson whose note was never sent still appears", async () => {
+    const t = await makeUser({ oid: "nr-hist-t", name: "History Teacher", role: "teacher" });
+    const s = await makeUser({ oid: "nr-hist-s", name: "History Student", role: "student" });
+    await db.orm.insert(teacherStudentLinks).values({
+      teacherId: t.id, studentId: s.id, consentAt: new Date(),
+    });
+    await seedNote({
+      teacherId: t.id, studentId: s.id, status: "sent",
+      pieceLabel: "Sonatina", sentAt: daysAgo(4),
+    });
+    await db.orm.insert(lessonSessions).values({
+      teacherId: t.id, studentId: s.id, status: "submitted",
+      pieceLabel: "Nothing came of it", startedAt: daysAgo(2), durationSec: 2400,
+    });
+    await db.orm.insert(lessonSessions).values({
+      teacherId: t.id, studentId: s.id, status: "canceled",
+      pieceLabel: "Abandoned", startedAt: daysAgo(3),
+    });
+
+    const detail = await request(makeApp())
+      .get(`/v1/me/students/${s.id}`)
+      .set("Authorization", auth(t));
+    expect(detail.status).toBe(200);
+    const titles = detail.body.lessons.map((l: { pieceTitle: string }) => l.pieceTitle);
+    expect(titles).toContain("Nothing came of it");
+    expect(titles).not.toContain("Abandoned");
+    const orphan = detail.body.lessons.find((l: { pieceTitle: string }) => l.pieceTitle === "Nothing came of it");
+    expect(orphan.durationSec).toBe(2400);
+    expect(detail.body.notes[0].stepCount).toBe(2);
+    expect(detail.body.notes[0].doneCount).toBe(0);
+    expect(detail.body.notes[0].pieceTitle).toBe("Sonatina");
+  });
+});
+
+// ── v0.9: the batched entitlement read, and the wire invariant ──────────────────
+
+describe("canReceiveNotes after the paywall goes live", () => {
+  // The batch path (notesAccessMany) and the per-student path must agree. Until
+  // monetization_live_at is set every student is beta_free, so this branch — the one
+  // that decides whether a teacher can still serve a family — runs for the first
+  // time on the day it matters most.
+  it("distinguishes an active subscriber, a fresh trial and a lapsed family in one roster", async () => {
+    const t = await makeUser({ oid: "nr-money-t", name: "Money Teacher", role: "teacher" });
+    const paid = await makeUser({ oid: "nr-money-paid", name: "Paid Pupil", role: "student" });
+    const trialing = await makeUser({ oid: "nr-money-trial", name: "Trial Pupil", role: "student" });
+    const lapsed = await makeUser({ oid: "nr-money-lapsed", name: "Lapsed Pupil", role: "student" });
+    for (const s of [paid, trialing, lapsed]) {
+      await db.orm.insert(teacherStudentLinks).values({
+        teacherId: t.id, studentId: s.id, consentAt: new Date(),
+      });
+    }
+    await db.orm.update(users).set({ trialStartedAt: daysAgo(400) }).where(eq(users.id, lapsed.id));
+    await db.orm.update(users).set({ trialStartedAt: daysAgo(1) }).where(eq(users.id, trialing.id));
+    await db.orm.update(users).set({ trialStartedAt: daysAgo(400) }).where(eq(users.id, paid.id));
+    await db.orm.insert(entitlements).values({
+      userId: paid.id, source: "apple_iap", status: "active", expiresAt: daysAgo(-30),
+    });
+
+    await db.orm.delete(platformConfig).where(eq(platformConfig.key, "monetization_live_at"));
+    await db.orm
+      .insert(platformConfig)
+      .values({ key: "monetization_live_at", value: daysAgo(200).toISOString() });
+    try {
+      const res = await request(makeApp()).get("/v1/me/students").set("Authorization", auth(t));
+      expect(res.status).toBe(200);
+      const by = new Map(
+        res.body.items.map((i: { studentId: string; canReceiveNotes: boolean }) => [i.studentId, i.canReceiveNotes]),
+      );
+      expect(by.get(paid.id)).toBe(true);
+      expect(by.get(trialing.id)).toBe(true);
+      expect(by.get(lapsed.id)).toBe(false);
+      // Nobody may fall out of the batch and land on the `?? null` default, which
+      // would read as "locked" for a student who is perfectly fine.
+      expect(by.size).toBe(3);
+    } finally {
+      await db.orm.delete(platformConfig).where(eq(platformConfig.key, "monetization_live_at"));
+    }
+  });
+});
+
+describe("every new timestamp reaches the wire as ISO-8601", () => {
+  // A bare sql<Date> without mapWith ships the Postgres driver's own text, which the
+  // app's ISO8601DateFormatter rejects — taking the whole screen down, not one field.
+  it("roster and detail timestamps all parse", async () => {
+    const t = await makeUser({ oid: "nr-iso-t", name: "Iso Teacher", role: "teacher" });
+    const s = await makeUser({ oid: "nr-iso-s", name: "Iso Student", role: "student" });
+    await db.orm.insert(teacherStudentLinks).values({
+      teacherId: t.id, studentId: s.id, consentAt: new Date(),
+    });
+    const seeded = await seedNote({
+      teacherId: t.id, studentId: s.id, status: "sent",
+      pieceLabel: "Iso Piece", sentAt: daysAgo(3),
+    });
+    await db.orm.update(notes).set({ readAt: daysAgo(2) }).where(eq(notes.id, seeded.note.id));
+    await db.orm
+      .update(lessonSessions)
+      .set({ startedAt: daysAgo(3) })
+      .where(eq(lessonSessions.teacherId, t.id));
+
+    const list = await request(makeApp()).get("/v1/me/students").set("Authorization", auth(t));
+    const row = list.body.items.find((i: { studentId: string }) => i.studentId === s.id);
+    for (const v of [row.lastActivityAt, row.lastNoteAt, row.lastLessonAt, row.linkedAt,
+                     row.latestNote.sentAt, row.latestNote.readAt]) {
+      expect(v).toMatch(ISO_UTC);
+    }
+
+    const detail = await request(makeApp())
+      .get(`/v1/me/students/${s.id}`)
+      .set("Authorization", auth(t));
+    expect(detail.body.lessons[0].startedAt).toMatch(ISO_UTC);
+    expect(detail.body.notes[0].sentAt).toMatch(ISO_UTC);
+    expect(detail.body.notes[0].readAt).toMatch(ISO_UTC);
+    expect(detail.body.linkedAt).toMatch(ISO_UTC);
+  });
+});
+
+describe("lesson history states a time only when one was recorded", () => {
+  it("an undated lesson keeps its place in the order but claims no start time", async () => {
+    const t = await makeUser({ oid: "nr-undated-t", name: "Undated Teacher", role: "teacher" });
+    const s = await makeUser({ oid: "nr-undated-s", name: "Undated Student", role: "student" });
+    await db.orm.insert(teacherStudentLinks).values({
+      teacherId: t.id, studentId: s.id, consentAt: new Date(),
+    });
+    // Never started: the row was born when the upload began, so created_at is when we
+    // heard about it. It is still a lesson the teacher recorded — deliberate, present.
+    await db.orm.insert(lessonSessions).values({
+      teacherId: t.id, studentId: s.id, status: "created",
+      pieceLabel: "Never started", createdAt: daysAgo(9),
+    });
+    await db.orm.insert(lessonSessions).values({
+      teacherId: t.id, studentId: s.id, status: "submitted",
+      pieceLabel: "Properly dated", startedAt: daysAgo(2), createdAt: daysAgo(2),
+    });
+
+    const detail = await request(makeApp())
+      .get(`/v1/me/students/${s.id}`)
+      .set("Authorization", auth(t));
+    const titles = detail.body.lessons.map((l: { pieceTitle: string }) => l.pieceTitle);
+    expect(titles).toEqual(["Properly dated", "Never started"]);
+    const undated = detail.body.lessons[1];
+    expect(undated.startedAt).toBeNull();
+  });
+});
+
+describe("the join date and the way it happened describe the same event", () => {
+  it("a pair that first formed on the teacher's code and re-formed on the student's says so", async () => {
+    const t = await makeUser({ oid: "nr-mixed-t", name: "Mixed Teacher", role: "teacher" });
+    const s = await makeUser({ oid: "nr-mixed-s", name: "Mixed Student", role: "student" });
+
+    const forward = await request(makeApp()).post("/v1/invites").set("Authorization", auth(t)).send({});
+    await request(makeApp())
+      .post("/v1/invites/redeem")
+      .set("Authorization", auth(s))
+      .send({ code: forward.body.code, consent: true });
+    const first = await request(makeApp()).get(`/v1/me/students/${s.id}`).set("Authorization", auth(t));
+    expect(first.body.createdVia).toBe("invite_code");
+
+    await request(makeApp()).delete(`/v1/me/students/${s.id}`).set("Authorization", auth(t));
+
+    // This time the student invites the teacher back in.
+    const reverse = await request(makeApp())
+      .post("/v1/invites")
+      .set("Authorization", auth(s))
+      .send({ direction: "student_to_teacher", consent: true });
+    const back = await request(makeApp())
+      .post("/v1/invites/redeem")
+      .set("Authorization", auth(t))
+      .send({ code: reverse.body.code, acceptTeacherRole: true });
+    expect(back.status).toBe(201);
+
+    const again = await request(makeApp()).get(`/v1/me/students/${s.id}`).set("Authorization", auth(t));
+    expect(again.body.status).toBe("active");
+    expect(again.body.createdVia).toBe("student_invite");
+    expect(again.body.firstLinkedAt).not.toBeNull();
   });
 });
