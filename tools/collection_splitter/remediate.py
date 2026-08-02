@@ -27,7 +27,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out_dir", type=Path)
     ap.add_argument("--slugs", required=True)
-    ap.add_argument("--retitle-works", action="store_true")
+    ap.add_argument("--retitle-works", default=None,
+                    help="comma-separated collections whose work rows get the plan's "
+                         "current title; anything outside them is left alone")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -45,8 +47,12 @@ def main():
         works[w["title"]] = w
 
     if args.retitle_works:
-        # A work row keeps its id; only the display title changes.
-        wanted = {p["work_title"]: p for p in plan.values() if p.get("work_title")}
+        # A work row keeps its id; only the display title changes. Scoped to named
+        # collections so a pre-existing work (mozart_k330 predates this batch) can
+        # never be renamed by a loose catalogue match.
+        scope = {c.strip() for c in args.retitle_works.split(",") if c.strip()}
+        wanted = {p["work_title"]: p for p in plan.values()
+                  if p.get("work_title") and p["collection"] in scope}
         for title, p in wanted.items():
             if title in works:
                 continue
