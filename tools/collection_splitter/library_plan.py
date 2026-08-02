@@ -15,8 +15,8 @@ RIGHTS_NOTE = "Engraved by KaraOrchee, Inc."
 # Held by the 2026-07-30 adversarial review: each is a SOURCE defect the gates cannot
 # see, because the gate and the engine both read the same defective notation.
 REVIEW_HOLDS = {
-    "bach_invention_6": "source: forward repeat at m21 never closed — second half "
-                        "plays once instead of twice, page shows a dangling open repeat",
+    # bach_invention_6 released 2026-08-01: the engraver closed the repeat at
+    # collection bar 255, engine playback 82 -> 124 measures, our expansion agrees.
     "mozart_k330_mvt2": "source: Dolet drops the two mid-bar ':||:' signs (it cannot "
                         "emit a mid-bar barline) — sectioning is wrong",
     "mozart_k331_mvt2": "source: no Menuetto D.C. — ships Menuetto→Trio→stop, ending "
