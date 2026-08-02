@@ -68,6 +68,11 @@ def hanon_book(n: int) -> str:
     return "part1" if n <= 20 else ("part2" if n <= 43 else "part3")
 
 
+# Position in the complete 18-sonata set, from the engraver's structural table
+# (Mozart Info.docx): book index = (sonata number - 1) * 3 + movement, so a sonata
+# engraved later drops into its printed slot without renumbering anything.
+MOZART_SONATA_NO = {"K330": 10, "K331": 11}
+
 MOZART = {
     "K330": {
         "title": "Piano Sonata No. 10, K. 330",
@@ -118,8 +123,15 @@ BOOKS = {
         "publisher": "G. Schirmer", "edition": "No. 925, New York [1900], Plate 15538",
         "cover": "Hanon/The Virtuoso Pianist Part2/Part 2.JPEG",
     },
+    "mozart_sonatas": {
+        "title": "Complete Piano Sonatas", "author": "Wolfgang Amadeus Mozart",
+        "publisher": "Neue Mozart-Ausgabe",
+        "edition": "Digitale Mozart-Edition, Salzburg (dme.mozarteum.at)",
+        "cover": "Mozart/Mozart Sonatas.png",
+    },
     "chopin_waltzes": {
-        "title": "Waltzes", "author": "Frédéric Chopin",
+        # Matches the cover artwork and the registry row (id stays `waltzes`).
+        "title": "Complete Waltzes", "author": "Frédéric Chopin",
         "publisher": "Polskie Wydawnictwo Muzyczne",
         "edition": "Dzieła wszystkie, Vol. IX, ed. Narodowy Instytut Fryderyka Chopina, Warsaw 1949, Plate PWM 239",
         "cover": "Chopin/19 Waltzes/waltzes.JPEG",
@@ -210,7 +222,8 @@ def mozart_pieces():
                 "slug": f"mozart_{k330_331.lower()}_mvt{k}",
                 "title": cfg["title"], "subtitle": f"{roman}. {tempo}",
                 "composer": "Wolfgang Amadeus Mozart",
-                "book": None, "book_index": None,
+                "book": "mozart_sonatas",
+                "book_index": (MOZART_SONATA_NO[k330_331] - 1) * 3 + k,
                 "work_title": cfg["title"],
                 "work_catalogue": k330_331.replace("K", "K. "), "work_type": "sonata",
                 "work_movements": 3, "work_index": k,
