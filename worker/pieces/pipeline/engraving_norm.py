@@ -137,14 +137,36 @@ def _reanchor_chord_fingerings(part) -> bool:
     return changed
 
 
+def _voice_hand(part, n_staves: int) -> dict[str, str]:
+    """Which hand each voice belongs to, by the staff it mostly lives on.
+
+    A voice keeps its hand when it crosses staves: in Hanon's scales the
+    right-hand voice is written on the BASS staff wherever the scale runs low,
+    and the left-hand voice on the TREBLE staff wherever it runs high. Deciding
+    fingering side by the printed staff therefore flips 656 of No. 39's
+    fingerings to the wrong side of their notes."""
+    tally: dict[str, dict[str, int]] = {}
+    for note in part.iter("note"):
+        voice = (note.findtext("voice") or "1").strip()
+        staff = (note.findtext("staff") or "1").strip()
+        tally.setdefault(voice, {}).setdefault(staff, 0)
+        tally[voice][staff] += 1
+    hands = {}
+    for voice, staves in tally.items():
+        home = max(staves.items(), key=lambda kv: kv[1])[0]
+        hands[voice] = "below" if home == str(n_staves) else "above"
+    return hands
+
+
 def _fix_fingering_placement(part) -> bool:
     n_staves = _staff_counts(part)
     if n_staves < 2:
         return False
+    hands = _voice_hand(part, n_staves)
     changed = False
     for note in part.iter("note"):
-        staff = note.find("staff")
-        if staff is None or (staff.text or "").strip() != str(n_staves):
+        side = hands.get((note.findtext("voice") or "1").strip())
+        if side is None:
             continue
         technicals = [t for t in note.iter("technical") if t.find("fingering") is not None]
         for tech in technicals:
@@ -152,14 +174,17 @@ def _fix_fingering_placement(part) -> bool:
             if any(f.get("placement") for f in fings):
                 continue  # editor stated a side — trust it
             for f in fings:
-                f.set("placement", "below")
+                f.set("placement", side)
             if len(fings) > 1:
                 def dy(f):
                     try:
                         return float(f.get("default-y", "0"))
                     except ValueError:
                         return 0.0
-                ordered = sorted(fings, key=dy, reverse=True)
+                # verovio stacks a placed group in document order FROM the staff
+                # outward, so the near-staff end comes first: descending default-y
+                # below the staff, ascending above it.
+                ordered = sorted(fings, key=dy, reverse=(side == "below"))
                 if ordered != fings:
                     others = [c for c in tech if c.tag != "fingering"]
                     for c in list(tech):

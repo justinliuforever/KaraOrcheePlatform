@@ -22,12 +22,14 @@ XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 
 RH_NOTE = """<note>
   <pitch><step>G</step><octave>4</octave></pitch><duration>4</duration>
+  <voice>1</voice>
   <staff>1</staff>
   <notations><technical><fingering default-y="-7">1</fingering></technical></notations>
 </note>"""
 
 LH_STACK_NOTE = """<note>
   <pitch><step>G</step><octave>3</octave></pitch><duration>4</duration>
+  <voice>5</voice>
   <staff>2</staff>
   <notations><technical>
     <fingering default-y="-21" default-x="-10">5</fingering>
@@ -38,6 +40,7 @@ LH_STACK_NOTE = """<note>
 
 LH_EXPLICIT_NOTE = """<note>
   <pitch><step>C</step><octave>3</octave></pitch><duration>4</duration>
+  <voice>5</voice>
   <staff>2</staff>
   <notations><technical>
     <fingering placement="above" default-y="7">2</fingering>
@@ -73,8 +76,38 @@ def test_bottom_staff_stack_placed_below_and_reordered(tmp_path):
     assert out != src
     # document order becomes top-to-bottom visual order: 1, 3, 5
     assert _fingerings(out, "2") == [("1", "below"), ("3", "below"), ("5", "below")]
-    # right hand untouched
-    assert _fingerings(out, "1") == [("1", None)]
+    # the upper hand now states its side too — that is what keeps a right-hand
+    # voice's fingerings above its notes when the voice crosses to the bass staff
+    assert _fingerings(out, "1") == [("1", "above")]
+
+
+CROSS_RH_ON_BASS = """<note>
+  <pitch><step>C</step><octave>4</octave></pitch><duration>4</duration>
+  <voice>1</voice>
+  <staff>2</staff>
+  <notations><technical><fingering>2</fingering></technical></notations>
+</note>"""
+
+CROSS_LH_ON_TREBLE = """<note>
+  <pitch><step>E</step><octave>5</octave></pitch><duration>4</duration>
+  <voice>5</voice>
+  <staff>1</staff>
+  <notations><technical><fingering>4</fingering></technical></notations>
+</note>"""
+
+
+def test_hand_follows_the_voice_not_the_printed_staff(tmp_path):
+    # Each voice keeps its home staff by majority, then crosses once.
+    src = _build(tmp_path,
+                 m1_notes=RH_NOTE + LH_STACK_NOTE + CROSS_RH_ON_BASS + CROSS_LH_ON_TREBLE,
+                 m2_notes=RH_NOTE + LH_STACK_NOTE)
+    root = ET.parse(normalize_engraving(src, tmp_path)).getroot()
+    sides = {}
+    for note in root.iter("note"):
+        for f in note.iter("fingering"):
+            sides[(note.findtext("voice"), note.findtext("staff"), f.text)] = f.get("placement")
+    assert sides[("1", "2", "2")] == "above", "right hand crossing down stays above"
+    assert sides[("5", "1", "4")] == "below", "left hand crossing up stays below"
 
 
 def test_explicit_placement_trusted(tmp_path):
@@ -252,6 +285,7 @@ DYN_BELOW_S1 = """<direction placement="below">
 
 S2_ONLY_NOTE = """<note>
   <pitch><step>C</step><octave>3</octave></pitch><duration>4</duration>
+  <voice>5</voice>
   <staff>2</staff>
 </note>"""
 
