@@ -7,6 +7,7 @@ stream); preview audio renders with the app's SF2; optional reference audio is
 verified against the notated timeline (Tier-1 linear-map gate).
 """
 from __future__ import annotations
+import json
 import shutil
 import time
 import traceback
@@ -284,6 +285,26 @@ def gate_alignment(xml_path: Path, midi_path: Path | None, out_dir: Path,
             **struct_metrics}
 
 
+def _engraving_report(piece: str, effective_xml: Path, out_dir: Path) -> dict:
+    """Machine checks for the engraving defects the eye kept finding first. They
+    report on the job card rather than failing the build — every one has its cause
+    in the source, and a hard gate would block a whole book on one bad bar."""
+    from pipeline import engrave_checks as ec
+    report: dict = {}
+    try:
+        mei_path, svg_path = out_dir / f"{piece}.mei", out_dir / f"{piece}.ipad.svg"
+        if mei_path.exists() and svg_path.exists():
+            report.update(ec.stranded_fingerings(mei_path.read_text(), svg_path.read_text()))
+            report.update(ec.layer_overflow(mei_path.read_text()))
+        events = out_dir / "score_events.json"
+        if events.exists():
+            report.update(ec.pitch_conservation(effective_xml, json.loads(events.read_text())))
+        report.update(ec.overfull_fingerings(effective_xml))
+    except Exception as err:  # a diagnostic must never change a verdict
+        report["engrave_checks_error"] = str(err)[:160]
+    return report
+
+
 def gate_geometry(piece: str, xml_path: Path, out_dir: Path,
                   meta: dict, solo_used: str | None, state: dict | None = None) -> dict:
     effective_xml = _effective_paths(xml_path, out_dir, meta, solo_used)
@@ -312,6 +333,7 @@ def gate_geometry(piece: str, xml_path: Path, out_dir: Path,
         "endpoint_slack_sec": ENDPOINT_SLACK_SEC,
         "anchors_out_of_band": bundle["anchors_out_of_band"],
         "staff_eligible": bundle["staff_eligible"],
+        **_engraving_report(piece, effective_xml, out_dir),
     }
     if bundle["schema"] == 1 and bundle["timemap_rend_ids"] > 0:
         raise GateError(
