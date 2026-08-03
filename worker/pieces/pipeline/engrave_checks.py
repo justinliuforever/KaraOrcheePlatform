@@ -84,7 +84,7 @@ def layer_overflow(mei: str) -> dict:
                 sums.append(sum(int(d) for d in re.findall(r'(?:dur\.ppq|ppq)="(\d+)"', lb)))
             if len(sums) > 1:
                 total += 1
-                if max(sums) > capacity * 1.25:
+                if max(sums) > capacity * 1.05:
                     bad += 1
     return {"multi_layer_measures": total, "layer_overflow_measures": bad}
 

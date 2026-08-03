@@ -123,11 +123,34 @@ def test_explicit_placement_trusted(tmp_path):
     assert _fingerings(out, "2") == [("2", "above"), ("4", None)]
 
 
-def test_single_staff_untouched(tmp_path):
+def test_single_staff_fingerings_untouched(tmp_path):
     solo = RH_NOTE.replace("<staff>1</staff>", "")
     src = _build(tmp_path, staves=1, m1_notes=solo)
     out = normalize_engraving(src, tmp_path)
-    assert out == src  # nothing to fix -> input path returned
+    assert 'placement' not in out.read_text().split('<part-list>')[1]
+
+
+def test_a_score_with_nothing_to_fix_returns_its_input_path(tmp_path):
+    solo = RH_NOTE.replace("<staff>1</staff>", "")
+    src = _build(tmp_path, staves=1, m1_notes=solo)
+    src.write_text(src.read_text().replace("<part-name>Piano</part-name>",
+                                           '<part-name print-object="no">Piano</part-name>'))
+    assert normalize_engraving(src, tmp_path) == src
+
+
+def test_a_solo_score_never_labels_its_instrument(tmp_path):
+    src = _build(tmp_path, staves=1, m1_notes=RH_NOTE.replace("<staff>1</staff>", ""))
+    out = normalize_engraving(src, tmp_path)
+    assert 'print-object="no"' in out.read_text()
+
+
+def test_an_ensemble_keeps_its_instrument_labels(tmp_path):
+    src = _build(tmp_path, staves=1, m1_notes=RH_NOTE.replace("<staff>1</staff>", ""))
+    src.write_text(src.read_text().replace(
+        "</part-list>",
+        '<score-part id="P2"><part-name>Violin</part-name></score-part></part-list>'))
+    out = normalize_engraving(src, tmp_path)
+    assert 'print-object="no"' not in out.read_text()
 
 
 def test_piece_number_dropped_only_in_measure_one(tmp_path):

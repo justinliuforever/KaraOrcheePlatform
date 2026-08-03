@@ -37,6 +37,24 @@ from pathlib import Path
 _PIECE_NUMBER = re.compile(r"\d{1,2}\.")
 
 
+
+def _hide_solo_part_name(root) -> bool:
+    """A one-part score names its instrument nowhere on the page.
+
+    Sibelius hides it for solo writing and the printed editions never show it, but
+    the name only survives the export as a bare <part-name> with no print-object,
+    so eleven scores carried "Piano" down the left of every system."""
+    parts = root.findall(".//score-part")
+    if len(parts) != 1:
+        return False
+    changed = False
+    for tag in ("part-name", "part-abbreviation"):
+        el = parts[0].find(tag)
+        if el is not None and (el.text or "").strip() and el.get("print-object") != "no":
+            el.set("print-object", "no")
+            changed = True
+    return changed
+
 def _staff_counts(part) -> int:
     staves = part.find(".//attributes/staves")
     if staves is not None and (staves.text or "").strip().isdigit():
@@ -314,6 +332,20 @@ def _separate_interleaved_voices(part) -> bool:
         switches = sum(1 for a, b in zip(voices, voices[1:]) if a != b)
         if switches < 2:
             continue  # already contiguous
+        # A voice that re-enters BEHIND itself cannot be given a layer: the importer
+        # fills a layer forward and never seeks back into it, so those notes land
+        # after the barline and the bar gains a beat (Fugue BWV 846 m16, voice 1
+        # returning to qstamp 16 having already reached 64). The arithmetic is fine
+        # in MusicXML, so only this check sees it.
+        seen: dict[str, int] = {}
+        rewinds = False
+        for _n, v, onset in before:
+            if onset < seen.get(v, 0):
+                rewinds = True
+                break
+            seen[v] = onset
+        if rewinds:
+            continue
         snapshot = list(measure)
         cursor, prev_voice, inserted = 0, None, 0
         for el in list(measure):
@@ -447,7 +479,7 @@ def normalize_engraving(xml_path: Path, out_dir: Path) -> Path:
     except ET.ParseError:
         return xml_path
     root = tree.getroot()
-    changed = False
+    changed = _hide_solo_part_name(root)
     for part in root.iter("part"):
         changed |= _reanchor_chord_fingerings(part)
         changed |= _fix_fingering_placement(part)

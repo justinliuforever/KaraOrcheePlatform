@@ -112,3 +112,18 @@ def test_a_chord_is_not_broken_off_from_its_principal():
     for i, el in enumerate(body):
         if el.tag == "note" and el.find("chord") is not None:
             assert body[i - 1].tag == "note", "a chord follower lost its principal"
+
+
+# Fugue BWV 846 m16: voice 1 fills the bar, then returns to qstamp 16. The importer
+# fills a layer forward and never seeks back into it, so giving voice 1 a layer puts
+# those two notes after the barline and the bar gains a beat.
+REWINDING_VOICE = (_n("C", 4, 1, 1) + _n("D", 4, 1, 1)
+                   + _back(8) + _n("E", 3, 2, 1) + _n("F", 3, 2, 1)
+                   + _back(8) + _n("G", 4, 1, 1))
+
+
+def test_a_voice_that_re_enters_behind_itself_is_left_alone():
+    part = _part(REWINDING_VOICE)
+    before = ET.tostring(part)
+    assert _separate_interleaved_voices(part) is False
+    assert ET.tostring(part) == before
