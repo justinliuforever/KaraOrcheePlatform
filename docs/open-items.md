@@ -16,6 +16,31 @@ Nothing here is forgotten work — each line says who it waits on and what unblo
 | **App version bump** | Nothing | 0.8 recommended (Notes is a new product surface, not a point fix). Founder said: decide at archive time. Build number must also increment or TestFlight rejects the upload. |
 | **Narration cool-tiering** | Nothing — cost only | `notes-narration-cool` is in bicep, not applied. Cold-tier reads cost extra, so this may cost more than it saves if students revisit old notes. Revisit with real replay data. |
 
+## The Dropbox library moves under us
+
+Four published pieces (Hanon Part II Nos. 39-42) sat for two weeks on a July 19 upload of
+an unfinished export while the engraver's finished file waited in Dropbox from July 22 —
+2165 fingerings, 40 ottava spans and 36 key captions missing, 510 notes an octave from
+where he put them. Nothing flagged it: the source we hold is whatever we uploaded, and
+nothing compares it to what he has now.
+
+**Before trusting any published piece, diff its source against the current Dropbox file.**
+Re-checked 2026-08-03: Hanon 39-43 was the only stale set. K.330's collection was also
+renamed (`Kv.330` -> `K.330`), which broke the splitter outright — collection paths are
+not stable either.
+
+Outstanding from that check:
+- **Hanon No. 43** — nested repeats (forward marks at measures 2 and 5). Blocked on the
+  engraver rewriting the section, or on the expander learning nested repeats.
+- **Mozart K.333** — 476 bars, three movements (m1 / m168 / m251), uploaded 2026-08-03,
+  never processed. Needs a work row and book index before it can be split.
+- **Mozart K.331 mvt 2** — the engraver added `Fine` and `Menuetto D.C. al Fine`, but in
+  the Tempo text style, so Sibelius's own engine still does not execute the D.C.
+  (`BarPlaybackOrderString` unchanged). Needs the Repeat style, then Phase-D.
+- **Hanon No. 39 ottavas** — present only from bar 223 (B major) onward; the printed
+  edition brackets the earlier keys too. Pitches are the engraver's, so this is an
+  engraving-consistency question for him, not a correctness one.
+
 ## Two pieces cannot take a new render
 
 `rach_op23_4` and `schubert_sonata_894_mvt2` fail the staff-timeline gate at 0.954 and
