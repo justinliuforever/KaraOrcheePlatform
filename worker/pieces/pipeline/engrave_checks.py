@@ -31,7 +31,7 @@ def stranded_fingerings(mei: str, svg: str) -> dict:
     fing_y = {m.group(1): float(m.group(2)) for m in
               re.finditer(r'<g id="(\w+)" class="fing">\s*<text x="\d+" y="(\d+)"', svg)}
     note_y = {m.group(1): float(m.group(2)) for m in
-              re.finditer(r'<g id="(\w+)" class="note[^"]*">\s*<g class="notehead">\s*'
+              re.finditer(r'<g id="(\w+)" class="note[^"]*"[^>]*>\s*<g class="notehead">\s*'
                           r'<use[^>]*transform="translate\(\d+, (\d+)\)', svg)}
     space = _staff_space(svg)
     gaps = [abs(fing_y[f] - note_y[n]) / space
@@ -44,6 +44,12 @@ def stranded_fingerings(mei: str, svg: str) -> dict:
             "stranded_limit_staff_spaces": FING_GAP_STAFF_SPACES}
 
 
+
+def _chord_duration(m) -> str:
+    d = re.search(r'dur\.ppq="(\d+)"', m.group(1))
+    return '<C ppq="%s"/>' % (d.group(1) if d else "0")
+
+
 def layer_overflow(mei: str) -> dict:
     """Layers holding MORE than their own measure — the fingerprint of two
     interleaved voices strung into one.
@@ -54,7 +60,8 @@ def layer_overflow(mei: str) -> dict:
     it broken."""
     bad = 0
     total = 0
-    ppq = int((re.search(r'\bppq="(\d+)"', mei) or [0, "0"])[1])
+    ppq = int((re.search(r'<(?:scoreDef|staffDef)\b[^>]*?\sppq="(\d+)"', mei)
+               or [0, "0"])[1])
     if not ppq:
         return {}
     count = unit = None
@@ -75,11 +82,7 @@ def layer_overflow(mei: str) -> dict:
             sums = []
             for _ln, lbody in re.findall(r'<layer\b[^>]*n="(\d+)"[^>]*>(.*?)</layer>',
                                          sbody, re.S):
-                lb = re.sub(r"<chord\b[^>]*>(.*?)</chord>",
-                            lambda m: '<C ppq="%s"/>' % (
-                                (re.search(r'dur\.ppq="(\d+)"', m.group(1)) or
-                                 re.match(r"(?!)", "")).group(1)
-                                if re.search(r'dur\.ppq="(\d+)"', m.group(1)) else "0"),
+                lb = re.sub(r"(<chord\b[^>]*>).*?</chord>", _chord_duration,
                             lbody, flags=re.S)
                 sums.append(sum(int(d) for d in re.findall(r'(?:dur\.ppq|ppq)="(\d+)"', lb)))
             if len(sums) > 1:
@@ -110,32 +113,34 @@ def pitch_conservation(source_xml_path, events: dict) -> dict:
     played = [pitch for e in events.get("events", []) for pitch in e.get("pitches", [])]
     if not src or not played:
         return {}
-    # Reading an ottava at its written octave narrows the played range; a stray
-    # transposition widens it. Either direction is a defect, so report the total.
+    # Repeats make the played stream longer than the source, so the two are compared
+    # as normalised histograms: the share of notes that landed on a pitch the source
+    # never wrote. A range comparison misses this entirely — an ottava read an octave
+    # off moves 422 of Liszt's notes without touching either extreme.
+    def hist(xs):
+        h: dict[int, float] = {}
+        for x in xs:
+            h[x] = h.get(x, 0.0) + 1.0 / len(xs)
+        return h
+    a, b = hist(src), hist(played)
+    drift = 0.5 * sum(abs(a.get(k, 0.0) - b.get(k, 0.0)) for k in set(a) | set(b))
     return {"source_pitch_range": [min(src), max(src)],
             "played_pitch_range": [min(played), max(played)],
             "pitch_range_mismatch_semitones": abs(max(played) - max(src))
-                                              + abs(min(played) - min(src))}
+                                              + abs(min(played) - min(src)),
+            "pitch_distribution_drift": round(drift, 3)}
 
 
 def overfull_fingerings(source_xml_path) -> dict:
-    """Notes carrying more fingerings than their chord has noteheads — duplicated
-    or mis-anchored digits from the exporter."""
+    """Notes carrying a stack of three or more digits — the exporter hung a chord's
+    whole fingering on one note and no matching chord was found to move it back to.
+
+    Two digits on one note is a finger substitution (4-3, 2-1) and ordinary; every
+    such pair in this corpus was being reported as a defect."""
     try:
         root = ET.parse(source_xml_path).getroot()
     except Exception:
         return {}
-    bad = 0
-    for measure in root.iter("measure"):
-        group: list = []
-        for note in measure.findall("note"):
-            if note.find("chord") is None:
-                if group:
-                    fings = sum(len(n.findall("notations/technical/fingering")) for n in group)
-                    bad += fings > len(group)
-                group = []
-            group.append(note)
-        if group:
-            fings = sum(len(n.findall("notations/technical/fingering")) for n in group)
-            bad += fings > len(group)
+    bad = sum(1 for note in root.iter("note")
+              if len(note.findall("notations/technical/fingering")) >= 3)
     return {"overfull_fingering_chords": bad}

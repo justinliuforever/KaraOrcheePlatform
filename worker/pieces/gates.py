@@ -289,9 +289,9 @@ def _engraving_report(piece: str, effective_xml: Path, out_dir: Path) -> dict:
     """Machine checks for the engraving defects the eye kept finding first. They
     report on the job card rather than failing the build — every one has its cause
     in the source, and a hard gate would block a whole book on one bad bar."""
-    from pipeline import engrave_checks as ec
     report: dict = {}
     try:
+        from pipeline import engrave_checks as ec
         mei_path, svg_path = out_dir / f"{piece}.mei", out_dir / f"{piece}.ipad.svg"
         if mei_path.exists() and svg_path.exists():
             report.update(ec.stranded_fingerings(mei_path.read_text(), svg_path.read_text()))
