@@ -16,6 +16,18 @@ Nothing here is forgotten work — each line says who it waits on and what unblo
 | **App version bump** | Nothing | 0.8 recommended (Notes is a new product surface, not a point fix). Founder said: decide at archive time. Build number must also increment or TestFlight rejects the upload. |
 | **Narration cool-tiering** | Nothing — cost only | `notes-narration-cool` is in bicep, not applied. Cold-tier reads cost extra, so this may cost more than it saves if students revisit old notes. Revisit with real replay data. |
 
+## Two pieces cannot take a new render
+
+`rach_op23_4` and `schubert_sonata_894_mvt2` fail the staff-timeline gate at 0.954 and
+0.975 against a 0.98 floor, so they kept their old bundle in the 2026-08-02 republish
+(117 of 119 went through). **This is not a regression** — measured identical under the
+previously deployed pipeline. Their reference MIDI realises ornaments as individual
+notes (Schubert: groups of three ~75ms apart; Rachmaninoff: pairs ~160ms apart) while
+the page draws one symbol with one anchor, so those onsets have nothing to pair with.
+Every anchored onset is exact (p50 = p90 = 0ms). Fixing it means either an ornament-aware
+anchor or a MIDI without realised ornaments; neither is urgent — both pieces are live and
+correct, they simply do not carry the new fingering and layout work.
+
 ## Hard gates before the first external TestFlight build
 
 | Item | Why it blocks |
