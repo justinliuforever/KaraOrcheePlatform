@@ -75,8 +75,15 @@ def _groups(mei_root):
         if chord is None:
             continue
         notes = sorted(chord.findall(_M + "note"), key=_pitch_val)
+        # Which digit belongs to which notehead depends on the hand: the left
+        # thumb takes the TOP note of a chord, the right thumb the bottom one.
+        # Pairing descending digits against ascending pitch unconditionally is
+        # the left-hand reading, and it printed 227 of the corpus's 228 chord
+        # stacks upside down. The side the group sits on names the hand.
+        below = (fings[0].get("place") or "below") == "below"
         try:
-            fings = sorted(fings, key=lambda f: -int("".join(f.itertext()).strip()))
+            fings = sorted(fings, key=lambda f: int("".join(f.itertext()).strip()),
+                           reverse=below)
         except ValueError:
             continue
         if len(fings) != len(notes):
