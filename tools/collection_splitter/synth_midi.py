@@ -30,9 +30,12 @@ def synth(xml_path: Path, out_mid: Path, work_dir: Path) -> dict:
     inst = pretty_midi.Instrument(program=0)
     # Grace notes land ~30ms after their principal in the verovio timemap — exactly
     # the pipeline's onset-cluster width, so they'd merge into the chord on the MIDI
-    # read-back. Enforce a 45ms floor between distinct events (order preserved; the
-    # shift is ~15ms on a handful of ornaments, far under the 12ms MEDIAN gate).
-    MIN_GAP = 0.045
+    # read-back. The floor is squeezed from both sides: below the cluster width the
+    # ornament disappears, and far above it the event no longer finds the staff
+    # anchor the timeline gate pairs it with. Just clear of the cluster satisfies
+    # both — at 45ms Czerny 599/73 rendered a coverage of 0.9675 against a 0.98
+    # floor with every onset otherwise exact.
+    MIN_GAP = 0.032
     last = None
     shifted_events = []
     for ev in payload["events"]:
