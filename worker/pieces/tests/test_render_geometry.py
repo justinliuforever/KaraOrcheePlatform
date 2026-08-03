@@ -12,6 +12,7 @@ import pytest
 
 from pipeline.engraving_norm import normalize_engraving
 from pipeline.fingering_layout import adjust_mei
+from pipeline.staff import OPENING_TEMPO_LIFT, lift_opening_tempo
 from pipeline.vrv import make_toolkit
 
 XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -145,3 +146,57 @@ def test_a_crossing_voice_keeps_its_digits_inside_the_system(tmp_path, staff, vo
     gaps = _gaps_in_staff_spaces(mei, svg)
     assert gaps and max(gaps.values()) <= 8, (
         f"crossing voice stranded its digit: {gaps}")
+
+
+TEMPO_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions><staves>2</staves>
+        <clef number="1"><sign>G</sign><line>2</line></clef>
+        <clef number="2"><sign>F</sign><line>4</line></clef>
+      </attributes>
+      <direction placement="above"><direction-type><words>Andante</words></direction-type>
+        <direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>60</per-minute></metronome></direction-type>
+      </direction>
+      {notes}
+    </measure>
+  </part>
+</score-partwise>
+"""
+
+
+def _tempo_gap(tmp_path, mei_filter):
+    src = tmp_path / "t.musicxml"
+    src.write_text(TEMPO_XML.format(notes=_note("E", 5, 1, 1) + "<backup><duration>4</duration></backup>"
+                                    + _note("E", 2, 5, 2)))
+    eff = normalize_engraving(src, tmp_path)
+    opts = {"scale": 40, "pageWidth": 3000, "pageHeight": 60000, "adjustPageHeight": True,
+            "header": "none", "footer": "none", "breaks": "auto", "xmlIdChecksum": True}
+    tk = make_toolkit(); tk.setOptions(opts); assert tk.loadFile(str(eff))
+    mei, _ = adjust_mei(tk.getMEI(), opts)
+    tk2 = make_toolkit(); tk2.setOptions(opts); tk2.loadData(mei_filter(mei))
+    svg = tk2.renderToSVG(1)
+    lines = sorted({float(m.group(1)) for m in re.finditer(r'd="M\d+ (\d+) L\d+ \1"', svg)})
+    texts = [float(m.group(1)) for m in re.finditer(r'<text[^>]*\by="(\d+)"', svg)]
+    return (lines[0] - min(texts)) / _staff_space(svg)
+
+
+def test_the_opening_tempo_clears_the_first_system(tmp_path):
+    packed = _tempo_gap(tmp_path, lambda m: m)
+    lifted = _tempo_gap(tmp_path, lift_opening_tempo)
+    assert abs((lifted - packed) - OPENING_TEMPO_LIFT / 2) < 0.1, (
+        f"opening tempo moved {lifted - packed:.2f} staff spaces, expected "
+        f"{OPENING_TEMPO_LIFT / 2:.2f} ({packed:.2f} -> {lifted:.2f})")
+
+
+def test_a_tempo_that_already_carries_an_offset_is_left_alone():
+    mei = '<measure n="1"><tempo vo="-2" place="above">x</tempo></measure>'
+    assert lift_opening_tempo(mei) == mei
+
+
+def test_a_mid_piece_tempo_change_is_not_lifted():
+    mei = ('<measure n="1"><note/></measure>'
+           '<measure n="2"><tempo place="above">Allegro</tempo></measure>')
+    assert lift_opening_tempo(mei) == mei

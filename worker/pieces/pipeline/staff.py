@@ -130,6 +130,28 @@ def staff_xy(staff_g):
     return xs, ys
 
 
+# The engraver's page sets the opening tempo about five and a half staff spaces
+# clear of the first line; verovio packs it to its own minimum and honours neither
+# default-y nor placement from the source, so the distance is set here in MEI.
+OPENING_TEMPO_LIFT = 3
+
+
+def lift_opening_tempo(mei: str) -> str:
+    """Give the piece's opening tempo mark the house distance above the first system.
+
+    Only the first measure's above-staff tempo moves: a mid-piece tempo change sits
+    among music that verovio has already spaced around it."""
+    m = re.search(r"<measure\b.*?</measure>", mei, re.S)
+    if not m:
+        return mei
+    first = m.group(0)
+    t = re.search(r'<tempo\b(?![^>]*\bvo=)[^>]*\bplace="above"[^>]*>', first)
+    if not t:
+        return mei
+    lifted = t.group(0).replace("<tempo", f'<tempo vo="{OPENING_TEMPO_LIFT}"', 1)
+    return mei[:m.start()] + first.replace(t.group(0), lifted, 1) + mei[m.end():]
+
+
 def build_variant(mei: str, vopts: dict):
     """Render all pages, STITCH them into one continuous SVG, and extract global geometry."""
     tk = make_toolkit()
@@ -523,7 +545,8 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
         # fingering layout is per-variant (line breaks move the obstacles); the
         # canonical <piece>.mei stays unadjusted — position is pure presentation
         mei_v, fing_rep = adjust_fingering_mei(mei, {**COMMON, **vopts})
-        svg, tm, page, gmeas, systems, note_xy, note_sys = build_variant(mei_v, vopts)
+        svg, tm, page, gmeas, systems, note_xy, note_sys = build_variant(
+            lift_opening_tempo(mei_v), vopts)
         if vname == "phone":
             phone_tm = tm
         if pnum and systems:
