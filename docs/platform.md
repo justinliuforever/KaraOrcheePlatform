@@ -165,6 +165,44 @@ rules and drop the live one. Reconcile before creating prod. Retention decisions
   messages minutes after `containerapp update` reports the new revision running — after a
   worker rollout, confirm the OLD replica is really gone before trusting queue behavior.
 
+### Engraving normalization (worker, pre-render)
+
+`worker/pieces/pipeline/engraving_norm.py` rewrites the source MusicXML before verovio
+sees it. Every rule exists because a Sibelius+Dolet export carries the engraver's intent
+in a form verovio does not read. Established 2026-07-13, extended 2026-08-02 after the
+engraver reviewed the rendered pages against his own.
+
+- **A fingering's side follows its VOICE, not the staff it prints on.** In a scale the
+  right hand is written on the bass staff wherever the run goes low; deciding by the
+  printed staff flips those digits to the wrong side. A voice reaching DOWN into the
+  staff below gets `below` regardless — verovio resolves `@place` against the LAYER's
+  anchor staff, so `above` throws the digit clean outside the system.
+- **Chord fingering stacks are ordered by hand** — a right-hand chord reads 1-2-5 up
+  from the lowest note.
+- **Pedals go to the bottom staff**, dynamics orphaned on an empty staff go above it.
+- **Trailing words after a metronome fold into `<per-minute>`**, or the sentence prints
+  as `(M. M. to 108.) ♩=60`.
+- **Interleaved voices get a net-zero `<backup>`/`<forward>` pair at each voice switch.**
+  Dolet writes a staff's two voices note by note; the importer strings the second into
+  the first one's layer and the bar holds twice its meter. Refused on any measure where
+  a voice re-enters BEHIND itself — the importer fills a layer forward and never seeks
+  back into it, so a boundary there puts those notes after the barline.
+- **A one-part score never labels its instrument** — the `print-object="no"` Sibelius
+  uses does not survive the export.
+- **The opening tempo is lifted to the engraver's distance** (`staff.py::lift_opening_tempo`,
+  MEI `@vo`). verovio honours neither `default-y` nor `placement` from the source here.
+
+`pipeline/engrave_checks.py` reports these defects on the job card without ever failing a
+build — the causes live in the source and a hard gate would block a whole book on one bar.
+⚠️ Read `stranded_fingerings`'s MEDIAN, not its maximum: a scale is engraved with its
+digits in a row while the run climbs past them, and the printed editions do the same.
+
+⚠️ A reference MIDI synthesised by `tools/collection_splitter/synth_midi.py` comes from
+the same timemap as the render, so **any render change invalidates it** — regenerate
+before republishing or the playback-map gate fails. Its grace-note floor is squeezed from
+both sides: below the 30ms onset-cluster width the ornament merges away, far above it the
+event loses the staff anchor the timeline gate pairs it with.
+
 ## Pieces Library (admin registry manager)
 
 - List = search (title/composer/subtitle/id + work title/catalogue) + filter selects
