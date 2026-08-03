@@ -80,7 +80,11 @@ def _mei_pitches(mei: str) -> dict[str, int]:
     for note in root.iter(f"{MEI_NS}note"):
         nid = note.get("{http://www.w3.org/XML/1998/namespace}id")
         pname = note.get("pname")
-        oct_ = note.get("oct")
+        # @oct is the WRITTEN octave; under an 8va/8vb bracket the sounding one
+        # lives in @oct.ges. Reading @oct made every ottava passage play an octave
+        # off — and since the synthesized reference MIDI comes from this same
+        # function, the alignment gate agreed with itself and never saw it.
+        oct_ = note.get("oct.ges") or note.get("oct")
         if not nid or not pname or oct_ is None:
             continue
         accid = note.get("accid") or note.get("accid.ges")
