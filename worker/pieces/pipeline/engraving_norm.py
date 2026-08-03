@@ -264,6 +264,39 @@ def _fix_orphan_dynamic_placement(part) -> bool:
     return changed
 
 
+def _fold_tempo_tail_into_metronome(part) -> bool:
+    """Keep a metronome mark inside its sentence.
+
+    Hanon prints "M. M. ♩ = 60 to 120." — words, metronome, words. verovio emits
+    every <words> of a direction before the metronome regardless of document
+    order, so it came out "M. M. to 120. ♩ = 60" on all eleven marks in the
+    corpus. Moving the trailing text into <per-minute> puts it back after the
+    number. Runs after tempo_norm, so the numeric per-minute has already been
+    read; nothing downstream parses it again."""
+    changed = False
+    for direction in part.iter("direction"):
+        types = direction.findall("direction-type")
+        metro_at = next((i for i, t in enumerate(types)
+                         if t.find("metronome") is not None), None)
+        if metro_at is None or metro_at == len(types) - 1:
+            continue
+        per = types[metro_at].find("metronome/per-minute")
+        if per is None:
+            continue
+        tail_types = [t for t in types[metro_at + 1:]
+                      if t.find("words") is not None and len(t) == 1]
+        if len(tail_types) != len(types) - metro_at - 1:
+            continue  # something other than plain text follows — leave it alone
+        tail = "".join((t.find("words").text or "") for t in tail_types)
+        if not tail.strip() or (per.text or "").endswith(tail):
+            continue
+        per.text = (per.text or "") + tail
+        for t in tail_types:
+            direction.remove(t)
+        changed = True
+    return changed
+
+
 def _drop_piece_number_words(part) -> str | None:
     """Remove the edition piece number ("3.") from measure 1 and return it so it
     can be preserved as metadata — the staff builder re-places it at the edition
@@ -339,6 +372,7 @@ def normalize_engraving(xml_path: Path, out_dir: Path) -> Path:
             changed = True
             _store_piece_number(root, number)
         changed |= _pad_tempo_metronome_gap(part)
+        changed |= _fold_tempo_tail_into_metronome(part)
     if not changed:
         return xml_path
     out = out_dir / (xml_path.stem + ".engraving_norm.musicxml")

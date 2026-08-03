@@ -71,6 +71,30 @@ def s(tag: str) -> str:
     return tag.split('}')[-1]
 
 
+def hoist_positioned_tspans(root) -> int:
+    """Lift a line-broken direction's positioned <tspan> to be a direct child of
+    its <text>. verovio nests the second line inside a wrapper tspan; WebKit
+    ignores the x/y of a tspan nested that deep and drops the line at the SVG
+    origin, throwing the caption clean off the page (Hanon No. 33's "Repeat this
+    / measure 4 times.")."""
+    moved = 0
+    for text in root.iter():
+        if s(text.tag) != "text":
+            continue
+        for wrapper in list(text):
+            if s(wrapper.tag) != "tspan" or wrapper.get("x") is not None:
+                continue
+            if not any(s(d.tag) == "tspan" and d.get("x") is not None
+                       for d in wrapper.iter() if d is not wrapper):
+                continue
+            at = list(text).index(wrapper)
+            text.remove(wrapper)
+            for offset, child in enumerate(list(wrapper)):
+                text.insert(at + offset, child)
+            moved += 1
+    return moved
+
+
 def translate(attr: str | None):
     m = re.search(r'translate\(\s*([-\d.]+)[ ,]+([-\d.]+)', attr or "")
     return (float(m.group(1)), float(m.group(2))) if m else None
@@ -142,6 +166,7 @@ def build_variant(mei: str, vopts: dict):
     sys_idx, yoff = -1, 0.0
     for p in range(1, npages + 1):
         root = ET.fromstring(tk.renderToSVG(p))
+        hoist_positioned_tspans(root)
         pm, mx, my = None, 0.0, 0.0
         for g in root.iter():
             if s(g.tag) == "g" and g.get("class") == "page-margin":
