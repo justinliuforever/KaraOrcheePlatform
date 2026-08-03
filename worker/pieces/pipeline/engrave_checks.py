@@ -22,7 +22,13 @@ def _staff_space(svg: str) -> float:
 
 
 def stranded_fingerings(mei: str, svg: str) -> dict:
-    """Fingerings rendered further than FING_GAP_STAFF_SPACES from their note."""
+    """Fingerings rendered further than FING_GAP_STAFF_SPACES from their note.
+
+    Read the median, not the tail. A scale is engraved with its digits in a row at
+    one height while the run climbs past them — Hanon's own pages print digits ten
+    to fifteen staff spaces from their noteheads — so a large maximum on a scale
+    study is the convention, not a defect. Do not move a correct render to make
+    this number smaller."""
     pairs = re.findall(r'<fing\b[^>]*xml:id="([^"]+)"[^>]*startid="#([^"]+)"', mei)
     pairs += [(f, n) for n, f in
               re.findall(r'<fing\b[^>]*startid="#([^"]+)"[^>]*xml:id="([^"]+)"', mei)]
