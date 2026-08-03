@@ -264,6 +264,92 @@ def _fix_orphan_dynamic_placement(part) -> bool:
     return changed
 
 
+def _measure_note_onsets(measure) -> list[tuple]:
+    """[(note_el, voice, onset)] honoring backup/forward; chord followers share
+    their principal's onset. Returns None if any duration is unreadable."""
+    out, cursor, prev = [], 0, 0
+    for el in measure:
+        if el.tag in ("backup", "forward"):
+            text = el.findtext("duration")
+            if text is None or not text.strip().lstrip("-").isdigit():
+                return None
+            cursor += (-1 if el.tag == "backup" else 1) * int(text)
+            if cursor < 0:
+                return None
+        elif el.tag == "note":
+            follower = el.find("chord") is not None
+            onset = prev if follower else cursor
+            out.append((el, (el.findtext("voice") or "1").strip(), onset))
+            if not follower and el.find("grace") is None:
+                text = el.findtext("duration")
+                if text is None or not text.strip().isdigit():
+                    return None
+                prev, cursor = onset, onset + int(text)
+    return out
+
+
+def _separate_interleaved_voices(part) -> bool:
+    """Make a voice switch legible to the importer.
+
+    Dolet writes two voices of a staff interleaved note by note with small
+    <backup>s instead of one whole voice, a backup, then the other. The onsets are
+    arithmetically right, but verovio's importer strings the second voice's notes
+    into the first one's layer — K.331 bar 1 ends up with a layer summing to 3840
+    ppq inside a 2304 ppq bar, and the two voices print out of alignment.
+
+    Inserting a backup/forward pair of the SAME duration at each voice switch is
+    position-neutral by construction — nothing else in the measure moves, so the
+    mid-measure directions and clef changes keep their places — while giving the
+    importer the boundary it needs. Grouping is by VOICE alone: same-voice
+    cross-staff writing renders correctly today and must not be split.
+    """
+    changed = False
+    for measure in part.findall("measure"):
+        before = _measure_note_onsets(measure)
+        if before is None:
+            continue  # unreadable durations — leave the measure exactly as it is
+        voices = [v for _n, v, _o in before]
+        if len(set(voices)) < 2:
+            continue
+        switches = sum(1 for a, b in zip(voices, voices[1:]) if a != b)
+        if switches < 2:
+            continue  # already contiguous
+        snapshot = list(measure)
+        cursor, prev_voice, inserted = 0, None, 0
+        for el in list(measure):
+            if el.tag in ("backup", "forward"):
+                cursor += (-1 if el.tag == "backup" else 1) * int(el.findtext("duration"))
+            elif el.tag == "note":
+                voice = (el.findtext("voice") or "1").strip()
+                follower = el.find("chord") is not None or el.find("grace") is not None
+                if not follower and prev_voice is not None and voice != prev_voice:
+                    # A net-zero pair: back up to the bar start and return, or —
+                    # when the cursor is already there and backing up is not
+                    # expressible — step forward over this note and return.
+                    span = cursor if cursor > 0 else int(el.findtext("duration") or 0)
+                    if span > 0:
+                        at = list(measure).index(el)
+                        first = ET.Element("backup" if cursor > 0 else "forward")
+                        ET.SubElement(first, "duration").text = str(span)
+                        second = ET.Element("forward" if cursor > 0 else "backup")
+                        ET.SubElement(second, "duration").text = str(span)
+                        measure.insert(at, second)
+                        measure.insert(at, first)
+                        inserted += 1
+                if not follower:
+                    cursor += int(el.findtext("duration"))
+                    prev_voice = voice
+        if not inserted:
+            continue
+        after = _measure_note_onsets(measure)
+        if after is None or [(id(n), v, o) for n, v, o in after] != \
+                            [(id(n), v, o) for n, v, o in before]:
+            measure[:] = snapshot          # any onset moved — revert this measure
+            continue
+        changed = True
+    return changed
+
+
 def _fold_tempo_tail_into_metronome(part) -> bool:
     """Keep a metronome mark inside its sentence.
 
@@ -373,6 +459,7 @@ def normalize_engraving(xml_path: Path, out_dir: Path) -> Path:
             _store_piece_number(root, number)
         changed |= _pad_tempo_metronome_gap(part)
         changed |= _fold_tempo_tail_into_metronome(part)
+        changed |= _separate_interleaved_voices(part)
     if not changed:
         return xml_path
     out = out_dir / (xml_path.stem + ".engraving_norm.musicxml")

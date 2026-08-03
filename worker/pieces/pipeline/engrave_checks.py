@@ -45,11 +45,32 @@ def stranded_fingerings(mei: str, svg: str) -> dict:
 
 
 def layer_overflow(mei: str) -> dict:
-    """Layers whose summed duration exceeds their measure — the fingerprint of two
-    interleaved voices collapsed into one."""
+    """Layers holding MORE than their own measure — the fingerprint of two
+    interleaved voices strung into one.
+
+    Measured against the bar's own capacity, never against a sibling layer: an
+    inner voice that sounds for half a bar, or a layer carrying only a grace
+    note, is ordinary engraving and comparing layers to each other calls all of
+    it broken."""
     bad = 0
     total = 0
-    for mtxt in re.findall(r"<measure\b[^>]*>.*?</measure>", mei, re.S):
+    ppq = int((re.search(r'\bppq="(\d+)"', mei) or [0, "0"])[1])
+    if not ppq:
+        return {}
+    count = unit = None
+    for tok in re.finditer(r'<meterSig\b[^>]*?/?>|<measure\b[^>]*>.*?</measure>', mei, re.S):
+        mtxt = tok.group(0)
+        if not mtxt.startswith("<measure"):
+            c = re.search(r'\bcount="(\d+)"', mtxt)
+            u = re.search(r'\bunit="(\d+)"', mtxt)
+            if c and u:
+                count, unit = int(c.group(1)), int(u.group(1))
+            continue
+        if count is None:
+            continue
+        if 'metcon="false"' in mtxt:
+            continue  # pickup or otherwise deliberately short
+        capacity = ppq * 4 * count / unit
         for _sn, sbody in re.findall(r'<staff\b[^>]*n="(\d+)"[^>]*>(.*?)</staff>', mtxt, re.S):
             sums = []
             for _ln, lbody in re.findall(r'<layer\b[^>]*n="(\d+)"[^>]*>(.*?)</layer>',
@@ -63,7 +84,7 @@ def layer_overflow(mei: str) -> dict:
                 sums.append(sum(int(d) for d in re.findall(r'(?:dur\.ppq|ppq)="(\d+)"', lb)))
             if len(sums) > 1:
                 total += 1
-                if max(sums) > min(sums) * 1.5 and max(sums) - min(sums) > 300:
+                if max(sums) > capacity * 1.25:
                     bad += 1
     return {"multi_layer_measures": total, "layer_overflow_measures": bad}
 
