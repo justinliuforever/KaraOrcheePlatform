@@ -106,8 +106,14 @@ def test_hand_follows_the_voice_not_the_printed_staff(tmp_path):
     for note in root.iter("note"):
         for f in note.iter("fingering"):
             sides[(note.findtext("voice"), note.findtext("staff"), f.text)] = f.get("placement")
-    assert sides[("1", "2", "2")] == "above", "right hand crossing down stays above"
+    # A voice reaching DOWN keeps its digits in the gap between the staves, which
+    # from its anchor staff reads as "below" — asking for its hand's side throws
+    # them clean outside the system, 16.6 staff spaces from the notehead.
+    assert sides[("1", "2", "2")] == "below", "right hand crossing down sits in the gap"
     assert sides[("5", "1", "4")] == "below", "left hand crossing up stays below"
+    # Same-staff notes keep the hand rule.
+    assert sides[("1", "1", "1")] == "above"
+    assert sides[("5", "2", "1")] == "below"
 
 
 def test_explicit_placement_trusted(tmp_path):

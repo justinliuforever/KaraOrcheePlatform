@@ -137,6 +137,17 @@ def _reanchor_chord_fingerings(part) -> bool:
     return changed
 
 
+def _voice_home_staff(part) -> dict[str, str]:
+    """The staff each voice mostly prints on."""
+    tally: dict[str, dict[str, int]] = {}
+    for note in part.iter("note"):
+        voice = (note.findtext("voice") or "1").strip()
+        staff = (note.findtext("staff") or "1").strip()
+        tally.setdefault(voice, {}).setdefault(staff, 0)
+        tally[voice][staff] += 1
+    return {v: max(s.items(), key=lambda kv: kv[1])[0] for v, s in tally.items()}
+
+
 def _voice_hand(part, n_staves: int) -> dict[str, str]:
     """Which hand each voice belongs to, by the staff it mostly lives on.
 
@@ -145,17 +156,8 @@ def _voice_hand(part, n_staves: int) -> dict[str, str]:
     and the left-hand voice on the TREBLE staff wherever it runs high. Deciding
     fingering side by the printed staff therefore flips 656 of No. 39's
     fingerings to the wrong side of their notes."""
-    tally: dict[str, dict[str, int]] = {}
-    for note in part.iter("note"):
-        voice = (note.findtext("voice") or "1").strip()
-        staff = (note.findtext("staff") or "1").strip()
-        tally.setdefault(voice, {}).setdefault(staff, 0)
-        tally[voice][staff] += 1
-    hands = {}
-    for voice, staves in tally.items():
-        home = max(staves.items(), key=lambda kv: kv[1])[0]
-        hands[voice] = "below" if home == str(n_staves) else "above"
-    return hands
+    return {v: ("below" if home == str(n_staves) else "above")
+            for v, home in _voice_home_staff(part).items()}
 
 
 def _fix_fingering_placement(part) -> bool:
@@ -163,11 +165,23 @@ def _fix_fingering_placement(part) -> bool:
     if n_staves < 2:
         return False
     hands = _voice_hand(part, n_staves)
+    homes = _voice_home_staff(part)
     changed = False
     for note in part.iter("note"):
-        side = hands.get((note.findtext("voice") or "1").strip())
+        voice = (note.findtext("voice") or "1").strip()
+        side = hands.get(voice)
         if side is None:
             continue
+        # verovio resolves @place against the LAYER's anchor staff, not the staff
+        # the note prints on. A voice reaching DOWN into the staff below therefore
+        # gets thrown clean outside the system by its hand's side — measured 16.6
+        # staff spaces from the notehead, where the engraver's page prints 5.6.
+        # A crossing voice always belongs in the gap between the staves, and from
+        # the anchor staff's point of view the gap is "below".
+        printed = (note.findtext("staff") or "1").strip()
+        home = homes.get(voice)
+        if home is not None and printed.isdigit() and home.isdigit() and int(printed) > int(home):
+            side = "below"
         technicals = [t for t in note.iter("technical") if t.find("fingering") is not None]
         for tech in technicals:
             fings = tech.findall("fingering")
