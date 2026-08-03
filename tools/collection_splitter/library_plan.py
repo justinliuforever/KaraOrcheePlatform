@@ -64,6 +64,12 @@ HANON_P1_STARTS = [
 ]
 
 
+# Part II lives in its own collection file and holds Nos. 39-43 only; Nos. 21-38
+# are at the tail of the Part I file. Boundaries are the engraved piece numbers.
+HANON_P2_STARTS = [0, 360, 416, 488, 518]
+HANON_P2_FIRST = 39
+
+
 def hanon_book(n: int) -> str:
     return "part1" if n <= 20 else ("part2" if n <= 43 else "part3")
 
@@ -189,23 +195,31 @@ def bach_pieces():
         }
 
 
+HANON_SOURCES = {
+    "hanon_p1": ("Hanon/The Virtuoso Pianist Part I/The Virtuoso-Pianist Hanon part 1.musicxml",
+                 HANON_P1_STARTS, 1),
+    "hanon_p2": ("Hanon/The Virtuoso Pianist Part2/The Virtuoso-Pianist Hanon part 2.musicxml",
+                 HANON_P2_STARTS, HANON_P2_FIRST),
+}
+
+
 def hanon_pieces():
-    for pos, start in enumerate(HANON_P1_STARTS):
-        no = pos + 1
-        nxt = HANON_P1_STARTS[pos + 1] if pos + 1 < len(HANON_P1_STARTS) else None
-        part = hanon_book(no)
-        yield {
-            "collection": "hanon_p1",
-            "src": "Hanon/The Virtuoso Pianist Part I/The Virtuoso-Pianist Hanon part 1.musicxml",
-            "start": start, "end": nxt,
-            "slug": f"hanon_virtuoso_{no}",
-            "title": "The Virtuoso Pianist",
-            "subtitle": f"No. {no}",
-            "composer": "Charles-Louis Hanon",
-            "book": f"hanon_{part}", "book_index": no,
-            "work_title": None, "work_index": None,
-            "blocked": None,
-        }
+    for collection, (src, starts, first) in HANON_SOURCES.items():
+        for pos, start in enumerate(starts):
+            no = first + pos
+            nxt = starts[pos + 1] if pos + 1 < len(starts) else None
+            yield {
+                "collection": collection,
+                "src": src,
+                "start": start, "end": nxt,
+                "slug": f"hanon_virtuoso_{no}",
+                "title": "The Virtuoso Pianist",
+                "subtitle": f"No. {no}",
+                "composer": "Charles-Louis Hanon",
+                "book": f"hanon_{hanon_book(no)}", "book_index": no,
+                "work_title": None, "work_index": None,
+                "blocked": None,
+            }
 
 
 def mozart_pieces():
@@ -213,7 +227,7 @@ def mozart_pieces():
         movements = cfg["movements"]
         for k, (start, roman, tempo) in enumerate(movements, 1):
             end = movements[k][0] if k < len(movements) else cfg["end"]
-            src = ("Mozart/Sonatas/Kv.330/Mozart Piano Sonata Kv.330.musicxml"
+            src = ("Mozart/Sonatas/Kv.330/Mozart Piano Sonata K.330.musicxml"
                    if k330_331 == "K330" else
                    "Mozart/Sonatas/Kv.331/Mozart Piano Sonata K.331.musicxml")
             yield {

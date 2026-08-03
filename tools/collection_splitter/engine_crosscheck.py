@@ -26,8 +26,12 @@ DIAG_FOR = {
         "J.S.Bach/Two-Part Inventions/Bach Inventio 1-15.sib.karaorchee_diag.txt",
     "Hanon/The Virtuoso Pianist Part I/The Virtuoso-Pianist Hanon part 1.musicxml":
         "Hanon/The Virtuoso Pianist Part I/The Virtuoso-Pianist Hanon part 1.sib.karaorchee_diag.txt",
-    "Mozart/Sonatas/Kv.330/Mozart Piano Sonata Kv.330.musicxml":
-        "Mozart/Sonatas/Kv.330/piano-sonata-10-kv-330-mozart.sib.karaorchee_diag.txt",
+    "Hanon/The Virtuoso Pianist Part2/The Virtuoso-Pianist Hanon part 2.musicxml":
+        "Hanon/The Virtuoso Pianist Part2/"
+        "hanon-part-2-scales-and-arpeggios-39-43-unpolished-and-without-fingering"
+        ".sib.karaorchee_diag.txt",
+    "Mozart/Sonatas/Kv.330/Mozart Piano Sonata K.330.musicxml":
+        "Mozart/Sonatas/Kv.330/Mozart Piano Sonata K.330.sib.karaorchee_diag.txt",
     "Mozart/Sonatas/Kv.331/Mozart Piano Sonata K.331.musicxml":
         "Mozart/Sonatas/Kv.331/Mozart Piano Sonata K.331.sib.karaorchee_diag.txt",
     "Chopin/19 Waltzes/Op.34/Chopin Three Waltzes Op34.musicxml":
