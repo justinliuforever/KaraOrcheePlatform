@@ -27,6 +27,7 @@ class StructureError(Exception):
         self.measure = measure
 
 
+# Dolet writes a D.C. as <words> only, never as <sound dacapo> — read the text.
 # D.C./D.S. family: unconditional reject in v1 when jump WORDS or machine-readable
 # sound attrs are present. Bare "fine"/"coda" words reject only alongside a jump
 # (written-out "Coda" section headings are common and harmless).
