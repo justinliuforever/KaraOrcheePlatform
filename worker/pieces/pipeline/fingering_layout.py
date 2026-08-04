@@ -75,17 +75,14 @@ def _groups(mei_root):
         if chord is None:
             continue
         notes = sorted(chord.findall(_M + "note"), key=_pitch_val)
-        # Which digit belongs to which notehead depends on the hand: the left
-        # thumb takes the TOP note of a chord, the right thumb the bottom one.
-        # Pairing descending digits against ascending pitch unconditionally is
-        # the left-hand reading, and it printed 227 of the corpus's 228 chord
-        # stacks upside down. The side the group sits on names the hand.
+        # The digit column mirrors the chord: its top digit labels the top note.
+        # engraving_norm has already put the stack in document order FROM the staff
+        # outward using the engraver's default-y, so the first element is the column's
+        # bottom above the staff and its top below — never re-derive the pairing from
+        # the digits themselves, which discards what he wrote.
         below = (fings[0].get("place") or "below") == "below"
-        try:
-            fings = sorted(fings, key=lambda f: int("".join(f.itertext()).strip()),
-                           reverse=below)
-        except ValueError:
-            continue
+        if below:
+            notes = list(reversed(notes))
         if len(fings) != len(notes):
             continue
         out.append((fings, [n.get(_XID) for n in notes]))
