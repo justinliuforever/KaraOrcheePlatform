@@ -274,9 +274,51 @@ def _xml_text_field(xml_path: Path, patterns: list[str]) -> str | None:
     return None
 
 
+# An accidental inside a title is its own <credit-symbol> run, named by SMuFL.
+CREDIT_SYMBOL = {"accidentalFlat": "\u266d", "accidentalSharp": "\u266f",
+                 "accidentalNatural": "\u266e", "accidentalDoubleSharp": "\U0001d12a",
+                 "accidentalDoubleFlat": "\U0001d12b"}
+
+
+def _credit_runs(xml_path: Path) -> dict[str, str]:
+    """{credit-type: assembled text} for the credits that name their type.
+
+    A title reading "Sonata in B♭" arrives as a credit-words run plus a
+    credit-symbol run, and movement-title carries only a flattened "Bb". An
+    untyped credit is not a title candidate — MuseScore exports put the composer
+    and the copyright line in ones too."""
+    import xml.etree.ElementTree as _ET
+    raw = xml_path.read_bytes()
+    text = raw.decode('utf-16' if raw[:2] in (b'\xff\xfe', b'\xfe\xff') else 'utf-8',
+                      errors='replace')
+    try:
+        root = _ET.fromstring(text)
+    except _ET.ParseError:
+        return {}
+    out: dict[str, str] = {}
+    for credit in root.findall('credit'):
+        kind = (credit.findtext('credit-type') or '').strip()
+        if kind not in ('title', 'subtitle'):
+            continue
+        parts = []
+        for child in credit:
+            if child.tag == 'credit-words':
+                parts.append(child.text or '')
+            elif child.tag == 'credit-symbol':
+                parts.append(CREDIT_SYMBOL.get((child.text or '').strip(), ''))
+        joined = ''.join(parts).strip()
+        if joined and kind not in out:
+            out[kind] = joined
+    return out
+
+
 def titles_from_xml(xml_path: Path) -> tuple[str | None, str | None]:
-    """(main title, subtitle) from movement-title (line 2 = subtitle, edition style),
-    falling back to work-title."""
+    """(main title, subtitle) — from the typed credit runs when the export names
+    them, else from movement-title (line 2 = subtitle, edition style)."""
+    runs = _credit_runs(xml_path)
+    if runs.get('title'):
+        sub = runs.get('subtitle')
+        return runs['title'], (sub if sub and sub != runs['title'] else None)
     t = _xml_text_field(xml_path, [r'<movement-title>([^<]+)</movement-title>',
                                    r'<work-title>([^<]+)</work-title>'])
     if not t:

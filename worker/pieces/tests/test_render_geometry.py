@@ -12,7 +12,7 @@ import pytest
 
 from pipeline.engraving_norm import normalize_engraving
 from pipeline.fingering_layout import adjust_mei
-from pipeline.staff import OPENING_TEMPO_LIFT, lift_opening_tempo
+from pipeline.staff import OPENING_TEMPO_LIFT, lift_opening_tempo, titles_from_xml
 from pipeline.vrv import make_toolkit
 
 XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -200,3 +200,34 @@ def test_a_mid_piece_tempo_change_is_not_lifted():
     mei = ('<measure n="1"><note/></measure>'
            '<measure n="2"><tempo place="above">Allegro</tempo></measure>')
     assert lift_opening_tempo(mei) == mei
+
+
+CREDIT_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <movement-title>Sonata in Bb</movement-title>
+  <credit page="1"><credit-type>title</credit-type>
+    <credit-words>Sonata in B</credit-words><credit-symbol>accidentalFlat</credit-symbol></credit>
+  <credit page="1"><credit-type>subtitle</credit-type>
+    <credit-words>Op. 22 no. 3</credit-words></credit>
+  <credit page="1"><credit-words>Some Composer</credit-words></credit>
+  <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+  <part id="P1"><measure number="1">
+    <attributes><divisions>4</divisions><staves>1</staves></attributes>
+    <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration>
+      <voice>1</voice><type>quarter</type></note>
+  </measure></part>
+</score-partwise>
+"""
+
+
+def test_a_title_keeps_the_accidental_the_engraver_typed(tmp_path):
+    src = tmp_path / "c.musicxml"
+    src.write_text(CREDIT_XML)
+    assert titles_from_xml(src) == ("Sonata in B♭", "Op. 22 no. 3")
+
+
+def test_an_untyped_credit_is_never_mistaken_for_the_title(tmp_path):
+    src = tmp_path / "u.musicxml"
+    src.write_text(CREDIT_XML.replace("<credit-type>title</credit-type>", "")
+                             .replace("<credit-type>subtitle</credit-type>", ""))
+    assert titles_from_xml(src) == ("Sonata in Bb", None)
