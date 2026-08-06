@@ -41,6 +41,41 @@ def _fingering_stack_measures(root) -> list[str]:
     return seen
 
 
+
+def _orphan_fingering_measures(root) -> list[str]:
+    """Printed measure numbers where a lone digit arrived as <words> instead of a
+    fingering, because its voice has no note there while another voice on the same
+    staff does.
+
+    Dolet can only bind a fingering to a note in its own voice. Typing the digits
+    without first selecting the notehead leaves them in voice 1, and on a staff
+    whose music is in voices 2-4 every one of them degrades to floating text that
+    lands nowhere near its note."""
+    seen: list[str] = []
+    for part in root.findall("part"):
+        for meas in part.findall("measure"):
+            voices_with_notes: dict[str, set] = {}
+            for note in meas.findall("note"):
+                if note.find("rest") is not None:
+                    continue
+                staff = (note.findtext("staff") or "1").strip()
+                voices_with_notes.setdefault(staff, set()).add(
+                    (note.findtext("voice") or "1").strip())
+            for d in meas.findall("direction"):
+                staff = (d.findtext("staff") or "1").strip()
+                voice = (d.findtext("voice") or "1").strip()
+                here = voices_with_notes.get(staff)
+                if not here or voice in here:
+                    continue
+                for w in d.findall("direction-type/words"):
+                    if (w.text or "").strip().isdigit() and len((w.text or "").strip()) == 1:
+                        num = meas.get("number") or "?"
+                        if num not in seen:
+                            seen.append(num)
+                        break
+    return seen
+
+
 def extract(xml_path: Path) -> dict:
     root = ET.parse(xml_path).getroot()
 
@@ -128,6 +163,10 @@ def extract(xml_path: Path) -> dict:
         if stack_measures:
             export_warnings.append({"code": "fingering_stack_no_position",
                                     "measures": stack_measures[:8]})
+        orphan_measures = _orphan_fingering_measures(root)
+        if orphan_measures:
+            export_warnings.append({"code": "fingering_wrong_voice",
+                                    "measures": orphan_measures[:8]})
 
     return {
         "parts": parts,
