@@ -71,7 +71,9 @@ def extract(xml_path: Path) -> dict:
             if st:
                 staves = int(st)
 
-    # Tempo: <sound tempo> anywhere wins; first direction words = the verbal marking.
+    # Tempo: <sound tempo> anywhere wins, then the first metronome mark — the same
+    # reading tempo_norm injects, so the registry cannot say "not marked" about a
+    # score whose timeline is already running at the engraver's number.
     tempo_bpm = None
     tempo_text = None
     for sound in root.iter("sound"):
@@ -82,11 +84,29 @@ def extract(xml_path: Path) -> dict:
                 break
             except ValueError:
                 pass
-    for words in root.iter("words"):
-        w = _text(words)
+    if tempo_bpm is None:
+        from pipeline.tempo_norm import _metronome_qpm
+        for met in root.iter("metronome"):
+            qpm = _metronome_qpm(met)
+            if qpm:
+                tempo_bpm = round(qpm)
+                break
+    # directive="yes" is how the exporter marks the tempo indication itself; without
+    # it the first <words> in the file wins, which on this corpus is a rit. or a
+    # bare edition number.
+    for d in root.iter("direction"):
+        if d.get("directive") != "yes":
+            continue
+        w = _text(d.find(".//words"))
         if w and len(w) < 60:
             tempo_text = w
             break
+    if tempo_text is None:
+        for words in root.iter("words"):
+            w = _text(words)
+            if w and len(w) < 60:
+                tempo_text = w
+                break
 
     measures = len(first_part.findall("measure")) if first_part is not None else 0
 
