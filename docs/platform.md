@@ -192,6 +192,14 @@ engraver reviewed the rendered pages against his own.
 - **The opening tempo is lifted to the engraver's distance** (`staff.py::lift_opening_tempo`,
   MEI `@vo`). verovio honours neither `default-y` nor `placement` from the source here.
 
+⚠️ **Two renders of the same score are never byte-identical.** verovio gives the
+document a random id and suffixes every glyph def with it, and every element that did
+not come from the source (`system`, `grpSym`, …) gets its own random id of varying
+length — `xmlIdChecksum` only makes the source-derived ones stable. Comparing SVG
+length, or the SVG itself, therefore measures noise: a Bach invention with no
+fingerings at all "changed" under a fingering-only patch. To decide whether a change
+actually moved the page, strip every `id`/`href` attribute and compare what is left.
+
 `pipeline/engrave_checks.py` reports these defects on the job card without ever failing a
 build — the causes live in the source and a hard gate would block a whole book on one bar.
 ⚠️ Read `stranded_fingerings`'s MEDIAN, not its maximum: a scale is engraved with its

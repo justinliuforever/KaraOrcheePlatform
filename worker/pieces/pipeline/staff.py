@@ -42,7 +42,11 @@ _STAMP_RE = re.compile(r'<!--render_generation:(.*?)-->')
 
 
 def layout_options_hash() -> str:
-    """Stable fingerprint of the house layout config; part of render_generation."""
+    """Stable fingerprint of the house layout config; part of render_generation.
+
+    Note for anyone diffing two renders: verovio stamps each document with a random
+    id and suffixes every glyph def with it, so two byte-identical pages differ in
+    length run to run. Normalise that id out before comparing."""
     blob = json.dumps({"common": COMMON, "variants": VARIANTS, "page_gap": PAGE_GAP},
                       sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
