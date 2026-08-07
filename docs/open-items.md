@@ -16,6 +16,47 @@ Nothing here is forgotten work — each line says who it waits on and what unblo
 | **App version bump** | Nothing | 0.8 recommended (Notes is a new product surface, not a point fix). Founder said: decide at archive time. Build number must also increment or TestFlight rejects the upload. |
 | **Narration cool-tiering** | Nothing — cost only | `notes-narration-cool` is in bicep, not applied. Cold-tier reads cost extra, so this may cost more than it saves if students revisit old notes. Revisit with real replay data. |
 
+## Engraving round 3 — where it stands (2026-08-07)
+
+**Shipped and verified.** worker revision 0000030 = `ea47a05`. Fifteen pieces republished, none
+failed. The published Hanon had been PLAYING an octave low — not just printing low — because
+Dolet drops an octave line and its pitch compensation in the same routine, and the batch
+reference MIDI is synthesised from that same XML. Live v4 of `hanon_virtuoso_pianist_no_39` now
+matches the engraver's own MIDI note for note across the first 64 onsets; it did not before.
+
+- octave reconstruction: 61/61 dropped lines matched, 819 + 193 notes raised, 3 noteheads moved
+  of 8249. Tool at `scratchpad/wf3/octrecon/` (not in the repo — it is a one-off).
+- five render fixes in `2df0806`: pedal Ped.+line (MEI `form="pedline"`), duplicate pedal starts
+  dropped (209 overlaps → 0), key signature left of a merged `:||:`, symbol-overridden rests
+  printed, barline graces rejoined.
+- republished: Hanon 32/33/38/39/40/41/42, Clementi Op.36 No.2 ii + No.3 i, Chopin Op.34 No.1 +
+  No.3, Liszt Feux Follets, K.331 i + iii, K.330 ii.
+
+**Committed but NOT deployed.** `a652a80` reads Dolet's `<?DoletSibelius …?>` notices from the
+raw upload bytes and blocks only what would make a musician play wrong notes. Verified: the
+engraver's original files block, the reconstructed ones pass. Needs one more worker deploy.
+
+**Waiting on the engraver.**
+- Chopin Op.34's 11 dropped octave lines cannot be reconstructed (199 grace notes; the MIDI has
+  392 more notes than the score, so the alignment will not converge). He must redraw them. The
+  two-minute experiment to confirm the method: delete and redraw the 8va at No.3 bar 169 — NOT
+  copy-paste — re-export, and `Unrecognized line style` should fall 16 → 15.
+- A MuseScore engraving of the whole Chopin Op.34 for the platform comparison. Judge it with
+  the same gate: zero Dolet notices, and `<octave-shift>` count equal to the lines he drew.
+
+**Founder decision pending.** Honouring his line breaks (`breaks: "line"` on phone and
+ipad_portrait) reproduces his bars-per-system exactly — 51 systems, vector identical. Costs a
+whole-library re-render and 20-45% more scrolling. iPad landscape should stay auto: six bars
+across 232 staff spaces looks empty.
+
+**Known remaining defects.**
+- 52 notes in Hanon No. 41 (bars 423-486) still disagree with the MIDI. They carry no dropped-line
+  notice and sit INSIDE brackets Dolet did export — a separate, pre-existing fault. The
+  reconstruction correctly refuses them.
+- `rach_op23_4` and `schubert_sonata_894_mvt2` still cannot take a new render (see below).
+- Hanon No. 43 passes every gate now but is a NEW catalogue entry; the engraver asked to review
+  new pieces himself, so it should go to Review, not straight to publish.
+
 ## The Dropbox library moves under us
 
 Four published pieces (Hanon Part II Nos. 39-42) sat for two weeks on a July 19 upload of
