@@ -192,6 +192,25 @@ engraver reviewed the rendered pages against his own.
 - **The opening tempo is lifted to the engraver's distance** (`staff.py::lift_opening_tempo`,
   MEI `@vo`). verovio honours neither `default-y` nor `placement` from the source here.
 
+⚠️ **Dolet tells us when it gives up, in processing instructions nothing was reading.**
+`<?DoletSibelius Unrecognized line style …?>` marks a line it could not translate; it writes
+nothing else and the export stays internally consistent, so every gate passes. Half the
+engraver's octave lines vanished this way — 61 in Hanon Part II alone — and because Dolet's
+octave compensation lives inside the same routine that writes `<octave-shift>`, the pitches
+were not raised either. The published pieces printed AND SOUNDED an octave low, because the
+batch reference MIDI is synthesised from the same XML by
+`tools/collection_splitter/synth_midi.py`. Read these instructions from the RAW uploaded bytes
+— ElementTree, `normalize_engraving` and the splitter all discard them.
+
+Dolet dispatches by the object type Sibelius reports, built at runtime
+(`sWriteMethod = 'Write' & sType; @sWriteMethod(…)`), so grepping its source for a call site
+finds nothing. Only a line Sibelius reports as `OctavaLine` reaches `WriteOctavaLine`.
+
+⚠️ **`<pitch>` is the SOUNDING pitch; an octave-shift moves only where the note prints.**
+Verified minimally: C4-F4 under `octave-shift type="down"` gives MEI `@oct=3`, `@oct.ges=4`,
+and score_events plays 60-65 either way. So restoring a dropped octave line means raising the
+pitch by 12 AND adding the bracket — the bracket alone lowers an already-low note again.
+
 ⚠️ **Two renders of the same score are never byte-identical.** verovio gives the
 document a random id and suffixes every glyph def with it, and every element that did
 not come from the source (`system`, `grpSym`, …) gets its own random id of varying
