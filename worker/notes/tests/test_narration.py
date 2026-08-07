@@ -733,7 +733,7 @@ class JobConn:
             "FROM note_jobs j": JOB_ROW,
             "SELECT status FROM lesson_sessions": ("submitted",),
             "FOR UPDATE OF l": ("submitted", "teacher-7", "student-4", "piece-1",
-                                "Etude No. 3", "teacher", 3, None),
+                                "Etude No. 3", None, "teacher", 3, None),
             "INSERT INTO notes": ("note-9",),
         }
         self.executed = []

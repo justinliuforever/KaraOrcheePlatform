@@ -15,8 +15,19 @@ import {
   narrationPrefix,
 } from "../notes/narration";
 import { notifyNoteSent } from "../notes/push";
+import { REGROUND_HINT } from "./lessons";
+import type { Orm } from "../db/client";
+import { normalizeLabel, upsertCustomPiece } from "./customPieces";
 import {
+  asStringArray,
+  computeSuggestion,
+  type CandidatePiece,
+  type Suggestion,
+} from "../notes/piece_suggestion";
+import {
+  customPieces,
   devices,
+  lessonSessions,
   noteAnnotations,
   noteJobs,
   noteNarrationClips,
@@ -25,6 +36,127 @@ import {
   teacherStudentLinks,
   users,
 } from "../db/schema";
+
+type NoteRow = typeof notes.$inferSelect;
+
+// Eligibility, then computation. Every arm here is a REMOVAL: a sent note, an
+// explicit piece, a vendored pick (an explicit choice delivered as nil-id + label),
+// a dismissal, or two survivors all end in silence.
+async function suggestionFor(deps: Deps, note: NoteRow): Promise<Suggestion | null> {
+  if (note.status !== "draft" || note.pieceId) return null;
+  const db = deps.db!.orm;
+
+  const [lesson] = note.lessonSessionId
+    ? await db
+        .select({
+          pieceSource: lessonSessions.pieceSource,
+          pieceLabel: lessonSessions.pieceLabel,
+          customPieceId: lessonSessions.customPieceId,
+        })
+        .from(lessonSessions)
+        .where(eq(lessonSessions.id, note.lessonSessionId))
+        .limit(1)
+    : [];
+  if (lesson?.pieceSource === "vendored") return null;
+
+  const mentions = note.noteJobId
+    ? asStringArray(
+        (
+          await db
+            .select({ pieceMentions: noteJobs.pieceMentions })
+            .from(noteJobs)
+            .where(eq(noteJobs.id, note.noteJobId))
+            .limit(1)
+        )[0]?.pieceMentions,
+      )
+    : [];
+
+  const mine = await db
+    .select()
+    .from(customPieces)
+    .where(eq(customPieces.teacherId, note.teacherId));
+  const ownId = note.customPieceId ?? lesson?.customPieceId ?? null;
+  const own = mine.find((c) => c.id === ownId) ?? null;
+  if (!own && !mentions.length) return null;
+
+  const catalog = await db
+    .select({ id: pieces.id, title: pieces.title, subtitle: pieces.subtitle, composer: pieces.composer })
+    .from(pieces)
+    .where(eq(pieces.status, "published"));
+
+  // The teacher's OWN vocabulary joins the candidate set (FG-18) as things a mention
+  // could equally have meant. An unlinked one carries no piece to confirm, so when it
+  // wins the chip stays silent — a linked one is already its catalog piece here.
+  const ownPseudo: CandidatePiece[] = mine
+    .filter((c) => c.id !== ownId && !c.linkedPieceId)
+    .map((c) => ({ id: `custom:${c.id}`, title: c.displayLabel, subtitle: "", composer: "" }));
+
+  const dismissed = [
+    ...asStringArray(note.pieceSuggestionDismissed),
+    ...(own ? asStringArray(own.dismissedPieceIds) : []),
+  ];
+
+  // The library arm claims the catalog holds THE NAME ON THE SCREEN. The entity
+  // outlives a rename, so the claim dies unless the two are still the same name.
+  const shown = note.pieceLabel ?? lesson?.pieceLabel ?? null;
+  const claimable = own && shown && normalizeLabel(own.displayLabel) === normalizeLabel(shown);
+
+  const suggestion = computeSuggestion({
+    customLabel: claimable ? own.displayLabel : null,
+    mentions,
+    candidates: [...catalog, ...ownPseudo],
+    dismissedPieceIds: dismissed,
+  });
+  if (!suggestion || suggestion.pieceId.startsWith("custom:")) return null;
+  return suggestion;
+}
+
+type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
+
+// Cleared at every resolution point (confirm, dismiss, send, discard): the chip is
+// draft-only, nothing reads these afterward, and they are the teacher's and a
+// minor's words quoted verbatim.
+export async function clearPieceMentions(tx: Tx, jobId: string | null): Promise<void> {
+  if (!jobId) return;
+  await tx.update(noteJobs).set({ pieceMentions: [], updatedAt: sql`now()` }).where(eq(noteJobs.id, jobId));
+}
+
+// Demote every auto-placed anchor that points past the end of the newly named piece.
+// Human pins are deliberate placements and are never touched.
+async function reground(tx: Tx, noteId: string, measures: number): Promise<void> {
+  const rows = await tx.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, noteId));
+  for (const a of rows) {
+    const loc = (a.location ?? {}) as Record<string, unknown>;
+    if (loc.grounded !== true || loc.pinnedBy !== "auto") continue;
+    const end = typeof loc.measureEnd === "number"
+      ? loc.measureEnd
+      : typeof loc.measureStart === "number"
+        ? loc.measureStart
+        : null;
+    if (end === null || end <= measures) continue;
+    const { measureStart: _s, measureEnd: _e, pinnedBy: _p, ...rest } = loc;
+    await tx
+      .update(noteAnnotations)
+      .set({ location: { ...rest, grounded: false, hint: REGROUND_HINT }, updatedAt: sql`now()` })
+      .where(eq(noteAnnotations.id, a.id));
+  }
+}
+
+async function noteWithAnnotations(deps: Deps, noteId: string) {
+  const db = deps.db!.orm;
+  const [note] = await db.select().from(notes).where(eq(notes.id, noteId)).limit(1);
+  const annotations = await db
+    .select()
+    .from(noteAnnotations)
+    .where(eq(noteAnnotations.noteId, noteId))
+    .orderBy(asc(noteAnnotations.idx));
+  return { note: note!, annotations, pieceSuggestion: note ? await suggestionFor(deps, note) : null };
+}
+
+function strippedForStudent(note: NoteRow) {
+  const { pieceSuggestionDismissed: _d, customPieceId: _c, ...rest } = note;
+  return rest;
+}
 
 export function notesRouter(deps: Deps): Router {
   const router = Router();
@@ -84,7 +216,9 @@ export function notesRouter(deps: Deps): Router {
         .from(noteAnnotations)
         .where(eq(noteAnnotations.noteId, note.id))
         .orderBy(asc(noteAnnotations.idx));
-      res.json({ note, annotations });
+      // Computed at READ time, never stored: a catalog that grew after processing
+      // still surfaces, and a dismissal applies the moment it is made.
+      res.json({ note, annotations, pieceSuggestion: await suggestionFor(deps, note) });
     }),
   );
 
@@ -268,11 +402,43 @@ export function notesRouter(deps: Deps): Router {
           .limit(1);
         pieceVersion = piece?.publishedVersion ?? null;
       }
-      const [updated] = await db
-        .update(notes)
-        .set({ status: "sent", studentId, pieceVersion, sentAt: sql`now()`, updatedAt: sql`now()` })
-        .where(and(eq(notes.id, note.id), eq(notes.status, "draft")))
-        .returning();
+      // Send is the third minting point and the commitment point: a name typed fresh
+      // into the review label field patches only the note, so without this the piece
+      // the teacher actually sent would never group. Precedence is label equality — a
+      // note label that DIFFERS from its lesson's was retyped by a human and is typed
+      // provenance whatever the lesson says; an equal one follows the lesson, which
+      // means an unknown or vendored source mints nothing.
+      const updated = await db.transaction(async (tx) => {
+        let customPieceId = note.customPieceId;
+        if (!note.pieceId && note.pieceLabel) {
+          const [lesson] = note.lessonSessionId
+            ? await tx
+                .select({ pieceLabel: lessonSessions.pieceLabel, customPieceId: lessonSessions.customPieceId })
+                .from(lessonSessions)
+                .where(eq(lessonSessions.id, note.lessonSessionId))
+                .limit(1)
+            : [];
+          if (lesson && lesson.pieceLabel === note.pieceLabel) {
+            customPieceId = lesson.customPieceId;
+          } else if (lesson) {
+            customPieceId = await upsertCustomPiece(tx, me.id, note.pieceLabel);
+          }
+        }
+        const [row] = await tx
+          .update(notes)
+          .set({
+            status: "sent",
+            studentId,
+            pieceVersion,
+            customPieceId,
+            sentAt: sql`now()`,
+            updatedAt: sql`now()`,
+          })
+          .where(and(eq(notes.id, note.id), eq(notes.status, "draft")))
+          .returning();
+        if (row) await clearPieceMentions(tx, note.noteJobId);
+        return row;
+      });
       if (!updated) {
         res.status(409).json({ error: "status_changed" });
         return;
@@ -306,6 +472,144 @@ export function notesRouter(deps: Deps): Router {
         push: pushed,
       });
       res.json(updated);
+    }),
+  );
+
+  // Confirm-only. Nothing here is ever reached by the worker, a job, or a read: the
+  // ONLY path from a suggestion to notes.piece_id is a teacher pressing a button.
+  router.post(
+    "/v1/notes/:id/piece-suggestion",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      if (!requireTeacher(me, res)) return;
+      const db = deps.db!.orm;
+      const body = req.body ?? {};
+      const action = body.action;
+      const pieceId = typeof body.pieceId === "string" ? body.pieceId : null;
+      if ((action !== "confirm" && action !== "dismiss") || !pieceId) {
+        res.status(400).json({ error: "bad_request" });
+        return;
+      }
+      const [note] = await db
+        .select()
+        .from(notes)
+        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id), eq(notes.origin, "teacher")))
+        .limit(1);
+      if (!note) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (note.status !== "draft") {
+        res.status(409).json({ error: "not_editable", message: "Sent notes can't be edited — retract, fix, and resend." });
+        return;
+      }
+
+      const fresh = await suggestionFor(deps, note);
+      if (action === "confirm" && fresh?.pieceId !== pieceId) {
+        // A catalog republish or a second device moved the ground under the button.
+        // The stale candidate is never applied.
+        res.status(409).json({ error: "suggestion_changed", pieceSuggestion: fresh ?? null });
+        return;
+      }
+
+      const [lesson] = note.lessonSessionId
+        ? await db.select().from(lessonSessions).where(eq(lessonSessions.id, note.lessonSessionId)).limit(1)
+        : [];
+
+      if (action === "dismiss") {
+        // Both dismissal stores are append-only, so an id that names no piece is
+        // permanent litter. Re-checking the id (rather than the live suggestion)
+        // keeps the specced silent retry idempotent after the first dismiss lands.
+        const [dismissable] = await db
+          .select({ id: pieces.id })
+          .from(pieces)
+          .where(eq(pieces.id, pieceId))
+          .limit(1);
+        if (!dismissable) {
+          res.status(400).json({ error: "unknown_piece" });
+          return;
+        }
+        await db.transaction(async (tx) => {
+          const dismissed = [...new Set([...asStringArray(note.pieceSuggestionDismissed), pieceId])];
+          await tx
+            .update(notes)
+            .set({ pieceSuggestionDismissed: dismissed, updatedAt: sql`now()` })
+            .where(eq(notes.id, note.id));
+          const customId = note.customPieceId ?? lesson?.customPieceId ?? null;
+          if (customId) {
+            const [entity] = await tx.select().from(customPieces).where(eq(customPieces.id, customId)).limit(1);
+            if (entity) {
+              await tx
+                .update(customPieces)
+                .set({
+                  dismissedPieceIds: [...new Set([...asStringArray(entity.dismissedPieceIds), pieceId])],
+                  updatedAt: sql`now()`,
+                })
+                .where(eq(customPieces.id, customId));
+            }
+          }
+          await clearPieceMentions(tx, note.noteJobId);
+        });
+        await userAudit(deps, req, "note.piece_suggestion_dismiss", { type: "note", id: note.id }, { pieceId });
+        res.json(await noteWithAnnotations(deps, note.id));
+        return;
+      }
+
+      const [piece] = await db
+        .select({ id: pieces.id, facts: pieces.facts, publishedVersion: pieces.publishedVersion })
+        .from(pieces)
+        .where(eq(pieces.id, pieceId))
+        .limit(1);
+      if (!piece) {
+        res.status(400).json({ error: "unknown_piece" });
+        return;
+      }
+      const measures = (piece.facts as { measures?: unknown } | null)?.measures;
+      const measureCount = typeof measures === "number" && Number.isInteger(measures) && measures > 0 ? measures : null;
+      // Undo has to be able to put back exactly what was there, including whether the
+      // teacher had picked a vendored piece — restoring a hardcoded "typed" would
+      // rewrite their provenance.
+      const prior = {
+        pieceId: lesson?.pieceId ?? null,
+        pieceLabel: lesson?.pieceLabel ?? null,
+        pieceSource: lesson?.pieceSource ?? null,
+      };
+
+      await db.transaction(async (tx) => {
+        if (lesson) {
+          await tx
+            .update(lessonSessions)
+            .set({
+              pieceId,
+              pieceSource: "catalog",
+              customPieceId: null,
+              pieceUpdatedAt: sql`now()`,
+              updatedAt: sql`now()`,
+            })
+            .where(eq(lessonSessions.id, lesson.id));
+        }
+        await tx
+          .update(notes)
+          .set({ pieceId, updatedAt: sql`now()` })
+          .where(eq(notes.id, note.id));
+        if (measureCount !== null) await reground(tx, note.id, measureCount);
+        // "The teacher said X" does not assert "X equals the typed label", so only the
+        // library arm — exact name equality — may record a link.
+        const customId = note.customPieceId ?? lesson?.customPieceId ?? null;
+        if (fresh?.source === "library" && customId) {
+          await tx
+            .update(customPieces)
+            .set({ linkedPieceId: pieceId, linkedAt: sql`now()`, updatedAt: sql`now()` })
+            .where(eq(customPieces.id, customId));
+        }
+        await clearPieceMentions(tx, note.noteJobId);
+      });
+      await userAudit(deps, req, "note.piece_suggestion_confirm", { type: "note", id: note.id }, {
+        pieceId,
+        source: fresh?.source ?? null,
+      });
+      res.json({ ...(await noteWithAnnotations(deps, note.id)), prior });
     }),
   );
 
@@ -547,7 +851,13 @@ export function notesRouter(deps: Deps): Router {
         // Tombstoned notes (author deleted their account) carry null job/lesson
         // refs — coalesce to "" because fielded B1 clients decode these as
         // non-optional strings and a null (or absent) key bricks the note forever.
-        note: { ...note, noteJobId: note.noteJobId ?? "", lessonSessionId: note.lessonSessionId ?? "" },
+        // The suggestion machinery is teacher-side entirely: the dismissal ledger and
+        // the entity id are not the student's business and never ride to them.
+        note: {
+          ...strippedForStudent(note),
+          noteJobId: note.noteJobId ?? "",
+          lessonSessionId: note.lessonSessionId ?? "",
+        },
         annotations,
         teacher: { id: note.teacherId, displayName: teacher?.displayName ?? null },
       });

@@ -169,6 +169,20 @@
       "when": 1785706328544,
       "tag": "0023_rainy_captain_midlands",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786079885242,
+      "tag": "0024_piece_provenance",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1786079959160,
+      "tag": "0025_custom_pieces",
+      "breakpoints": true
     }
   ]
 }

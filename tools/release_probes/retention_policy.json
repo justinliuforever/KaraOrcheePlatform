@@ -1,0 +1,72 @@
+{
+  "rules": [
+    {
+      "name": "lesson-audio-cool-then-delete",
+      "enabled": true,
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["lesson-audio/"]
+        },
+        "actions": {
+          "baseBlob": {
+            "tierToCool": { "daysAfterModificationGreaterThan": 30 },
+            "delete": { "daysAfterModificationGreaterThan": 90 }
+          },
+          "version": {
+            "delete": { "daysAfterCreationGreaterThan": 7 }
+          }
+        }
+      }
+    },
+    {
+      "name": "notes-assets-purge-deleted-versions",
+      "enabled": true,
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["notes-assets/"]
+        },
+        "actions": {
+          "version": {
+            "delete": { "daysAfterCreationGreaterThan": 30 }
+          }
+        }
+      }
+    },
+    {
+      "name": "notes-transcripts-delete",
+      "enabled": true,
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["notes-assets/transcripts/"]
+        },
+        "actions": {
+          "baseBlob": {
+            "delete": { "daysAfterModificationGreaterThan": 90 }
+          }
+        }
+      }
+    },
+    {
+      "name": "notes-narration-cool",
+      "enabled": false,
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["notes-assets/narration/"]
+        },
+        "actions": {
+          "baseBlob": {
+            "tierToCool": { "daysAfterModificationGreaterThan": 30 }
+          }
+        }
+      }
+    }
+  ]
+}

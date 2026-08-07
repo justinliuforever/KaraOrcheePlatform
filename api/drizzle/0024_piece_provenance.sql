@@ -1,0 +1,2 @@
+ALTER TABLE "lesson_sessions" ADD COLUMN "piece_source" text;--> statement-breakpoint
+ALTER TABLE "lesson_sessions" ADD CONSTRAINT "ck_lesson_piece_source" CHECK ("lesson_sessions"."piece_source" IS NULL OR "lesson_sessions"."piece_source" IN ('catalog', 'vendored', 'typed'));

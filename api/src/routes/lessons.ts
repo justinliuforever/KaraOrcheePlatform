@@ -4,6 +4,7 @@ import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireUser, userAudit } from "../notes/user";
+import { upsertCustomPiece } from "./customPieces";
 import { notesAccess } from "../notes/entitlement";
 import { narrationPrefix } from "../notes/narration";
 import type { Orm } from "../db/client";
@@ -148,7 +149,19 @@ export function retryAllowed(input: RetryInput): boolean {
 // Hint stamped on an annotation whose auto-placed measure fell outside the piece
 // named after the fact. Wording mirrors the app's ungrounded copy: it must read
 // as "needs a location", never as an error.
-const REGROUND_HINT = "This pointed past the end of the piece — place it on the score.";
+export const REGROUND_HINT = "This pointed past the end of the piece — place it on the score.";
+
+export const PIECE_SOURCES = ["catalog", "vendored", "typed"] as const;
+export type PieceSource = (typeof PIECE_SOURCES)[number];
+
+// Anything the client did not send as one of the three known words is NULL —
+// "unknown provenance", never a guess. The off-catalog rate is read off this
+// column, so a coerced junk value would be a fabricated data point.
+export function readPieceSource(raw: unknown): PieceSource | null {
+  return typeof raw === "string" && (PIECE_SOURCES as readonly string[]).includes(raw)
+    ? (raw as PieceSource)
+    : null;
+}
 
 type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
 
@@ -217,6 +230,7 @@ export function lessonsRouter(deps: Deps): Router {
         : null;
       const studentId = typeof body.studentId === "string" ? body.studentId : null;
       const clientLessonId = typeof body.clientLessonId === "string" ? body.clientLessonId : null;
+      const pieceSource = readPieceSource(body.pieceSource);
 
       // Client-declared recorder role (B1.5 app sends the local snapshot). An
       // explicit "student" beats the teacher-wins default — the beta view-as
@@ -305,24 +319,43 @@ export function lessonsRouter(deps: Deps): Router {
 
       const startedAt = body.startedAt ? new Date(body.startedAt) : null;
       const endedAt = body.endedAt ? new Date(body.endedAt) : null;
-      const [row] = await db
-        .insert(lessonSessions)
-        .values({
-          teacherId: me.id,
-          ownerRole,
-          clientLessonId,
-          studentId,
-          pieceId,
-          pieceLabel,
-          startedAt: startedAt && !Number.isNaN(startedAt.getTime()) ? startedAt : null,
-          endedAt: endedAt && !Number.isNaN(endedAt.getTime()) ? endedAt : null,
-          durationSec: Number.isFinite(body.durationSec) ? Math.round(body.durationSec) : null,
-          attested: body.attested === true,
-        })
-        .returning();
+      // One transaction: a lesson whose entity failed to mint, or an entity with no
+      // lesson, are both worse than neither.
+      const row = await db.transaction(async (tx) => {
+        const customPieceId = pieceSource === "typed" && pieceLabel
+          ? await upsertCustomPiece(tx, me.id, pieceLabel)
+          : null;
+        const [inserted] = await tx
+          .insert(lessonSessions)
+          .values({
+            teacherId: me.id,
+            ownerRole,
+            clientLessonId,
+            studentId,
+            pieceId,
+            pieceLabel,
+            pieceSource,
+            customPieceId,
+            startedAt: startedAt && !Number.isNaN(startedAt.getTime()) ? startedAt : null,
+            endedAt: endedAt && !Number.isNaN(endedAt.getTime()) ? endedAt : null,
+            durationSec: Number.isFinite(body.durationSec) ? Math.round(body.durationSec) : null,
+            attested: body.attested === true,
+          })
+          .returning();
+        return inserted;
+      });
       const path = deps.lessons.blobPath(me.id, row!.id);
       await db.update(lessonSessions).set({ audioPath: path }).where(eq(lessonSessions.id, row!.id));
       await userAudit(deps, req, "lesson.create", { type: "lesson", id: row!.id });
+      // The off-catalog rate is the number that decides whether score scanning is
+      // ever worth building; a counter that only ever fires for typed makes the
+      // numerator queryable without reading lesson labels.
+      if (pieceSource === "typed") {
+        console.log(JSON.stringify({
+          kind: "piece_typed", op: "lesson.create", reqId: req.reqId ?? null,
+          lessonId: row!.id, ownerRole,
+        }));
+      }
       res.status(201).json({
         lesson: { ...row, audioPath: path },
         uploadUrl: deps.lessons.uploadUrl(path),
@@ -572,6 +605,10 @@ export function lessonsRouter(deps: Deps): Router {
       const hasStudent = "studentId" in body;
       const hasPieceId = "pieceId" in body;
       const hasPieceLabel = "pieceLabel" in body;
+      // Provenance rides a piece change; it is never a patch of its own. A lone
+      // pieceSource would rewrite how an existing choice is described without
+      // changing the choice.
+      const pieceSource = hasPieceId || hasPieceLabel ? readPieceSource(body.pieceSource) : undefined;
       if (!hasStudent && !hasPieceId && !hasPieceLabel) {
         res.status(400).json({ error: "nothing_to_update" });
         return;
@@ -661,6 +698,17 @@ export function lessonsRouter(deps: Deps): Router {
         if (studentId !== undefined) patch.studentId = studentId;
         if (pieceId !== undefined) patch.pieceId = pieceId;
         if (pieceLabel !== undefined) patch.pieceLabel = pieceLabel;
+        if (pieceSource !== undefined) patch.pieceSource = pieceSource;
+        // A label absent from the patch is unchanged, and the entity follows the label
+        // the lesson will actually carry.
+        const effectiveLabel = pieceLabel !== undefined ? pieceLabel : locked.pieceLabel;
+        if (pieceSource === "typed" && effectiveLabel) {
+          patch.customPieceId = await upsertCustomPiece(tx, me.id, effectiveLabel);
+        } else if (pieceSource !== undefined) {
+          // Any piece-touching patch that does not mint unfiles the lesson: an entity
+          // outliving its label lets the chip claim a name nobody typed.
+          patch.customPieceId = null;
+        }
         // The retry bonus reads this, so it must mean "the prompt would differ",
         // not "someone touched the row": a re-send of the same value is not a
         // change, and a student assignment is never one.
@@ -998,6 +1046,8 @@ export function lessonsRouter(deps: Deps): Router {
               // a named student. A discard that promises to delete the transcript
               // must strip it; the counts D5 exists to protect all survive.
               metrics: sql`${noteJobs.metrics} - 'warnings'::text`,
+              // Verbatim lesson words, like everything else stripped here.
+              pieceMentions: [],
               updatedAt: sql`now()`,
             })
             .where(eq(noteJobs.lessonSessionId, lesson.id));

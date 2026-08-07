@@ -4,6 +4,7 @@ import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireUser, userAudit } from "../notes/user";
+import { deleteCustomPiecesOf } from "./customPieces";
 import {
   auditEvents,
   devices,
@@ -232,6 +233,10 @@ export function usersRouter(deps: Deps): Router {
           await tx.delete(noteJobs).where(inArray(noteJobs.lessonSessionId, lessonIds));
           await tx.delete(lessonSessions).where(inArray(lessonSessions.id, lessonIds));
         }
+        // The teacher's private piece vocabulary dies with them. The ON DELETE SET NULL
+        // references null custom_piece_id on the sent notes that survive; piece_label —
+        // the only thing a student screen renders — is untouched.
+        await deleteCustomPiecesOf(tx, me.id);
 
         await tx.delete(devices).where(eq(devices.userId, me.id));
         await tx.delete(entitlements).where(eq(entitlements.userId, me.id));

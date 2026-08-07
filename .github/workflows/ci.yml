@@ -57,3 +57,18 @@ jobs:
       - run: pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -r requirements.lock.txt pytest
       - run: python -m pytest tests/ -q
+
+  notes-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: worker/notes/requirements.txt
+      - run: pip install -r worker/notes/requirements.txt pytest
+      # The notes worker and the release probes were both outside CI: 236 tests that
+      # only ever ran on a laptop guard nothing.
+      - run: python -m pytest worker/notes/tests -q
+      - run: python -m pytest tools/release_probes/tests -q

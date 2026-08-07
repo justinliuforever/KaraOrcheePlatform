@@ -1,3 +1,5 @@
+import os
+
 # Ported from the validated prototype (piano-ai-notes/notes/prompt.py) with
 # production hardening: diarized-turn input, no est_minutes (teachers ruled the
 # field misleading), and an explicit measure-count bound fed per lesson.
@@ -52,11 +54,42 @@ USER_TEMPLATE = (
     "TRANSCRIPT:\n{transcript}"
 )
 
+_SCHEMA_TAIL = '  "practice_plan": [{"focus": string, "steps": [string], "target": string}]\n}'
+_RULE_TAIL = "- Be lean:"
 
-def build_system(measure_count: int | None) -> str:
-    if measure_count and measure_count > 0:
-        return SPEC.replace("{measure_count}", str(measure_count))
-    return SPEC_NO_COUNT
+PIECE_MENTIONS_SCHEMA = (
+    '  "piece_mentions": [string]      // quote VERBATIM every phrase where the teacher '
+    "names the piece or composer being played; at most 3; [] if none"
+)
+PIECE_MENTIONS_RULE = (
+    "- piece_mentions is evidence, not inference: copy the teacher's exact words naming the "
+    'piece or composer ("the Sonatina in C major", "that Burgmuller"). Never write a title the '
+    "teacher did not say, and leave the list empty rather than guess."
+)
+
+
+def piece_mentions_enabled() -> bool:
+    return os.environ.get("NOTES_PIECE_MENTIONS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def with_piece_mentions(spec: str) -> str:
+    return spec.replace(
+        _SCHEMA_TAIL,
+        _SCHEMA_TAIL.replace("}]\n}", "}],\n" + PIECE_MENTIONS_SCHEMA + "\n}"),
+    ).replace(_RULE_TAIL, PIECE_MENTIONS_RULE + "\n" + _RULE_TAIL)
+
+
+# W6 Step 1 gates this field on a zero-regression eval the corpus has not cleared, so
+# the shipped prompt is the one the corpus was measured against. Flipping the env var
+# is the whole change once it clears.
+def build_system(measure_count: int | None, *, piece_mentions: bool | None = None) -> str:
+    base = (
+        SPEC.replace("{measure_count}", str(measure_count))
+        if measure_count and measure_count > 0
+        else SPEC_NO_COUNT
+    )
+    enabled = piece_mentions_enabled() if piece_mentions is None else piece_mentions
+    return with_piece_mentions(base) if enabled else base
 
 
 def build_user(transcript_turns: str, piece_desc: str | None) -> str:

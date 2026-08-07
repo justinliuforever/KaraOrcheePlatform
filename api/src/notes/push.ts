@@ -9,20 +9,52 @@ import { devices } from "../db/schema";
 // the note over an authenticated request. Two reasons, and both outrank convenience:
 // a lock screen is readable by whoever is nearby and this is a minor's lesson record,
 // and the server stays the source of truth so a dropped push loses nothing.
-export const NOTE_ARRIVED_ALERT = {
+//
+// v0.9 NOTIFICATION POLICY, BINDING on every notification added after this line:
+// a push announces the completion of a job the RECIPIENT personally started, and
+// nothing else. Never the other party's reading or practising — those are
+// surveillance signals, not news. Never an app-icon badge. Fixed strings plus an
+// id: no piece title, no names, no content. Adding a notification means clearing
+// these bars again, here, in writing.
+
+export interface PushAlert {
+  title: string;
+  body: string;
+}
+
+export const NOTE_ARRIVED_ALERT: PushAlert = {
   title: "New practice note",
   body: "Your teacher sent you a note. Open the app to read it.",
-} as const;
+};
 
-export function noteArrivedPayload(noteId: string): Record<string, unknown> {
+// The recorder is waiting on their own job either way; only the next action differs.
+export const NOTES_READY_TEACHER_ALERT: PushAlert = {
+  title: "Notes ready to review",
+  body: "A lesson you recorded has notes ready to review.",
+};
+
+export const NOTES_READY_SOLO_ALERT: PushAlert = {
+  title: "Your practice notes are ready",
+  body: "Open KaraOrchee to read them.",
+};
+
+export function notesReadyAlert(ownerRole: string): PushAlert {
+  return ownerRole === "student" ? NOTES_READY_SOLO_ALERT : NOTES_READY_TEACHER_ALERT;
+}
+
+export function notePushPayload(noteId: string, alert: PushAlert): Record<string, unknown> {
   return {
     aps: {
-      alert: { ...NOTE_ARRIVED_ALERT },
+      alert: { ...alert },
       sound: "default",
       "thread-id": "notes",
     },
     noteId,
   };
+}
+
+export function noteArrivedPayload(noteId: string): Record<string, unknown> {
+  return notePushPayload(noteId, NOTE_ARRIVED_ALERT);
 }
 
 export interface ApnsConfig {
@@ -41,7 +73,13 @@ export interface PushDelivery {
 }
 
 export interface PushSender {
-  sendNoteArrived(tokens: string[], noteId: string): Promise<PushDelivery[]>;
+  /// One fixed alert about one note, to one user's device tokens. `alert` is the
+  /// whole variable surface — the payload builder refuses everything else.
+  sendNoteArrived(
+    tokens: string[],
+    noteId: string,
+    alert?: PushAlert,
+  ): Promise<PushDelivery[]>;
 }
 
 export const APNS_HOSTS = {
@@ -83,10 +121,10 @@ export function createApnsSender(
   }
 
   return {
-    async sendNoteArrived(tokens, noteId) {
+    async sendNoteArrived(tokens, noteId, alert = NOTE_ARRIVED_ALERT) {
       if (tokens.length === 0) return [];
       const jwt = await providerToken();
-      const body = Buffer.from(JSON.stringify(noteArrivedPayload(noteId)));
+      const body = Buffer.from(JSON.stringify(notePushPayload(noteId, alert)));
       const session = connect(origin);
       // MANDATORY: an http2 session with no 'error' listener turns a DNS or TLS failure into an
       // uncaught exception, which takes the process down mid-send. Every stream settles anyway —
@@ -161,12 +199,12 @@ export interface NotifyOutcome {
   pruned: number;
 }
 
-// Best-effort by contract: the note is already sent and committed before this runs,
-// and every failure here — an unconfigured key, a dead APNs, a rejected token — is
-// swallowed into the returned counters. Never throws.
-export async function notifyNoteSent(
+// Best-effort by contract: the thing being announced is already committed before this
+// runs, and every failure here — an unconfigured key, a dead APNs, a rejected token —
+// is swallowed into the returned counters. Never throws.
+async function notify(
   deps: Deps,
-  args: { studentId: string; noteId: string },
+  args: { userId: string; noteId: string; alert: PushAlert; label: string },
 ): Promise<NotifyOutcome | null> {
   if (!deps.push || !deps.db) return null;
   const db = deps.db.orm;
@@ -174,11 +212,12 @@ export async function notifyNoteSent(
     const rows = await db
       .select({ token: devices.token })
       .from(devices)
-      .where(eq(devices.userId, args.studentId));
+      .where(eq(devices.userId, args.userId));
     if (rows.length === 0) return { attempted: 0, delivered: 0, pruned: 0 };
     const results = await deps.push.sendNoteArrived(
       rows.map((r) => r.token),
       args.noteId,
+      args.alert,
     );
     const dead = results.filter((r) => r.gone).map((r) => r.token);
     if (dead.length > 0) {
@@ -190,7 +229,34 @@ export async function notifyNoteSent(
       pruned: dead.length,
     };
   } catch (err) {
-    console.error("note.send: push failed", args.noteId, err);
+    console.error(`${args.label}: push failed`, args.noteId, err);
     return null;
   }
+}
+
+export async function notifyNoteSent(
+  deps: Deps,
+  args: { studentId: string; noteId: string },
+): Promise<NotifyOutcome | null> {
+  return notify(deps, {
+    userId: args.studentId,
+    noteId: args.noteId,
+    alert: NOTE_ARRIVED_ALERT,
+    label: "note.send",
+  });
+}
+
+// The recipient is the RECORDER (lesson_sessions.teacher_id, which is the student
+// themselves on a solo lesson); owner_role only picks which of the two fixed alerts
+// describes what they can do next.
+export async function notifyNotesReady(
+  deps: Deps,
+  args: { userId: string; noteId: string; ownerRole: string },
+): Promise<NotifyOutcome | null> {
+  return notify(deps, {
+    userId: args.userId,
+    noteId: args.noteId,
+    alert: notesReadyAlert(args.ownerRole),
+    label: "notes.ready",
+  });
 }

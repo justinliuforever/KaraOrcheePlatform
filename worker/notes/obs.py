@@ -10,6 +10,7 @@ import json
 # A job, or a whole lane, did not do what it was asked to do.
 ERROR_EVENTS = {
     "asr_fail",
+    "asr_vendor_delete_failed",
     "asset_delete_failed",
     "gate_fail",
     "llm_invalid",
@@ -26,6 +27,7 @@ WARN_EVENTS = {
     "narration_deadline",
     "narration_over_budget",
     "narration_unconfigured",
+    "ready_push_failed",
 }
 
 

@@ -100,6 +100,35 @@ def _drop(index: int, reason: str, **fields) -> dict:
             **{k: (v[:DROP_TEXT_CHARS] if isinstance(v, str) else v) for k, v in fields.items()}}
 
 
+MAX_PIECE_MENTIONS = 3
+
+
+def normalize_piece_mentions(obj: dict, transcript: str) -> list[str]:
+    """The phrases where the teacher named the piece, verbatim-gated by the SAME
+    predicate the annotation quotes pass. A mention that fails is dropped, never
+    repaired: the chip prints this string as its evidence, so a phrase the
+    transcript does not contain would be the app quoting words nobody said.
+
+    Deliberately separate from normalize_note: a bad mention can never affect the
+    note's own fields, and a missing key is silence, not a failure."""
+    raw = obj.get("piece_mentions")
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if not text or not quote_in_transcript(text, transcript):
+            continue
+        if any(_norm(text) == _norm(kept) for kept in out):
+            continue
+        out.append(text)
+        if len(out) == MAX_PIECE_MENTIONS:
+            break
+    return out
+
+
 def normalize_note(obj: dict, transcript: str, measure_count: int | None):
     """LLM object -> (content, annotation rows, warnings, drops). Raises ValueError on
     shape problems (caller retries once with the validator message).

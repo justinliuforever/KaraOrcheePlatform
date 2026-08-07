@@ -28,7 +28,7 @@ from llm import generate
 from narration import narrate_on_demand, narration_stage, targets_from_message
 from obs import jlog
 from pipeline import (GateFail, build_turns, check_transcript, drop_reasons,
-                      extract_json, normalize_note)
+                      extract_json, normalize_note, normalize_piece_mentions)
 from prompt import build_system, build_user
 
 QUEUE = "notes-jobs"
@@ -137,6 +137,40 @@ def mark_worker_crash(conn, job_id: str) -> None:
                WHERE id = %s AND status <> 'ready_for_review'""",
             (job_id,))
     conn.commit()
+
+
+def mark_ready(conn, job_id: str, metrics: dict) -> bool:
+    """Returns True only for the run that actually flipped the job. The flip is the
+    push trigger, so a second flip is a second banner: two deliveries racing through
+    the 'processing' status check both rebuild the draft, and collapse-id cannot save
+    it because a rebuilt draft carries a new note id."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE note_jobs SET status = %s, stage = %s, metrics = %s, updated_at = now()
+               WHERE id = %s AND status <> 'ready_for_review'""",
+            ("ready_for_review", None, json.dumps(metrics), job_id))
+        flipped = cur.rowcount > 0
+    conn.commit()
+    return flipped
+
+
+def post_ready_push(job_id: str) -> None:
+    """Announce a finished job to the person who started it. Best-effort by contract:
+    the note is committed, the app polls every 15s, and nothing here may fail the job —
+    so a missing key is a log line, not a boot failure. Only failures are logged; the
+    API's own request log records the ones that landed."""
+    base = os.environ.get("API_INTERNAL_BASE_URL")
+    key = os.environ.get("INTERNAL_API_KEY")
+    if not base or not key:
+        jlog(job=job_id, event="ready_push_failed", reason="unconfigured")
+        return
+    try:
+        r = requests.post(f"{base.rstrip('/')}/internal/notes/{job_id}/ready-push",
+                          headers={"X-Internal-Key": key}, timeout=5)
+        if r.status_code >= 300:
+            jlog(job=job_id, event="ready_push_failed", status=r.status_code)
+    except Exception as err:
+        jlog(job=job_id, event="ready_push_failed", error=str(err)[:200])
 
 
 def stamp_model_output(conn, job_id: str, path: str) -> bool:
@@ -282,6 +316,35 @@ def run_asr(audio_url: str, api_key: str) -> dict:
         waited += ASR_POLL_INTERVAL
 
 
+def delete_vendor_transcript(job_id: str, transcript_id: str | None, api_key: str) -> None:
+    """Retire the vendor's copy of the lesson speech once ours is stored, or once the
+    lesson is discarded and ours never will be. Best-effort by contract: the note is
+    the product and nothing here may fail the job — the account TTL is the belt. The
+    DELETE also retires the audio reference we handed over as a SAS URL, whose life
+    the vendor ties to the transcript's."""
+    if not transcript_id:
+        jlog(job=job_id, event="asr_vendor_delete_failed",
+             error="asr response carried no transcript id")
+        return
+    last = "unknown"
+    for i in range(3):
+        try:
+            r = requests.delete(f"{ASR_BASE}/transcript/{transcript_id}",
+                                headers={"authorization": api_key}, timeout=30)
+            if r.status_code < 400 or r.status_code == 404:
+                return
+            if r.status_code < 500:
+                jlog(job=job_id, event="asr_vendor_delete_failed",
+                     transcript=transcript_id, error=f"status {r.status_code}")
+                return
+            last = f"status {r.status_code}"
+        except Exception as err:
+            last = f"{type(err).__name__}: {err}"[:200]
+        if i < 2:
+            time.sleep(min(2 ** i, 15))
+    jlog(job=job_id, event="asr_vendor_delete_failed", transcript=transcript_id, error=last)
+
+
 # Mirrors REGROUND_HINT in api/src/routes/lessons.ts — it must read as "needs a
 # location", never as an error.
 REGROUND_HINT = "This pointed past the end of the piece — place it on the score."
@@ -332,7 +395,7 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         # piece join is the nullable side and must not be locked.)
         cur.execute(
             """SELECT l.status, l.teacher_id, l.student_id, l.piece_id, l.piece_label,
-                      l.owner_role, p.published_version, p.facts
+                      l.custom_piece_id, l.owner_role, p.published_version, p.facts
                FROM lesson_sessions l
                LEFT JOIN pieces p ON p.id = l.piece_id
                WHERE l.id = %s FOR UPDATE OF l""",
@@ -341,7 +404,7 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         if row is None:
             conn.commit()
             return None
-        (status, teacher_id, student_id, piece_id, piece_label, owner_role,
+        (status, teacher_id, student_id, piece_id, piece_label, custom_piece_id, owner_role,
          piece_version, piece_facts) = row
         if status == "canceled":
             conn.commit()
@@ -362,12 +425,12 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
             try:
                 cur.execute(
                     """INSERT INTO notes (note_job_id, lesson_session_id, teacher_id, student_id,
-                                          piece_id, piece_label, piece_version, origin,
-                                          status, sent_at, content_original, content)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, 'self', 'sent', now(), %s, %s)
+                                          piece_id, piece_label, custom_piece_id, piece_version,
+                                          origin, status, sent_at, content_original, content)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'self', 'sent', now(), %s, %s)
                        RETURNING id""",
                     (job_id, lesson_id, teacher_id, teacher_id, piece_id, piece_label,
-                     piece_version, json.dumps(original), json.dumps(content)))
+                     custom_piece_id, piece_version, json.dumps(original), json.dumps(content)))
             except psycopg.errors.UniqueViolation:
                 # uq_note_self_per_job race loser (concurrent delivery via deploy
                 # drain / redelivery): the winner's note IS the note — converge as
@@ -392,11 +455,12 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
             cur.execute("DELETE FROM notes WHERE note_job_id = %s AND status = 'draft'", (job_id,))
             cur.execute(
                 """INSERT INTO notes (note_job_id, lesson_session_id, teacher_id, student_id,
-                                      piece_id, piece_label, origin, content_original, content)
-                   VALUES (%s, %s, %s, %s, %s, %s, 'teacher', %s, %s)
+                                      piece_id, piece_label, custom_piece_id, origin,
+                                      content_original, content)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, 'teacher', %s, %s)
                    RETURNING id""",
                 (job_id, lesson_id, teacher_id, student_id, piece_id, piece_label,
-                 json.dumps(original), json.dumps(content)))
+                 custom_piece_id, json.dumps(original), json.dumps(content)))
         note_id = cur.fetchone()[0]
         for idx, a in enumerate(annotations):
             cur.execute(
@@ -441,8 +505,9 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
     t0 = time.time()
     update_job(conn, job_id, status="processing", stage="asr", error=None, failure_code=None)
 
+    asr_key = env("ASSEMBLYAI_API_KEY")
     try:
-        asr = run_asr(audio_read_url(storage_cs, audio_path), env("ASSEMBLYAI_API_KEY"))
+        asr = run_asr(audio_read_url(storage_cs, audio_path), asr_key)
     except Exception as err:
         update_job(conn, job_id, status="failed", stage=None,
                    failure_code="asr_error", error=f"asr_error: {err}"[:500])
@@ -464,6 +529,7 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
     # the upload, and let the stamp itself re-check.
     transcript_path = f"{TRANSCRIPT_PREFIX}{job_id}.json"
     if lesson_canceled(conn, lesson_id):
+        delete_vendor_transcript(job_id, asr.get("id"), asr_key)
         abort_discarded(conn, job_id, "lesson canceled during asr")
         return
     blob.get_container_client(ASSETS_CONTAINER).get_blob_client(transcript_path).upload_blob(
@@ -471,7 +537,10 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
                     "language": asr.get("language_code"),
                     "audio_duration": asr.get("audio_duration")}),
         overwrite=True, content_settings=ContentSettings(content_type="application/json"))
-    if not stamp_transcript(conn, job_id, transcript_path):
+    landed = stamp_transcript(conn, job_id, transcript_path)
+    # Never above the stamp: until then the vendor holds the only other copy.
+    delete_vendor_transcript(job_id, asr.get("id"), asr_key)
+    if not landed:
         delete_asset_blob(blob, transcript_path)
         abort_discarded(conn, job_id, "lesson canceled during transcript upload")
         return
@@ -537,7 +606,8 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
             job_id, "delivered", "gates", piece_desc, measure_count, rejected, obj,
             {"kept": len(annotations), "drops": drops}))
 
-    update_job(conn, job_id, stage="gates")
+    update_job(conn, job_id, stage="gates",
+               piece_mentions=json.dumps(normalize_piece_mentions(obj, text)))
     note_id = replace_draft(conn, job_id, lesson_id, content, obj, annotations)
     if note_id is None:
         # A canceled lesson must never produce a ready_for_review job: it would be
@@ -547,11 +617,12 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
         # instruction text the discard just stripped.
         abort_discarded(conn, job_id, "lesson canceled before note insert")
         return
-    update_job(conn, job_id, status="ready_for_review", stage=None,
-               metrics=json.dumps(metrics))
+    flipped = mark_ready(conn, job_id, metrics)
     jlog(job=job_id, event="done", note=str(note_id), reqId=req_id,
          annotations=len(annotations), grounded=metrics["grounded"],
          secs=round(time.time() - t0, 1))
+    if flipped:
+        post_ready_push(job_id)
 
     # Strictly after delivery: premium narration is an enhancement, and the app reads
     # the note with the system voice whether or not any of this succeeds.

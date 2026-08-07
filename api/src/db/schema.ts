@@ -258,6 +258,29 @@ export const invites = pgTable("invites", {
   index("ix_invites_issuer_direction").on(t.teacherId, t.direction),
 ]);
 
+// A teacher's own typed piece name, promoted to a thing that groups their lessons.
+// Private per teacher forever (students are often minors — no cross-user discovery
+// surface). normalized_label is the identity key: lower, trimmed, internal
+// whitespace collapsed, DIACRITICS PRESERVED — Für Elise and Fur Elise are two
+// entities that may suggest each other and must never merge (FG-20). Folding
+// happens only inside suggestion matching. display_label keeps the latest casing;
+// the frozen piece_label on lessons/notes is never re-keyed from here.
+export const customPieces = pgTable("custom_pieces", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  teacherId: uuid("teacher_id").notNull().references(() => users.id),
+  displayLabel: text("display_label").notNull(),
+  normalizedLabel: text("normalized_label").notNull(),
+  // The teacher's own decision that this typed name IS a catalog piece. Never
+  // written by a background job — there is no automatic reconciliation.
+  linkedPieceId: text("linked_piece_id").references(() => pieces.id),
+  linkedAt: timestamp("linked_at", { withTimezone: true }),
+  dismissedPieceIds: jsonb("dismissed_piece_ids").notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("uq_custom_pieces_teacher_label").on(t.teacherId, t.normalizedLabel),
+]);
+
 // One recorded lesson. The row is created at SEND time (recording is fully local
 // and offline-first); piece/student stay nullable — both are fixable at review.
 // teacherId is the RECORDER/owner (the student themselves on a solo recording);
@@ -273,6 +296,14 @@ export const lessonSessions = pgTable("lesson_sessions", {
   studentId: uuid("student_id").references(() => users.id),
   pieceId: text("piece_id").references(() => pieces.id),
   pieceLabel: text("piece_label"), // free-text fallback for non-catalog pieces
+  // catalog | vendored | typed — which picker callback fired. A nil piece_id is
+  // ambiguous without it (a vendored piece has an on-device score, a typed name
+  // has none), and the off-catalog rate this decides scanning on overcounts.
+  // NULL = an old build that never sent it, never "we know it was typed".
+  pieceSource: text("piece_source"),
+  // ON DELETE SET NULL, not cascade: the entity dies with its owner, the lesson row
+  // keeps its frozen piece_label.
+  customPieceId: uuid("custom_piece_id").references(() => customPieces.id, { onDelete: "set null" }),
   // Stamped ONLY when the piece actually changed value, never by a student
   // assignment: it is the sole evidence that a retry's LLM inputs would differ,
   // and updated_at cannot carry that (every PATCH bumps it).
@@ -292,6 +323,7 @@ export const lessonSessions = pgTable("lesson_sessions", {
 }, (t) => [
   unique("uq_lesson_client_id").on(t.teacherId, t.clientLessonId),
   check("ck_lesson_owner_role", sql`${t.ownerRole} IN ('teacher', 'student')`),
+  check("ck_lesson_piece_source", sql`${t.pieceSource} IS NULL OR ${t.pieceSource} IN ('catalog', 'vendored', 'typed')`),
   index("ix_lesson_sessions_teacher_student_started").on(t.teacherId, t.studentId, t.startedAt),
 ]);
 
@@ -309,6 +341,10 @@ export const noteJobs = pgTable("note_jobs", {
   // has not failed = "unknown". no_speech | thin_note | asr_error | llm_invalid |
   // worker_crash | no_audio | lesson_discarded. Cleared on every requeue.
   failureCode: text("failure_code"),
+  // Verbatim-verified phrases where the teacher named a piece or composer, at most 3.
+  // Draft-only fuel for the suggestion chip: cleared at every resolution point
+  // (confirm, dismiss, send, discard) so lesson words never outlive the draft.
+  pieceMentions: jsonb("piece_mentions").notNull().default([]),
   // Owner discarded the lesson: transcript blob deleted, transcript_path nulled,
   // metrics.warnings stripped. The row survives as the only record that this
   // failure happened; after a discard it holds no lesson content.
@@ -344,6 +380,11 @@ export const notes = pgTable("notes", {
   origin: text("origin").notNull().default("teacher"), // teacher | self
   pieceId: text("piece_id").references(() => pieces.id),
   pieceLabel: text("piece_label"),
+  customPieceId: uuid("custom_piece_id").references(() => customPieces.id, { onDelete: "set null" }),
+  // Candidate piece ids the teacher answered "Not this piece" to. Appended, never
+  // cleared: a dismissal is an answer, and re-asking it is the annoyance the chip
+  // promises not to be.
+  pieceSuggestionDismissed: jsonb("piece_suggestion_dismissed").notNull().default([]),
   // Anchors pin to the piece version live at send — republish can renumber measures.
   pieceVersion: integer("piece_version"),
   status: text("status").notNull().default("draft"), // draft | sent | retracted
@@ -474,5 +515,6 @@ export type NoteJob = typeof noteJobs.$inferSelect;
 export type Note = typeof notes.$inferSelect;
 export type NoteAnnotation = typeof noteAnnotations.$inferSelect;
 export type NoteNarrationClip = typeof noteNarrationClips.$inferSelect;
+export type CustomPiece = typeof customPieces.$inferSelect;
 export type Entitlement = typeof entitlements.$inferSelect;
 export type Device = typeof devices.$inferSelect;

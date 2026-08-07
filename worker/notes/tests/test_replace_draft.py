@@ -96,21 +96,33 @@ ANNS = [
 
 
 # The row replace_draft re-reads under FOR UPDATE — never the job snapshot.
-# (status, teacher_id, student_id, piece_id, piece_label, owner_role,
+# (status, teacher_id, student_id, piece_id, piece_label, custom_piece_id, owner_role,
 #  published_version, facts)
 LOCK = "FOR UPDATE OF l"
 
 
+def note_insert(conn) -> dict:
+    """Column name -> written value, skipping the columns the statement writes as
+    literals. Positional indices re-point silently when a column joins the list
+    between two others; names do not."""
+    sql, params = next((s, p) for s, p in conn.executed if s.startswith("INSERT INTO notes"))
+    head, _, tail = sql.partition(") VALUES (")
+    cols = [c.strip() for c in head[head.index("(") + 1:].split(",")]
+    slots = tail.replace("now()", "now").split(")")[0].split(",")
+    return dict(zip([c for c, s in zip(cols, slots) if s.strip() == "%s"], params))
+
+
 def teacher_lock(status="submitted", student_id="student-4", piece_id="piece-1",
-                 piece_label="Etude No. 3", published_version=3, facts=None):
-    return (status, "teacher-7", student_id, piece_id, piece_label, "teacher",
-            published_version, facts)
+                 piece_label="Etude No. 3", custom_piece_id=None, published_version=3,
+                 facts=None):
+    return (status, "teacher-7", student_id, piece_id, piece_label, custom_piece_id,
+            "teacher", published_version, facts)
 
 
 def solo_lock(status="submitted", piece_id="piece-1", piece_label="Etude No. 3",
-              published_version=7, facts=None):
+              custom_piece_id=None, published_version=7, facts=None):
     # Solo lesson_sessions carry no student_id; the owner is teacher_id.
-    return (status, "owner-9", None, piece_id, piece_label, "student",
+    return (status, "owner-9", None, piece_id, piece_label, custom_piece_id, "student",
             published_version, facts)
 
 
@@ -133,9 +145,9 @@ def test_teacher_path_wipes_draft_then_inserts_teacher_origin():
     # the piece row rides the lock statement — no second round trip
     assert not any(s.startswith("SELECT published_version") or "origin = 'self'" in s
                    for s in sqls)
-    p = conn.executed[3][1]
-    assert p[2] == "teacher-7" and p[3] == "student-4"  # student_id passed through
-    assert json.loads(p[6]) == ORIGINAL and json.loads(p[7]) == CONTENT
+    w = note_insert(conn)
+    assert w["teacher_id"] == "teacher-7" and w["student_id"] == "student-4"
+    assert json.loads(w["content_original"]) == ORIGINAL and json.loads(w["content"]) == CONTENT
     assert conn.commits == 1
 
 
@@ -155,11 +167,11 @@ def test_solo_first_run_inserts_one_born_sent_note():
     assert "origin = 'self' AND status = 'sent'" in sqls[1]  # insert-guard next
     assert sqls[2].startswith("INSERT INTO notes")
     assert "'self', 'sent', now()" in sqls[2]  # origin/status literal, sent_at set
-    p = conn.executed[2][1]
-    assert p[0] == "job-2" and p[1] == "lesson-1"
-    assert p[2] == "owner-9" and p[3] == "owner-9"  # student_id == teacher_id == owner
-    assert p[6] == 7                                # piece_version from published_version
-    assert json.loads(p[7]) == ORIGINAL and json.loads(p[8]) == CONTENT
+    w = note_insert(conn)
+    assert w["note_job_id"] == "job-2" and w["lesson_session_id"] == "lesson-1"
+    assert w["teacher_id"] == "owner-9" and w["student_id"] == "owner-9"  # owner is both
+    assert w["piece_version"] == 7                  # from published_version
+    assert json.loads(w["content_original"]) == ORIGINAL and json.loads(w["content"]) == CONTENT
     # annotations inserted after the note, one row each, bound to the new id
     ann = conn.executed[3:]
     assert len(ann) == len(ANNS)
@@ -175,9 +187,9 @@ def test_solo_piece_version_null_when_no_piece():
         "INSERT INTO notes": ("note-3",),
     })
     main.replace_draft(conn, "job-3", "lesson-1", CONTENT, ORIGINAL, ANNS)
-    ins = next(i for i, (s, _) in enumerate(conn.executed) if s.startswith("INSERT INTO notes"))
-    assert conn.executed[ins][1][4] is None  # piece_id
-    assert conn.executed[ins][1][6] is None  # piece_version
+    w = note_insert(conn)
+    assert w["piece_id"] is None
+    assert w["piece_version"] is None
 
 
 def test_lesson_row_gone_is_treated_as_discarded():
@@ -216,10 +228,10 @@ def test_student_reassigned_mid_run_is_the_one_the_note_is_written_to():
         "INSERT INTO notes": ("note-5",),
     })
     main.replace_draft(conn, "job-5", "lesson-1", CONTENT, ORIGINAL, ANNS)
-    ins = next((s, p) for s, p in conn.executed if s.startswith("INSERT INTO notes"))
-    assert ins[1][3] == "student-bob"
+    w = note_insert(conn)
+    assert w["student_id"] == "student-bob"
     # the snapshot value never appears anywhere in the write
-    assert "student-4" not in [str(v) for v in ins[1]]
+    assert "student-4" not in [str(v) for v in w.values()]
 
 
 def test_piece_named_mid_run_lands_on_the_note_with_its_version():
@@ -233,10 +245,10 @@ def test_piece_named_mid_run_lands_on_the_note_with_its_version():
         "INSERT INTO notes": ("note-6",),
     })
     main.replace_draft(conn, "job-6", "lesson-1", CONTENT, ORIGINAL, ANNS)
-    ins = next((s, p) for s, p in conn.executed if s.startswith("INSERT INTO notes"))
-    assert ins[1][4] == "short_piece"      # piece_id
-    assert ins[1][5] == "Op. 100 No. 2"    # piece_label
-    assert ins[1][6] == 5                  # piece_version, from the same locked read
+    w = note_insert(conn)
+    assert w["piece_id"] == "short_piece"
+    assert w["piece_label"] == "Op. 100 No. 2"
+    assert w["piece_version"] == 5         # from the same locked read
 
 
 def test_a_piece_named_mid_run_bounds_the_grounding_it_never_had():
@@ -384,6 +396,7 @@ def _codes_written(conn):
 
 def _process_env(monkeypatch, *, asr=None, normalize=None):
     monkeypatch.setattr(main, "env", lambda n: "test-key")
+    monkeypatch.setattr(main, "delete_vendor_transcript", lambda *a: None)
     monkeypatch.setattr(main, "audio_read_url", lambda cs, p: "https://audio?sas")
     monkeypatch.setattr(main, "run_asr", asr or (lambda url, key: {
         "text": "plenty of lesson talk", "utterances": [],
@@ -550,3 +563,57 @@ def test_live_lesson_still_stamps_the_transcript_and_finishes(monkeypatch):
     final_sql, final_params = [(s, p) for s, p in conn.executed if s.startswith("UPDATE note_jobs")][-1]
     cols = _update_cols(final_sql)
     assert final_params[cols.index("status")] == "ready_for_review"
+
+
+# --- W5/W6 piece spine: the entity rides the note, the mentions ride the job ---
+
+def test_the_note_inherits_the_lessons_custom_piece_entity():
+    teacher = FakeConn({LOCK: teacher_lock(custom_piece_id="entity-1"),
+                        "INSERT INTO notes": ("note-1",)})
+    main.replace_draft(teacher, "job-1", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    assert note_insert(teacher)["custom_piece_id"] == "entity-1"
+
+    solo = FakeConn({LOCK: solo_lock(custom_piece_id="entity-2"),
+                     "SELECT id FROM notes WHERE note_job_id": None,
+                     "INSERT INTO notes": ("note-2",)})
+    main.replace_draft(solo, "job-2", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    assert note_insert(solo)["custom_piece_id"] == "entity-2"
+
+    unfiled = FakeConn({LOCK: teacher_lock(), "INSERT INTO notes": ("note-3",)})
+    main.replace_draft(unfiled, "job-3", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    assert note_insert(unfiled)["custom_piece_id"] is None
+
+
+def _job_mentions(conn):
+    for sql, params in conn.executed:
+        if sql.startswith("UPDATE note_jobs SET") and "piece_mentions" in sql:
+            return json.loads(params[_update_cols(sql).index("piece_mentions")])
+    return None
+
+
+def test_the_job_records_only_the_mentions_the_transcript_actually_contains(monkeypatch):
+    conn = FakeConn({
+        "FROM note_jobs j": FETCH_ROW_14,
+        **LIVE_LESSON,
+        LOCK: solo_lock(),
+        "SELECT id FROM notes WHERE note_job_id": None,
+        "INSERT INTO notes": ("note-9",),
+    })
+    _process_env(monkeypatch)
+    monkeypatch.setattr(main, "extract_json", lambda t: {
+        **ORIGINAL, "piece_mentions": ["plenty of lesson talk", "the Arabesque"]})
+    main.process(conn, FakeBlobService(), "cs", "job-9")
+    assert _job_mentions(conn) == ["plenty of lesson talk"]
+
+
+def test_a_job_whose_model_named_nothing_records_an_empty_list_not_a_missing_write(monkeypatch):
+    conn = FakeConn({
+        "FROM note_jobs j": FETCH_ROW_14,
+        **LIVE_LESSON,
+        LOCK: solo_lock(),
+        "SELECT id FROM notes WHERE note_job_id": None,
+        "INSERT INTO notes": ("note-9",),
+    })
+    _process_env(monkeypatch)
+    main.process(conn, FakeBlobService(), "cs", "job-9")
+    assert _job_mentions(conn) == []
