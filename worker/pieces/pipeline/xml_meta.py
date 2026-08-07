@@ -167,6 +167,10 @@ def extract(xml_path: Path) -> dict:
         if orphan_measures:
             export_warnings.append({"code": "fingering_wrong_voice",
                                     "measures": orphan_measures[:8]})
+    # Dolet's own complaints, read from the raw bytes: ElementTree drops processing
+    # instructions, so this cannot come off the tree above.
+    from pipeline.dolet_notices import dolet_notices
+    export_warnings.extend(dolet_notices(xml_path))
 
     return {
         "parts": parts,
