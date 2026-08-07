@@ -198,7 +198,7 @@ def bach_pieces():
 HANON_SOURCES = {
     "hanon_p1": ("Hanon/The Virtuoso Pianist Part I/The Virtuoso-Pianist Hanon part 1.musicxml",
                  HANON_P1_STARTS, 1),
-    "hanon_p2": ("Hanon/The Virtuoso Pianist Part2/The Virtuoso-Pianist Hanon part 2.musicxml",
+    "hanon_p2": ("Hanon/The Virtuoso Pianist Part2/The Virtuoso-Pianist Hanon part 2 with fingering.musicxml",
                  HANON_P2_STARTS, HANON_P2_FIRST),
 }
 
