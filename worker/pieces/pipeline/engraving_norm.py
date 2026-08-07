@@ -255,6 +255,33 @@ def _fix_pedal_placement(part) -> bool:
     return changed
 
 
+def _drop_stacked_pedal_starts(part) -> bool:
+    """Two identical <pedal type="start"> in one measure with no stop between them
+    are one pedal line laid on top of another in the editor.
+
+    verovio pairs pedal down/up in document order, so the extra start makes every
+    later down close on the NEXT up: from that bar to the end of the piece each
+    bracket runs a span too long and overlaps its neighbour. Perfectly stacked marks
+    are invisible in the editor (Chopin Op. 34 No. 1 bar 19)."""
+    changed = False
+    for measure in part.findall("measure"):
+        open_here = None
+        for direction in list(measure.findall("direction")):
+            ped = direction.find("direction-type/pedal")
+            if ped is None:
+                continue
+            kind = ped.get("type")
+            if kind == "start":
+                if open_here == ped.attrib:
+                    measure.remove(direction)
+                    changed = True
+                    continue
+                open_here = dict(ped.attrib)
+            elif kind in ("stop", "discontinue"):
+                open_here = None
+    return changed
+
+
 def _fix_orphan_dynamic_placement(part) -> bool:
     """A dynamic hung BELOW a staff that has no notes in that measure lands in the
     inter-staff gap, where it displaces the neighbouring staff's fingering row away
@@ -382,6 +409,60 @@ def _separate_interleaved_voices(part) -> bool:
     return changed
 
 
+_TRILL_TAILS = ("trill-mark", "wavy-line")
+
+
+def _rejoin_barline_graces(part) -> bool:
+    """Put a grace note in the bar of the note it ornaments.
+
+    A grace note entered at the end of a Sibelius bar exports as that voice's last
+    element in the <measure>; verovio then draws it before the barline, split from the
+    principal it belongs to (Chopin Op.34 No.1 bars 28 and 185). Graces carry no
+    duration, so moving the run to the head of the next measure's same voice leaves
+    every onset untouched. A trill termination is also a bar-final grace run and must
+    stay put: it ornaments the note it follows, not the next bar's.
+    """
+    measures = part.findall("measure")
+    changed = False
+    for i, measure in enumerate(measures[:-1]):
+        onsets = _measure_note_onsets(measure)
+        if onsets is None:
+            continue
+        bar_end = max((o + int(n.findtext("duration") or 0) for n, _v, o in onsets
+                       if n.find("grace") is None and n.find("chord") is None), default=0)
+        by_voice: dict[str, list] = {}
+        for n, v, o in onsets:
+            by_voice.setdefault(v, []).append((n, o))
+        for voice, seq in by_voice.items():
+            cut = len(seq)
+            while cut and seq[cut - 1][0].find("grace") is not None:
+                cut -= 1
+            tail = [n for n, _o in seq[cut:]]
+            if not tail or cut == 0:
+                continue
+            last_onset = seq[cut - 1][1]
+            if last_onset + int(seq[cut - 1][0].findtext("duration") or 0) != bar_end:
+                continue                    # voice stops short — not a barline grace
+            if any(e.tag in _TRILL_TAILS for n, o in seq[:cut] if o == last_onset
+                   for e in n.iter()):
+                continue                    # trill termination — belongs to this bar
+            staff = tail[0].findtext("staff")
+            nxt = measures[i + 1]
+            nxt_onsets = _measure_note_onsets(nxt)
+            if nxt_onsets is None:
+                continue
+            target = next(((n, o) for n, v, o in nxt_onsets if v == voice
+                           and n.find("grace") is None and n.find("chord") is None), None)
+            if target is None or target[1] != 0 or target[0].findtext("staff") != staff:
+                continue
+            at = list(nxt).index(target[0])
+            for k, g in enumerate(tail):
+                measure.remove(g)
+                nxt.insert(at + k, g)
+            changed = True
+    return changed
+
+
 def _fold_tempo_tail_into_metronome(part) -> bool:
     """Keep a metronome mark inside its sentence.
 
@@ -471,6 +552,84 @@ def _pad_tempo_metronome_gap(part) -> bool:
     return changed
 
 
+_REST_GLYPHS = {
+    "restDoubleWhole", "restWhole", "restHalf", "restQuarter", "rest8th",
+    "rest16th", "rest32nd", "rest64th", "rest128th",
+}
+# what may sit between the symbol and the rest it decorates
+_SYMBOL_SKIP = {"direction", "barline", "print", "sound", "harmony"}
+
+
+def _symbol_rest_glyph(direction) -> str | None:
+    syms = [s for dt in direction.findall("direction-type")
+            for s in dt.findall("symbol")]
+    others = [c for dt in direction.findall("direction-type")
+              for c in dt if c.tag != "symbol"]
+    if len(syms) != 1 or others:
+        return None
+    name = (syms[0].text or "").strip()
+    return name if name in _REST_GLYPHS else None
+
+
+def _pair_symbol_rests(measure, want_hidden: bool):
+    """(rest-symbol direction, the rest it decorates) pairs in one measure.
+
+    Refuses unless the symbol is a rest glyph, is the whole of its direction, and
+    the next timed element is a rest on the same staff — every other hidden rest
+    is an editor's deliberately invisible voice and must stay invisible."""
+    kids = list(measure)
+    for i, el in enumerate(kids):
+        if el.tag != "direction":
+            continue
+        glyph = _symbol_rest_glyph(el)
+        if glyph is None:
+            continue
+        staff = (el.findtext("staff") or "1").strip()
+        t = next((k for k in kids[i + 1:] if k.tag not in _SYMBOL_SKIP), None)
+        if t is None or t.tag != "note" or t.find("rest") is None:
+            continue
+        if (t.get("print-object") == "no") != want_hidden:
+            continue
+        if (t.findtext("staff") or "1").strip() != staff:
+            continue
+        yield el, t, staff, glyph
+
+
+def _restore_symbol_rests(part) -> bool:
+    """Un-hide a rest the editor replaced with a rest symbol; see item 5.
+
+    The <symbol> direction stays: verovio drops it silently, and it is what
+    symbol_rest_glyphs() reads back to find these rests again in the MEI."""
+    changed = False
+    for measure in part.findall("measure"):
+        for _d, note, _s, _g in list(_pair_symbol_rests(measure, want_hidden=True)):
+            del note.attrib["print-object"]
+            changed = True
+    return changed
+
+
+def symbol_rest_glyphs(xml_path: Path) -> list[dict]:
+    """{measure, staff, ordinal, glyph} for every rest _restore_symbol_rests
+    un-hid, keyed the way the MEI orders them: ordinal counts that staff's
+    PRINTED rests, which is exactly what verovio emits as <rest> (a hidden rest
+    becomes <space>).  Read back from the normalized file so staff.py needs no
+    state from this module."""
+    keys = []
+    for part in ET.parse(xml_path).getroot().findall("part"):
+        for measure in part.findall("measure"):
+            printed = [n for n in measure.findall("note")
+                       if n.find("rest") is not None
+                       and n.get("print-object") != "no"
+                       and n.find("rest").get("measure") != "yes"]
+            for _d, note, staff, glyph in _pair_symbol_rests(measure,
+                                                             want_hidden=False):
+                same = [n for n in printed
+                        if (n.findtext("staff") or "1").strip() == staff]
+                keys.append({"measure": measure.get("number"), "staff": staff,
+                             "ordinal": same.index(note), "glyph": glyph})
+    return keys
+
+
 def normalize_engraving(xml_path: Path, out_dir: Path) -> Path:
     """Return a path with fingering placement + piece-number fixes applied.
     Returns the input path untouched when there is nothing to fix."""
@@ -484,13 +643,16 @@ def normalize_engraving(xml_path: Path, out_dir: Path) -> Path:
         changed |= _reanchor_chord_fingerings(part)
         changed |= _fix_fingering_placement(part)
         changed |= _fix_pedal_placement(part)
+        changed |= _drop_stacked_pedal_starts(part)
         changed |= _fix_orphan_dynamic_placement(part)
+        changed |= _restore_symbol_rests(part)
         number = _drop_piece_number_words(part)
         if number:
             changed = True
             _store_piece_number(root, number)
         changed |= _pad_tempo_metronome_gap(part)
         changed |= _fold_tempo_tail_into_metronome(part)
+        changed |= _rejoin_barline_graces(part)
         changed |= _separate_interleaved_voices(part)
     if not changed:
         return xml_path

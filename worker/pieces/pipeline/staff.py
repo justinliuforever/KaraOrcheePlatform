@@ -18,6 +18,7 @@ from pathlib import Path
 
 from pipeline.vrv import make_toolkit, version as verovio_version
 from pipeline.fingering_layout import adjust_mei as adjust_fingering_mei
+from pipeline.engraving_norm import symbol_rest_glyphs
 
 ET.register_namespace('', 'http://www.w3.org/2000/svg')
 ET.register_namespace('xlink', 'http://www.w3.org/1999/xlink')
@@ -30,6 +31,9 @@ VARIANTS = {"phone":         {"pageWidth": 3000, "pageMarginRight": 100},
             "ipad":          {"pageWidth": 4500, "pageMarginRight": 120},
             "ipad_portrait": {"pageWidth": 3000, "pageMarginRight": 100}}
 PAGE_GAP = 1400
+
+PEDAL_FORM = "pedline"
+_PEDAL_LINE = re.compile(r'(<pedal\b[^>]*?)form="line"')
 
 CURSOR_EL = ('<g id="cursor" visibility="hidden">'
              '<line class="cursor-glow" x1="0" y1="0" x2="0" y2="0" stroke="#7C5CFF" stroke-width="340" '
@@ -47,8 +51,8 @@ def layout_options_hash() -> str:
     Note for anyone diffing two renders: verovio stamps each document with a random
     id and suffixes every glyph def with it, so two byte-identical pages differ in
     length run to run. Normalise that id out before comparing."""
-    blob = json.dumps({"common": COMMON, "variants": VARIANTS, "page_gap": PAGE_GAP},
-                      sort_keys=True)
+    blob = json.dumps({"common": COMMON, "variants": VARIANTS, "page_gap": PAGE_GAP,
+                       "pedal_form": PEDAL_FORM}, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 
@@ -104,12 +108,51 @@ def translate(attr: str | None):
     return (float(m.group(1)), float(m.group(2))) if m else None
 
 
+_MEI_MEASURE = re.compile(r'<measure\b[^>]*\bn="([^"]*)"[^>]*>')
+_MEI_STAFF = re.compile(r'<staff\b[^>]*\bn="([^"]*)"[^>]*>|</staff>')
+_MEI_REST = re.compile(r'<rest\b')
+
+
+def stamp_rest_glyphs(mei: str, keys: list[dict]) -> str:
+    """Print an editor-overridden rest with the glyph he chose; @dur — and so the
+    rhythm, the timemap and every later measure's qstamp — is untouched.
+
+    Text surgery, not ElementTree: this module registers the SVG namespace as the
+    process default, so re-parsing the MEI would take that registration with it and
+    every later SVG serialization would come out prefixed."""
+    want = {(k["measure"], k["staff"], k["ordinal"]): k["glyph"] for k in keys}
+    if not want:
+        return mei
+    bounds = [(m.start(), m.group(1)) for m in _MEI_MEASURE.finditer(mei)]
+    bounds.append((len(mei), None))
+    edits = []
+    for (start, num), (end, _n) in zip(bounds, bounds[1:]):
+        if not any(k[0] == num for k in want):
+            continue
+        seg = mei[start:end]
+        for tok in _MEI_STAFF.finditer(seg):
+            if tok.group(0) == "</staff>":
+                continue
+            nxt = seg.find("<staff", tok.end())
+            stop = len(seg) if nxt < 0 else nxt
+            staff, ordinal = tok.group(1), 0
+            for r in _MEI_REST.finditer(seg, tok.end(), stop):
+                glyph = want.get((num, staff, ordinal))
+                if glyph:
+                    edits.append((start + r.end(),
+                                  f' glyph.auth="smufl" glyph.name="{glyph}"'))
+                ordinal += 1
+    for at, text in sorted(edits, reverse=True):
+        mei = mei[:at] + text + mei[at:]
+    return mei
+
+
 def freeze_mei(xml_path: Path) -> str:
     tk = make_toolkit()
     tk.setOptions({"xmlIdChecksum": True, "footer": "none", "header": "none"})
     if not tk.loadFile(str(xml_path)):
         raise ValueError("verovio could not load the MusicXML")
-    return tk.getMEI()
+    return stamp_rest_glyphs(tk.getMEI(), symbol_rest_glyphs(xml_path))
 
 
 def mei_measure_numbers(mei: str) -> dict:
@@ -154,6 +197,62 @@ def lift_opening_tempo(mei: str) -> str:
         return mei
     lifted = t.group(0).replace("<tempo", f'<tempo vo="{OPENING_TEMPO_LIFT}"', 1)
     return mei[:m.start()] + first.replace(t.group(0), lifted, 1) + mei[m.end():]
+
+
+_MEASURE = re.compile(r'<measure\b[^>]*>.*?</measure>', re.S)
+_KEY_AT_REPEAT = re.compile(
+    r'\s*(?:</section>\s*)?(?:<[sp]b\b[^>]*/>\s*)?(?:<section\b[^>]*>\s*)?'
+    r'<scoreDef\b[^>]*>\s*<keySig\b[^>]*/>\s*</scoreDef>'
+    r'\s*(?:</section>\s*)?(?:<[sp]b\b[^>]*/>\s*)?(?:<section\b[^>]*>\s*)?'
+    r'(<measure\b[^>]*\bleft="rptstart"[^>]*>)')
+
+
+def lock_keysig_repeat(mei: str) -> str:
+    """A key change at back-to-back repeats prints BEFORE them, not between them.
+
+    MusicXML can only put the new <key> at the start of the measure after the
+    start-repeat, and verovio anchors that scoreDef immediately before that
+    measure's left barline — which lands it between the two repeat signs. Merging
+    the pair into one rptboth moves the same anchor to the left of the whole
+    :||:, which is where the engraver writes it. Repeat structure is unchanged:
+    the played measure order and every qstamp are identical.
+    """
+    # One measure can be both sides of two consecutive sites (Hanon No. 43 writes
+    # <measure left="rptstart" right="rptend">), so edits accumulate per open tag.
+    edits: dict[tuple[int, int], str] = {}
+
+    def stage(a, b, old, new):
+        tag = edits.get((a, b), mei[a:b])
+        edits[(a, b)] = tag.replace(old, new, 1)
+
+    for m in _MEASURE.finditer(mei):
+        tag = re.match(r'<measure\b[^>]*>', m.group(0)).group(0)
+        if 'right="rptend"' not in tag:
+            continue
+        nxt = _KEY_AT_REPEAT.match(mei, m.end())
+        if not nxt:
+            continue
+        stage(m.start(), m.start() + len(tag), 'right="rptend"', 'right="invis"')
+        stage(nxt.start(1), nxt.end(1), 'left="rptstart"', 'left="rptboth"')
+    if not edits:
+        return mei
+    out, pos = [], 0
+    for (a, b), txt in sorted(edits.items()):
+        out.append(mei[pos:a])
+        out.append(txt)
+        pos = b
+    out.append(mei[pos:])
+    return "".join(out)
+
+
+def pedal_sign(mei: str) -> str:
+    """Print "Ped." at the head of every pedal bracket, as the source editions do.
+
+    form="pedline" is the only data.PEDALSTYLE value that draws the glyph AND the
+    line; the pedalStyle toolkit option refuses it (auto|line|pedstar|altpedstar),
+    so the form has to be set on the MEI. Applied per variant, after the fingering
+    pass — the canonical <piece>.mei keeps verovio's unmodified import."""
+    return _PEDAL_LINE.sub(rf'\1form="{PEDAL_FORM}"', mei)
 
 
 def build_variant(mei: str, vopts: dict):
@@ -565,7 +664,7 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
     sha = hashlib.sha256(xml_path.read_bytes()).hexdigest()[:16]
     pnum = piece_number_from_xml(xml_path)
     title_main, title_sub = titles_from_xml(xml_path)
-    mei = freeze_mei(xml_path)
+    mei = lock_keysig_repeat(freeze_mei(xml_path))
     num_map = mei_measure_numbers(mei)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{piece}.mei").write_text(mei)
@@ -592,7 +691,7 @@ def build_staff_assets(piece: str, xml_path: Path, score_events_path: Path, out_
         # canonical <piece>.mei stays unadjusted — position is pure presentation
         mei_v, fing_rep = adjust_fingering_mei(mei, {**COMMON, **vopts})
         svg, tm, page, gmeas, systems, note_xy, note_sys = build_variant(
-            lift_opening_tempo(mei_v), vopts)
+            pedal_sign(lift_opening_tempo(mei_v)), vopts)
         if vname == "phone":
             phone_tm = tm
         if pnum and systems:
