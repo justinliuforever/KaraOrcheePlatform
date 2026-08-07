@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import request from "supertest";
 import express from "express";
 import { createTestDb } from "./testdb";
@@ -51,7 +51,15 @@ function mount(key: string | undefined) {
 }
 
 beforeAll(async () => {
+  // Notifications ship OFF; this suite opts in so the machinery under the switch stays
+  // pinned while it waits. A failure here after removing the opt-in means the switch
+  // moved — never delete the opt-in to make it pass.
+  process.env.PUSH_ENABLED = "true";
   db = await createTestDb();
+});
+
+afterAll(() => {
+  delete process.env.PUSH_ENABLED;
 });
 
 beforeEach(async () => {

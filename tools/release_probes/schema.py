@@ -26,10 +26,15 @@ EXPECTED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("notes", "piece_suggestion_dismissed"),
         ("note_jobs", "piece_mentions"),
     ],
+    "0026": [("users", "age_bracket"), ("users", "age_attested_at")],
+    "0027": [("users", "ciam_oid_at_delete"), ("users", "ciam_deleted_at")],
 }
 
 EXPECTED_CONSTRAINTS = {"0024": ["ck_lesson_piece_source"]}
-EXPECTED_INDEXES = {"0025": ["uq_custom_pieces_teacher_label"]}
+EXPECTED_INDEXES = {
+    "0025": ["uq_custom_pieces_teacher_label"],
+    "0027": ["ix_users_ciam_oid_at_delete"],
+}
 
 
 @dataclass

@@ -528,6 +528,26 @@ describe("users/sync", () => {
     expect(res.body.trialStartedAt).toBeNull();
   });
 
+  it("carries features.passwordSignIn mirroring the env var, and fails closed", async () => {
+    const token = await mkToken("sync-features", "F");
+    const before = process.env.PASSWORD_SIGNIN_ENABLED;
+
+    process.env.PASSWORD_SIGNIN_ENABLED = "true";
+    expect((await sync(token, {})).body.features.passwordSignIn).toBe(true);
+
+    process.env.PASSWORD_SIGNIN_ENABLED = "false";
+    expect((await sync(token, {})).body.features.passwordSignIn).toBe(false);
+
+    process.env.PASSWORD_SIGNIN_ENABLED = "1";
+    expect((await sync(token, {})).body.features.passwordSignIn).toBe(false);
+
+    delete process.env.PASSWORD_SIGNIN_ENABLED;
+    expect((await sync(token, {})).body.features.passwordSignIn).toBe(false);
+
+    if (before === undefined) delete process.env.PASSWORD_SIGNIN_ENABLED;
+    else process.env.PASSWORD_SIGNIN_ENABLED = before;
+  });
+
   it("needsRole is derived on every sync and the role step clears it", async () => {
     const token = await mkToken("sync-roleless", "R");
     const bare = await sync(token, {});
@@ -3050,9 +3070,17 @@ describe("push on send", () => {
   let pStudent: TestUser;
 
   beforeAll(async () => {
+    // Notifications ship OFF; this suite opts in so the machinery under the switch
+    // stays pinned while it waits. A failure here after removing the opt-in means the
+    // switch moved — never delete the opt-in to make it pass.
+    process.env.PUSH_ENABLED = "true";
     pTeacher = await makeUser({ oid: "push-teacher", name: "Push Tessa", role: "teacher" });
     pStudent = await makeUser({ oid: "push-student", name: "Push Sam", role: "student" });
     await linkActive(pTeacher.id, pStudent.id);
+  });
+
+  afterAll(() => {
+    delete process.env.PUSH_ENABLED;
   });
 
   beforeEach(async () => {

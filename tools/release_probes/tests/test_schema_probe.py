@@ -30,6 +30,20 @@ def test_an_image_without_0024_fails_even_though_0025_landed():
     assert "FAIL 0024 lesson_sessions.piece_source" in text
 
 
+def test_an_image_without_0027_fails_even_though_the_rest_landed():
+    live = _all_columns() - {("users", "ciam_oid_at_delete")}
+    text, ok = render(check_columns(live))
+    assert not ok
+    assert "FAIL 0027 users.ciam_oid_at_delete" in text
+
+
+def test_an_image_without_0026_fails_even_though_the_rest_landed():
+    live = _all_columns() - {("users", "age_bracket")}
+    text, ok = render(check_columns(live))
+    assert not ok
+    assert "FAIL 0026 users.age_bracket" in text
+
+
 def test_typed_create_needs_the_row_not_the_status_code():
     _, ok = render(check_typed_create({"piece_source": "typed", "custom_piece_id": "c1"},
                                       {"id": "c1"}))

@@ -17,6 +17,13 @@ import { devices } from "../db/schema";
 // id: no piece title, no names, no content. Adding a notification means clearing
 // these bars again, here, in writing.
 
+// Notifications are DELIBERATELY OFF for this release (founder, 2026-08-07): the feature
+// is built and waits for a later one. This is the single switch, and it is the reason
+// nothing sends — not the absence of an APNs key, which is a separate accident.
+export function pushEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PUSH_ENABLED === "true";
+}
+
 export interface PushAlert {
   title: string;
   body: string;
@@ -206,7 +213,7 @@ async function notify(
   deps: Deps,
   args: { userId: string; noteId: string; alert: PushAlert; label: string },
 ): Promise<NotifyOutcome | null> {
-  if (!deps.push || !deps.db) return null;
+  if (!pushEnabled() || !deps.push || !deps.db) return null;
   const db = deps.db.orm;
   try {
     const rows = await db

@@ -8,6 +8,7 @@ import type { OpsQueueStore } from "./opsqueue";
 import type { LessonStore } from "./notes/lessons_store";
 import type { NotesAssetsStore } from "./notes/assets_store";
 import type { PushSender } from "./notes/push";
+import type { GraphIdentityClient } from "./graph";
 
 export interface Deps {
   db?: Db;
@@ -19,6 +20,8 @@ export interface Deps {
   notesAssets?: NotesAssetsStore;
   // Absent until the APNs key is configured: every send still completes, silently.
   push?: PushSender;
+  // Injected by tests; production resolves it from the environment at the call site.
+  graph?: GraphIdentityClient;
   auth?: AuthVerifier;
   corsOrigins?: string[];
   opsLogs?: OpsLogsStore;

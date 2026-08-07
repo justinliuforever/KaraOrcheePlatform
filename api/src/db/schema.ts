@@ -48,10 +48,27 @@ export const users = pgTable("users", {
   // satisfy the other, so neither is backfilled from notes_consent_at.
   soloConsentAt: timestamp("solo_consent_at", { withTimezone: true }),
   teacherConsentAt: timestamp("teacher_consent_at", { withTimezone: true }),
+  // What the person said about their own age at sign-up: 'over_13' | 'under_13'.
+  // An attestation, never a verified fact and never a gate — it decides only whether
+  // the account is treated as parent-managed. Write-once, alongside the role grant;
+  // accounts that predate it stay NULL and are not retro-prompted (FG-13).
+  ageBracket: text("age_bracket"),
+  ageAttestedAt: timestamp("age_attested_at", { withTimezone: true }),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  // The directory identity this account was deleted with. entra_oid is released at
+  // deletion so nothing can re-link through it; this holds the same value FOREVER,
+  // because it is the only thing that can recognise a token from a deleted account
+  // and refuse to re-create the row. A recreated account gets a new oid, so the two
+  // can never collide.
+  ciamOidAtDelete: text("ciam_oid_at_delete"),
+  // NULL = the Graph delete has not been confirmed yet; NOT NULL = the directory
+  // object is gone. Both states refuse the sync; only the first one retries.
+  ciamDeletedAt: timestamp("ciam_deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  index("ix_users_ciam_oid_at_delete").on(t.ciamOidAtDelete).where(sql`${t.ciamOidAtDelete} IS NOT NULL`),
+]);
 
 // A method book / pedagogical collection pieces can belong to. rights gates publish.
 export const books = pgTable("books", {

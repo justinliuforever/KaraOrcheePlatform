@@ -1,7 +1,9 @@
+import type { Request } from "express";
 import { Router } from "express";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Deps } from "../deps";
 import { wrap } from "../deps";
+import { graphFromEnv, unresolvedGraphLog, type GraphResolution } from "../graph";
 import { requireAuth } from "../auth";
 import { requireUser, userAudit } from "../notes/user";
 import { deleteCustomPiecesOf } from "./customPieces";
@@ -34,6 +36,58 @@ function roleGrantOrigin(via: unknown): RoleGrantOrigin {
   return ROLE_GRANT_ORIGINS.includes(via as RoleGrantOrigin) ? (via as RoleGrantOrigin) : "signup";
 }
 
+// What the person said about their own age when they signed up. Two values, because
+// the only thing the answer decides is whether the account is parent-managed.
+const AGE_BRACKETS = ["over_13", "under_13"] as const;
+type AgeBracket = (typeof AGE_BRACKETS)[number];
+
+function ageBracket(value: unknown): AgeBracket | null {
+  return AGE_BRACKETS.includes(value as AgeBracket) ? (value as AgeBracket) : null;
+}
+
+// Removes the deleted account's directory identity, and stamps the tombstone only when
+// Graph actually said it is gone. Returns what the caller may print: true ONLY after a
+// Graph call answered. Never throws — the platform data is already destroyed, and the
+// oid held on the tombstone is what makes an unfinished attempt findable and retryable.
+async function deleteCiamIdentity(
+  deps: Deps,
+  req: Request,
+  args: { userId: string; oid: string | null },
+): Promise<boolean> {
+  const reqId = req.reqId ?? null;
+  if (!args.oid) {
+    console.log(JSON.stringify({ kind: "ciam_delete_skipped", reason: "no_oid", userId: args.userId, reqId }));
+    return false;
+  }
+  const resolved: GraphResolution = deps.graph
+    ? { client: deps.graph, incomplete: false }
+    : graphFromEnv();
+  if (!resolved.client) {
+    console.log(JSON.stringify({
+      ...unresolvedGraphLog(resolved), userId: args.userId, reqId,
+    }));
+    return false;
+  }
+  const result = await resolved.client.deleteUser(args.oid);
+  if (!result.ok) {
+    console.log(JSON.stringify({
+      kind: "ciam_delete_pending", userId: args.userId, reqId, reason: result.reason,
+    }));
+    return false;
+  }
+  try {
+    await deps.db!.orm
+      .update(users)
+      .set({ ciamDeletedAt: sql`now()`, updatedAt: sql`now()` })
+      .where(eq(users.id, args.userId));
+  } catch {
+    // Graph answered; the identity IS gone and the caller may say so. An unstamped row is
+    // findable by the runbook query and self-heals on any retry, which Graph answers 404.
+    console.log(JSON.stringify({ kind: "ciam_delete_stamp_failed", userId: args.userId, reqId }));
+  }
+  return true;
+}
+
 export function usersRouter(deps: Deps): Router {
   const router = Router();
 
@@ -48,6 +102,25 @@ export function usersRouter(deps: Deps): Router {
       const claims = req.user!;
       const email = claims.email ?? null;
       const displayName = claims.name ?? null;
+
+      // BEFORE the upsert, or the upsert IS the resurrection. entra_oid was released at
+      // deletion so this token no longer matches any account; ciam_oid_at_delete is the
+      // only remaining witness that it belonged to one. A directory identity that still
+      // exists (the Graph delete has not been confirmed) gets one more attempt here —
+      // the person is holding a token that should not exist, which is the strongest
+      // evidence the earlier attempt did not land — but the answer is 410 either way.
+      const [tombstone] = await deps.db.orm
+        .select({ id: users.id, ciamDeletedAt: users.ciamDeletedAt })
+        .from(users)
+        .where(eq(users.ciamOidAtDelete, claims.oid))
+        .limit(1);
+      if (tombstone) {
+        if (!tombstone.ciamDeletedAt) {
+          await deleteCiamIdentity(deps, req, { userId: tombstone.id, oid: claims.oid });
+        }
+        res.status(410).json({ error: "account_deleted", message: "This account was deleted." });
+        return;
+      }
 
       // An omitted claim says nothing about the profile — never read it as "clear it".
       const upserted = await deps.db.orm
@@ -100,6 +173,15 @@ export function usersRouter(deps: Deps): Router {
       if (typeof body.organization === "string" && body.organization.trim() && !row.organization) {
         patch.organization = body.organization.trim().slice(0, 200);
       }
+      // The age question is asked once, on the screen that also names the role, so it
+      // is accepted only on the sync that grants one — the same write-once contract as
+      // the role itself. A later sync carrying a different answer changes nothing, and
+      // an account that never answered stays NULL rather than being guessed at.
+      const attestedAge = grantedRole ? ageBracket(body.ageBracket) : null;
+      if (attestedAge && !row.ageBracket) {
+        patch.ageBracket = attestedAge;
+        patch.ageAttestedAt = sql`now()`;
+      }
       let user = row;
       if (Object.keys(patch).length) {
         const updated = await deps.db.orm
@@ -119,6 +201,7 @@ export function usersRouter(deps: Deps): Router {
           detail: {
             role: grantedRole,
             via: roleGrantOrigin(body.via),
+            ...(patch.ageBracket ? { ageBracket: patch.ageBracket } : {}),
             ...(req.reqId ? { reqId: req.reqId } : {}),
           },
         });
@@ -140,6 +223,9 @@ export function usersRouter(deps: Deps): Router {
         canRecord: access.status !== "lapsed",
         unreadNotes: unread?.count ?? 0,
         needsRole: !user.isTeacher && !user.isStudent,
+        // Mirrors PASSWORD_SIGNIN_ENABLED. The app gates the set-a-password card and the Settings
+        // row on it, so it must stay false until FG-3 step 2 has actually rebound the user flow.
+        features: { passwordSignIn: process.env.PASSWORD_SIGNIN_ENABLED === "true" },
       });
     }),
   );
@@ -149,10 +235,13 @@ export function usersRouter(deps: Deps): Router {
   // party keep their FK integrity (a student's received notes are their record; a
   // teacher's sent notes stay with their students). Everything private to the
   // deleting user is destroyed here; the raw lesson audio blob is purged now, not
-  // left to the 90-day lifecycle. NOTE: CIAM (Auth-tenant) identity deletion via
-  // Graph is a follow-up (needs the app registration's User.ReadWrite.All) — until
-  // then the scrubbed row + released entra_oid prevents re-link, and the client
-  // signs out; document this gap.
+  // left to the 90-day lifecycle.
+  //
+  // ORDER, LOAD-BEARING: platform data first, directory identity last. The directory
+  // delete is the only step that cannot be retried from the outside — it needs a token
+  // this person is about to lose — so it must run when the tombstone that names its
+  // oid already exists. Reversed, a Graph success followed by a failed purge would
+  // leave data belonging to someone who can no longer authenticate to ask again.
   router.delete(
     "/v1/me",
     requireAuth(deps.auth),
@@ -182,6 +271,7 @@ export function usersRouter(deps: Deps): Router {
 
       // Narration follows the note row: purged for the copies destroyed below, kept
       // for the SENT notes that stay with their students.
+      let ciamOid: string | null = null;
       const purgedNoteIds = await db.transaction(async (tx) => {
         // End every relationship on both sides.
         await tx
@@ -241,13 +331,16 @@ export function usersRouter(deps: Deps): Router {
         await tx.delete(devices).where(eq(devices.userId, me.id));
         await tx.delete(entitlements).where(eq(entitlements.userId, me.id));
 
-        // Scrub PII, release the entra_oid, mark deleted.
-        await tx
+        // Scrub PII, release the entra_oid, mark deleted. The oid moves in the same
+        // statement that releases it — the right-hand side reads the pre-update row, so
+        // there is no window in which the account is deleted and unrecognizable.
+        const [tombstoned] = await tx
           .update(users)
           .set({
             status: "deleted",
             email: null,
             displayName: null,
+            ciamOidAtDelete: sql`${users.entraOid}`,
             entraOid: null,
             organization: null,
             trialStartedAt: null,
@@ -257,7 +350,9 @@ export function usersRouter(deps: Deps): Router {
             deletedAt: sql`now()`,
             updatedAt: sql`now()`,
           })
-          .where(eq(users.id, me.id));
+          .where(eq(users.id, me.id))
+          .returning({ ciamOidAtDelete: users.ciamOidAtDelete });
+        ciamOid = tombstoned?.ciamOidAtDelete ?? null;
 
         return [...receivedIds, ...draftIds];
       });
@@ -298,7 +393,10 @@ export function usersRouter(deps: Deps): Router {
           await purge("narration", noteId, () => deps.notesAssets!.deletePrefix(narrationPrefix(noteId)));
         }
       }
-      res.json({ ok: true });
+      // identityDeleted is the sheet's authority for a sentence about the sign-in
+      // service. It is false whenever no Graph call answered — unconfigured included.
+      const identityDeleted = await deleteCiamIdentity(deps, req, { userId: me.id, oid: ciamOid });
+      res.json({ ok: true, identityDeleted });
     }),
   );
 
