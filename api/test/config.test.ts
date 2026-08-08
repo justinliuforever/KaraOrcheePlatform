@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parseConfig, normalizePrivateKey } from "../src/config";
 
-// A syntactically valid PKCS#8 body — parseConfig only checks the envelope.
 const PEM = ["-----BEGIN PRIVATE KEY-----", "MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQg", "-----END PRIVATE KEY-----"].join("\n");
 
 const base = { DATABASE_URL: "postgres://localhost/x" };

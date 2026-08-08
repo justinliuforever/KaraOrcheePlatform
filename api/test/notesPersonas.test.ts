@@ -25,9 +25,6 @@ import type { Db } from "../src/db/client";
 import type { LessonStore } from "../src/notes/lessons_store";
 import type { NotesQueue } from "../src/queue";
 
-// B1.5 Wave 1 persona contracts: solo (student-owned) lessons, entitlement gates,
-// reverse invites, origin scoping, self-note delete, MC-1 account delete, canRecord.
-// Own PGlite instance (per-file), oids all prefixed "np-".
 const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
 const AUDIENCE = "api://karaorchee";
 const KID = "test-key";
@@ -149,9 +146,6 @@ async function linkActive(teacherId: string, studentId: string) {
   return row!;
 }
 
-// The SECOND capability can no longer come from users/sync (S-2: self-granting
-// isTeacher was a permanent teacher_free bypass). Admin and invite redemption are
-// the only remaining grants — this is the admin one.
 async function grantRole(userId: string, patch: { isTeacher?: boolean; isStudent?: boolean }) {
   await db.orm.update(users).set(patch).where(eq(users.id, userId));
 }
@@ -161,7 +155,6 @@ async function setMonetization(iso: string | null) {
   if (iso) await db.orm.insert(platformConfig).values({ key: "monetization_live_at", value: iso });
 }
 
-// Teacher-origin note the classic way: lesson + job + note (+2 annotations).
 async function seedNote(opts: {
   teacherId: string;
   studentId?: string | null;
@@ -223,8 +216,6 @@ async function seedNote(opts: {
   return { note: note!, job: job!, lesson: lesson!, annotations };
 }
 
-// The worker's born-sent solo output: origin='self', status='sent',
-// teacher_id = student_id = owner. Job/lesson refs optional (nullable in schema).
 async function seedSelfNote(
   ownerId: string,
   opts: { withAnnotation?: boolean; noteJobId?: string | null; lessonSessionId?: string | null } = {},
@@ -285,8 +276,6 @@ beforeEach(() => {
   fakeLessons.audio = { bytes: 1000 };
   fakeQueue.throwNext = false;
 });
-
-// ── 1. Solo lessons ─────────────────────────────────────────────────────────────
 
 describe("solo lessons", () => {
   let soloS: TestUser;
@@ -349,14 +338,11 @@ describe("solo lessons", () => {
     expect(res.status).toBe(201);
     expect(res.body.lesson.ownerRole).toBe("teacher");
     expect(res.body.lesson.teacherId).toBe(soloT.id);
-    // Unchanged teacher contract: no attestation demanded, upload URL minted.
     expect(res.body.lesson.attested).toBe(false);
     expect(res.body.uploadUrl).toBe(`https://fake/${soloT.id}/${res.body.lesson.id}.m4a?sas`);
   });
 
   it("GET /v1/lessons?ownerRole filters a dual-role account's lessons", async () => {
-    // Dual-role: student first, then teacher. Teacher wins at create, so the
-    // student-owned row is seeded directly (owner_role is a create-time snapshot).
     const dual = await makeUser({ oid: "np-solo-dual", name: "Dual Dana", role: "student" });
     await grantRole(dual.id, { isTeacher: true });
 
@@ -391,7 +377,6 @@ describe("solo lessons", () => {
     const unfiltered = await request(makeApp()).get("/v1/lessons").set("Authorization", auth(dual));
     expect(unfiltered.body.items.length).toBe(2);
 
-    // An unknown filter value is ignored, not an error.
     const bogus = await request(makeApp())
       .get("/v1/lessons")
       .query({ ownerRole: "banana" })
@@ -400,15 +385,11 @@ describe("solo lessons", () => {
   });
 });
 
-// ── 2. Entitlement gates (dormant in beta, live under a paywall) ────────────────
-
 describe("entitlement gates on solo lessons", () => {
   let lapS: TestUser;
   let preLessonId: string;
 
   beforeAll(async () => {
-    // Recorded while still in beta; the trial lapses before send (the exact
-    // window the submit-side re-check exists for).
     await setMonetization(null);
     lapS = await makeUser({ oid: "np-ent-lapsed", name: "Lapsed Lena", role: "student" });
     const pre = await request(makeApp())
@@ -446,7 +427,6 @@ describe("entitlement gates on solo lessons", () => {
     expect(res.body.error).toBe("entitlement_required");
     expect(res.body.access.status).toBe("lapsed");
 
-    // The gate fired before any state change: the lesson is still submittable.
     const [row] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, preLessonId));
     expect(row!.status).toBe("created");
   });
@@ -470,15 +450,11 @@ describe("entitlement gates on solo lessons", () => {
   });
 });
 
-// ── 3. Reverse invites ──────────────────────────────────────────────────────────
-
 describe("reverse invites", () => {
   let rvS: TestUser; // solo student, issuer
   let rvT: TestUser; // fresh NO-ROLE redeemer (redeem has no role gate — asserted)
   let linkId: string;
 
-  // One live code per issuer per direction: a fresh code requires replacing the
-  // live one, which is exactly what the app's "Replace this code" does.
   async function mintReverse(): Promise<{ id: string; code: string; createdAt: string }> {
     const live = await request(makeApp()).get("/v1/invites").set("Authorization", auth(rvS));
     for (const r of live.body as { id: string }[]) {
@@ -528,15 +504,12 @@ describe("reverse invites", () => {
   });
 
   it("redeem with acceptTeacherRole → 201, swapped link, mint-time consent, isTeacher with no trial clock", async () => {
-    // Fresh no-role redeemer: no trial has ever started.
     const [before] = await db.orm.select().from(users).where(eq(users.id, rvT.id));
     expect(before!.isTeacher).toBe(false);
     expect(before!.isStudent).toBe(false);
     expect(before!.trialStartedAt).toBeNull();
 
     const inv = await mintReverse();
-    // NOTE: redeem has no Notes-role gate — a role-less account may redeem; the
-    // reverse path then mints isTeacher. Asserting the actual (gate-free) contract.
     const res = await request(makeApp())
       .post("/v1/invites/redeem")
       .set("Authorization", auth(rvT))
@@ -551,11 +524,9 @@ describe("reverse invites", () => {
     expect(res.body.teacher).toBeUndefined();
     linkId = res.body.link.id;
 
-    // consentAt = the INVITE's createdAt (the student consented at mint).
     const [invRow] = await db.orm.select().from(invites).where(eq(invites.id, inv.id));
     expect(new Date(res.body.link.consentAt).getTime()).toBe(invRow!.createdAt.getTime());
 
-    // Redeemer grew isTeacher; NO trial clock started, no student role.
     const [after] = await db.orm.select().from(users).where(eq(users.id, rvT.id));
     expect(after!.isTeacher).toBe(true);
     expect(after!.isStudent).toBe(false);
@@ -599,13 +570,9 @@ describe("reverse invites", () => {
     expect(res.body.link.id).toBe(linkId); // same row, reactivated
     expect(res.body.link.status).toBe("active");
     expect(res.body.link.removedAt).toBeNull();
-    // S-6: a resumed relationship re-consents at now(); consent never predates the
-    // departure it survived.
     expect(new Date(res.body.link.consentAt).getTime()).toBeGreaterThan(removedAt.getTime());
   });
 });
-
-// ── 4. Origin scoping ───────────────────────────────────────────────────────────
 
 describe("origin scoping (born-sent self-notes)", () => {
   let dual: TestUser; // holds BOTH roles — the hard case for teacher-side leakage
@@ -688,8 +655,6 @@ describe("origin scoping (born-sent self-notes)", () => {
   });
 });
 
-// ── 5. Self-note delete ─────────────────────────────────────────────────────────
-
 describe("self-note delete", () => {
   let owner: TestUser;
   let other: TestUser;
@@ -739,8 +704,6 @@ describe("self-note delete", () => {
     expect(fakeAssets.deleted).toContain(`transcripts/model-output/${lesson!.id}.json`);
     const [row] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job!.id));
     expect(row!.modelOutputPath).toBeNull();
-    // The transcript belongs to the LESSON, not the note — it stays on its own clock
-    // until the lesson itself is discarded.
     expect(fakeAssets.deleted).not.toContain(`transcripts/${lesson!.id}.json`);
     expect(row!.transcriptPath).toBe(`transcripts/${lesson!.id}.json`);
   });
@@ -775,8 +738,6 @@ describe("self-note delete", () => {
   });
 });
 
-// ── 6. Account delete (MC-1) ────────────────────────────────────────────────────
-
 describe("account delete (MC-1)", () => {
   it("teacher with a standing sent note deletes FIRST → 200; the student's copy survives with nulled refs", async () => {
     const delT = await makeUser({ oid: "np-macct-teacher", name: "Del Teacher", role: "teacher" });
@@ -790,13 +751,9 @@ describe("account delete (MC-1)", () => {
       pieceLabel: "Sonatina in C",
     });
 
-    // The transcript derivative must die with the account (durable container has
-    // no lifecycle rule — "full erase" deletes it explicitly).
     const transcriptPath = `transcripts/${sent.job.id}.json`;
     await db.orm.update(noteJobs).set({ transcriptPath }).where(eq(noteJobs.id, sent.job.id));
 
-    // Pre-fix this was a 500: the sent note's FKs to the teacher's job/lesson
-    // aborted the purge transaction.
     const del = await request(makeApp()).delete("/v1/me").set("Authorization", auth(delT));
     expect(del.status).toBe(200);
     expect(fakeAssets.deleted).toContain(transcriptPath);
@@ -816,7 +773,6 @@ describe("account delete (MC-1)", () => {
     expect(trow!.status).toBe("deleted");
     expect(trow!.displayName).toBeNull();
 
-    // The student still reads their record; attribution collapses to the tombstone.
     const list = await request(makeApp()).get("/v1/me/notes").set("Authorization", auth(delS));
     const item = list.body.items.find((n: { id: string }) => n.id === sent.note.id);
     expect(item).toBeTruthy();
@@ -827,8 +783,6 @@ describe("account delete (MC-1)", () => {
     expect(detail.status).toBe(200);
     expect(detail.body.annotations.length).toBe(2);
     expect(detail.body.teacher.displayName).toBeNull();
-    // K1: fielded B1 clients decode these as non-optional strings — a tombstoned
-    // note must emit "" here, never null (null bricks the note forever on-device).
     expect(detail.body.note.noteJobId).toBe("");
     expect(detail.body.note.lessonSessionId).toBe("");
   });
@@ -854,7 +808,6 @@ describe("account delete (MC-1)", () => {
       noteJobId: jobId,
       lessonSessionId: lessonId,
     });
-    // Plus an un-submitted second recording.
     const spare = await request(makeApp())
       .post("/v1/lessons")
       .set("Authorization", auth(solo))
@@ -871,11 +824,8 @@ describe("account delete (MC-1)", () => {
     const del = await request(makeApp()).delete("/v1/me").set("Authorization", auth(solo));
     expect(del.status).toBe(200);
     expect(fakeAssets.deleted).toContain(soloTranscript);
-    // Same lesson content in another encoding — a "full erase" that leaves it behind
-    // is not one.
     expect(fakeAssets.deleted).toContain(soloModelOutput);
 
-    // Zero strands: the self-note went via the received branch, then jobs/lessons.
     expect((await db.orm.select().from(notes).where(eq(notes.teacherId, solo.id))).length).toBe(0);
     expect((await db.orm.select().from(notes).where(eq(notes.studentId, solo.id))).length).toBe(0);
     expect((await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.id, annotation!.id))).length).toBe(0);
@@ -886,12 +836,9 @@ describe("account delete (MC-1)", () => {
     const [row] = await db.orm.select().from(users).where(eq(users.id, solo.id));
     expect(row!.status).toBe("deleted");
     expect(row!.entraOid).toBeNull();
-    // The tombstone is verifiably note-free (note.id no longer resolves).
     expect((await db.orm.select().from(notes).where(eq(notes.id, note.id))).length).toBe(0);
   });
 });
-
-// ── 7. Sync canRecord ───────────────────────────────────────────────────────────
 
 describe("sync canRecord", () => {
   it("is true for a beta student and a teacher", async () => {
@@ -922,8 +869,6 @@ describe("sync canRecord", () => {
   });
 });
 
-// ── 8. Wave-2 review fixes (declared ownerRole · canceled terminality) ─────────
-
 describe("review fixes: ownerRole declaration and canceled lessons", () => {
   it("declared student ownerRole beats teacher-wins for a dual-role account; mismatch 400s", async () => {
     const dual = await makeUser({ oid: "np-rf-dual", name: "Dual Dana", role: "teacher" });
@@ -944,7 +889,6 @@ describe("review fixes: ownerRole declaration and canceled lessons", () => {
     expect(mismatch.status).toBe(400);
     expect(mismatch.body.error).toBe("role_mismatch");
 
-    // Absent ownerRole keeps the old derivation (teacher wins for dual-role).
     const derived = await request(makeApp())
       .post("/v1/lessons")
       .set("Authorization", auth(dual))

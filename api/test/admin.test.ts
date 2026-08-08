@@ -327,14 +327,12 @@ describe("user detail + roles", () => {
       .send({ isAdmin: true });
     expect(res.status).toBe(200);
     expect(res.body.isAdmin).toBe(true);
-    // restore
     await request(app())
       .patch(`/admin/users/${plain.id}/roles`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ isAdmin: false });
   });
 
-  // Two of the three role-less accounts in dev were made right here.
   it("refuses to leave an account with no role unless forced", async () => {
     const [plain] = await db.orm.select().from(users).where(eq(users.entraOid, "plain-oid"));
     expect(plain.isTeacher).toBe(true); // set by the patch test above

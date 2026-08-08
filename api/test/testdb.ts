@@ -5,8 +5,6 @@ import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "../src/db/schema";
 import type { Db } from "../src/db/client";
 
-// In-memory Postgres with the real migration chain applied — route tests run
-// against the same SQL the dev/prod databases execute.
 export async function createTestDb(): Promise<Db> {
   const pglite = new PGlite();
   const orm = drizzle(pglite, { schema });

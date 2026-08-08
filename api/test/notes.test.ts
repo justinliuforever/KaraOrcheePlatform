@@ -36,8 +36,6 @@ import { NOTE_ARRIVED_ALERT, noteArrivedPayload, type PushSender } from "../src/
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// THE cross-repo contract (worker + API + app all assert this one file). Read, never
-// re-derived: a constant copied into this suite could agree with itself forever.
 const GOLDEN = JSON.parse(
   readFileSync(join(__dirname, "../../worker/notes/narration_parity.json"), "utf8"),
 ) as {
@@ -53,7 +51,6 @@ const GOLDEN = JSON.parse(
   };
 };
 
-// Mirrors composers.test.ts: PGlite through testdb, jose local JWKS, supertest.
 const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
 const AUDIENCE = "api://karaorchee";
 const KID = "test-key";
@@ -62,7 +59,6 @@ let verifier: AuthVerifier;
 let db: Db;
 let privateKey: CryptoKey;
 
-// The Notes pipeline is faked: audio props and the queue are mutated per-test.
 interface FakeLessons extends LessonStore {
   audio: { bytes: number } | null;
   deleted: string[];
@@ -89,8 +85,6 @@ function makeFakeLessons(): FakeLessons {
   return f;
 }
 
-// In-memory notes-assets container: put() seeds a blob, signed[] records the exact
-// paths a request minted URLs for, deletePrefix sweeps like the real one.
 interface FakeAssets extends NotesAssetsStore {
   blobs: Map<string, number>;
   copied: [string, string][];
@@ -142,8 +136,6 @@ function makeFakeAssets(): FakeAssets {
   return a;
 }
 
-// Two lanes, kept apart on purpose: a narration message on notes-jobs is one the ASR
-// consumer cannot read — it would redeliver until it dead-lettered.
 interface FakeQueue extends NotesQueue {
   sent: Record<string, unknown>[];
   narrationSent: Record<string, unknown>[];
@@ -166,8 +158,6 @@ function makeFakeQueue(): FakeQueue {
   return q;
 }
 
-// APNs stand-in. `gone` names the tokens APNs would report dead; `throwNext` is the
-// outage. Neither may reach the teacher who pressed Send.
 interface FakePush extends PushSender {
   calls: { tokens: string[]; noteId: string }[];
   gone: Set<string>;
@@ -203,7 +193,6 @@ function makeApp() {
   });
 }
 
-// The shipped state until the founder installs the APNs key: no sender at all.
 function makeAppWithoutPush() {
   return createServer({
     db,
@@ -272,8 +261,6 @@ async function setMonetization(iso: string | null) {
   if (iso) await db.orm.insert(platformConfig).values({ key: "monetization_live_at", value: iso });
 }
 
-// Simulates the (not-yet-built) worker's output: a note_job + a note with jsonb
-// content and a handful of grounded/ungrounded annotations.
 const DEFAULT_ANNOTATIONS = [
   {
     instruction: "Even out the right-hand sixteenths",
@@ -363,7 +350,6 @@ async function seedNote(opts: {
   return { note: note!, job: job!, lesson: lesson!, annotations: annRows };
 }
 
-// Shared fixtures.
 let teacher: TestUser; // "Teacher Tessa" — global sender
 let student: TestUser; // "Student Sam" — linked to teacher
 let stranger: TestUser; // synced, unlinked, no role
@@ -401,7 +387,6 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  // Each test starts from a completed, healthy upload + working queue.
   fakeLessons.audio = { bytes: 1000 };
   fakeLessons.failNextDelete = false;
   fakeQueue.throwNext = false;
@@ -416,8 +401,6 @@ beforeEach(() => {
   fakePush.calls.length = 0;
   fakePush.gone.clear();
 });
-
-// ── 1. users/sync ────────────────────────────────────────────────────────────────
 
 describe("users/sync", () => {
   it("grants teacher role and returns teacher_free access", async () => {
@@ -443,14 +426,10 @@ describe("users/sync", () => {
     const consentAt = first.body.notesConsentAt;
 
     const second = await sync(token, { role: "student", notesConsent: true });
-    // Neither clock restarts.
     expect(second.body.trialStartedAt).toBe(trialStart);
     expect(second.body.notesConsentAt).toBe(consentAt);
   });
 
-  // I-5/NEW-14: the two recording notices are different promises. The teacher one
-  // carries the responsibility-to-inform language, so accepting the solo notice must
-  // never satisfy it — and one shared column could not tell them apart.
   it("solo consent does not satisfy the teacher gate, and vice versa", async () => {
     const soloToken = await mkToken("consent-solo", "Solo Sam");
     const solo = await sync(soloToken, { role: "student", notesConsent: true, consentKind: "solo" });
@@ -501,8 +480,6 @@ describe("users/sync", () => {
     expect(res.body.soloConsentAt).toBeNull();
   });
 
-  // S-2: the client may name a role for an account that has NONE, and never again.
-  // Self-granting isTeacher was a permanent paywall bypass (teacher_free).
   it("a role sent for an account that already holds one is a silent no-op", async () => {
     const token = await mkToken("sync-both", "B");
     const first = await sync(token, { role: "student" });
@@ -567,9 +544,6 @@ describe("users/sync", () => {
     expect(event!.detail).toMatchObject({ role: "student", via: "setup" });
   });
 
-  // G-8/I-13: the origin is what lets an admin tell a repair from a sign-up. A
-  // client that sends nothing (or something unrecognized) still reads as a sign-up,
-  // which is what the trail assumed before the field existed.
   it("a role grant with no origin records as a sign-up", async () => {
     const token = await mkToken("via-absent", "Via Vera");
     const res = await sync(token, { role: "teacher" });
@@ -590,8 +564,6 @@ describe("users/sync", () => {
     expect(event!.detail).toMatchObject({ role: "student", via: "signup" });
   });
 });
-
-// ── 2. Entitlement resolver via response shapes ───────────────────────────────────
 
 describe("entitlement resolver", () => {
   afterAll(async () => {
@@ -639,8 +611,6 @@ describe("entitlement resolver", () => {
   });
 });
 
-// ── 3. Invites & redemption ───────────────────────────────────────────────────────
-
 describe("invites", () => {
   let invT: TestUser;
   let invS: TestUser;
@@ -672,8 +642,6 @@ describe("invites", () => {
   });
 
   it("GET lists only live invites; DELETE revokes; unknown DELETE 404s", async () => {
-    // Seeded, not minted: one live code per issuer per direction means a second
-    // POST would return inviteA rather than a new row.
     const [b] = await db.orm
       .insert(invites)
       .values({ code: "SEEDB1", teacherId: invT.id, expiresAt: daysFromNow(7) })
@@ -765,7 +733,6 @@ describe("invites", () => {
     expect(res.body.error).toBe("already_linked");
     expect(res.body.message).toBe("You're already connected with Invite Teacher.");
     expect(res.body.counterpart).toEqual({ id: invT.id, displayName: "Invite Teacher" });
-    // The 409 fires before the claim, so the code is not burned.
     const [row] = await db.orm.select().from(invites).where(eq(invites.id, c.body.id));
     expect(row!.usedCount).toBe(0);
   });
@@ -778,8 +745,6 @@ describe("invites", () => {
     const [link] = await db.orm.select().from(teacherStudentLinks).where(eq(teacherStudentLinks.id, linkId));
     const removedAt = link!.removedAt!;
 
-    // The teacher's pre-removal code is still live; it cannot re-form the pair, so
-    // the fresh code has to replace it.
     const live = await request(makeApp()).get("/v1/invites").set("Authorization", `Bearer ${invT.token}`);
     for (const r of live.body as { id: string }[]) {
       await request(makeApp()).delete(`/v1/invites/${r.id}`).set("Authorization", `Bearer ${invT.token}`);
@@ -801,8 +766,6 @@ describe("invites", () => {
     expect(new Date(res.body.link.consentAt).getTime()).toBeGreaterThan(removedAt.getTime());
   });
 });
-
-// ── 4. Roster ─────────────────────────────────────────────────────────────────────
 
 describe("roster", () => {
   let rostT: TestUser;
@@ -863,8 +826,6 @@ describe("roster", () => {
   });
 });
 
-// ── 5. Lessons ─────────────────────────────────────────────────────────────────────
-
 describe("lessons", () => {
   it("POST requires a Notes role; solo student path validates its own contract", async () => {
     const noRole = await request(makeApp())
@@ -874,7 +835,6 @@ describe("lessons", () => {
     expect(noRole.status).toBe(403);
     expect(noRole.body.error).toBe("notes_role_required");
 
-    // Solo recordings are always the recorder's own and must be attested.
     const withStudent = await request(makeApp())
       .post("/v1/lessons")
       .set("Authorization", `Bearer ${student.token}`)
@@ -930,7 +890,6 @@ describe("lessons", () => {
     expect(second.status).toBe(200);
     expect(second.body.lesson.id).toBe(first.body.lesson.id);
     expect(second.body.uploadUrl).toBe(first.body.uploadUrl);
-    // A different client id is a genuinely new lesson.
     const other = await request(makeApp())
       .post("/v1/lessons")
       .set("Authorization", `Bearer ${teacher.token}`)
@@ -1053,7 +1012,6 @@ describe("lessons", () => {
       .send({});
     const jobId = submit.body.job.id;
 
-    // Still queued → not retryable.
     const early = await request(makeApp())
       .post(`/v1/lessons/${lessonId}/retry`)
       .set("Authorization", `Bearer ${teacher.token}`)
@@ -1084,9 +1042,6 @@ describe("lessons", () => {
     expect(cancel.status).toBe(200);
     expect(fakeLessons.deleted).toContain(audioPath);
 
-    // CONTRACT CHANGE (r4 fix 2): a submitted lesson with a live job is refused
-    // as lesson_processing, not already_submitted — "already submitted" is no
-    // longer a reason to refuse, only "still running" is.
     const submitted = await request(makeApp())
       .post("/v1/lessons")
       .set("Authorization", `Bearer ${teacher.token}`)
@@ -1103,8 +1058,6 @@ describe("lessons", () => {
   });
 });
 
-// ── 5b. Lesson metadata lifecycle: PATCH, discard, retry policy (r4) ────────────────
-
 describe("lesson metadata lifecycle", () => {
   let mdT: TestUser; // recording teacher
   let mdS: TestUser; // linked student the lesson was really with
@@ -1120,7 +1073,6 @@ describe("lesson metadata lifecycle", () => {
     solo = await makeUser({ oid: "md-solo", name: "Meta Solo", role: "student", notesConsent: true });
     await linkActive(mdT.id, mdS.id);
     await linkActive(mdT.id, mdS2.id);
-    // 32 bars: everything past bar 32 is out of range once this piece is named.
     await db.orm.insert(pieces).values({
       id: "short_piece",
       title: "Burgmüller Op. 100 No. 2",
@@ -1244,8 +1196,6 @@ describe("lesson metadata lifecycle", () => {
   const getOne = (id: string, who: TestUser = mdT) =>
     request(makeApp()).get(`/v1/lessons/${id}`).set("Authorization", `Bearer ${who.token}`);
 
-  // ── PATCH ───────────────────────────────────────────────────────────────────
-
   it("assigns a student on a submitted lesson that has no note yet", async () => {
     const lesson = await mkLesson();
     await mkJob(lesson.id, { status: "failed", failureCode: "thin_note" });
@@ -1268,7 +1218,6 @@ describe("lesson metadata lifecycle", () => {
   });
 
   it("never clobbers a student the teacher chose at review", async () => {
-    // The lesson never named anyone; the teacher picked mdS2 while reviewing.
     const lesson = await mkLesson({ studentId: null });
     const { note } = await mkNote(lesson.id, { studentId: mdS2.id, status: "draft" });
     const res = await patch(lesson.id, { studentId: mdS.id });
@@ -1280,10 +1229,6 @@ describe("lesson metadata lifecycle", () => {
   });
 
   it("M7: the wire carries the DRAFT's own studentId after a non-cascading PATCH", async () => {
-    // The teacher home resolves its Needs-attention row from the LESSON today,
-    // which would name the newly assigned student on a draft that still goes to
-    // the one the teacher chose. The list must expose the note's own studentId
-    // for that row to be fixable, and it does.
     const lesson = await mkLesson({ studentId: null });
     await mkNote(lesson.id, { studentId: mdS2.id, status: "draft" });
     await patch(lesson.id, { studentId: mdS.id });
@@ -1325,8 +1270,6 @@ describe("lesson metadata lifecycle", () => {
     expect(badPiece.body.error).toBe("unknown_piece");
   });
 
-  // ── D1: no bare 400 after a 45-minute recording ─────────────────────────────
-
   it("every repairable 400 carries the same message on create and on PATCH", async () => {
     const post = (body: Record<string, unknown>, who: TestUser = mdT) =>
       request(makeApp()).post("/v1/lessons").set("Authorization", `Bearer ${who.token}`).send(body);
@@ -1344,7 +1287,6 @@ describe("lesson metadata lifecycle", () => {
     expect(soloCreate.body.error).toBe("solo_lesson_no_student");
     expect(soloCreate.body.message).toBeTruthy();
 
-    // The two write paths must say the SAME thing about the same problem.
     const lesson = await mkLesson();
     const soloLesson = await mkLesson({ owner: solo, ownerRole: "student" });
     expect((await patch(lesson.id, { pieceId: "no_such_piece" })).body.message).toBe(created.body.message);
@@ -1424,7 +1366,6 @@ describe("lesson metadata lifecycle", () => {
     expect(empty.status).toBe(400);
     expect(empty.body.error).toBe("nothing_to_update");
 
-    // 404, never 403 — do not confirm that someone else's lesson exists.
     const notMine = await patch(lesson.id, { pieceLabel: "x" }, stranger);
     expect(notMine.status).toBe(404);
     const alsoNotMine = await patch(lesson.id, { pieceLabel: "x" }, teacher);
@@ -1442,8 +1383,6 @@ describe("lesson metadata lifecycle", () => {
     expect(res.body.lesson.studentId).toBe(mdS.id);
     expect(res.body.lesson.pieceLabel).toBe("Trimmed");
 
-    // Re-creating with the same clientLessonId returns the row WITH the patch —
-    // create's dedupe stays idempotent-pure and the PATCH is what carried the edit.
     const again = await request(makeApp())
       .post("/v1/lessons")
       .set("Authorization", `Bearer ${mdT.token}`)
@@ -1477,8 +1416,6 @@ describe("lesson metadata lifecycle", () => {
     expect((setPiece.detail as { toPieceId: string }).toPieceId).toBe("short_piece");
   });
 
-  // ── DELETE / discard ────────────────────────────────────────────────────────
-
   it("discards a permanently failed lesson: audio, transcript, draft and warnings all go", async () => {
     const lesson = await mkLesson({ studentId: mdS.id, pieceLabel: "Op. 100" });
     await db.orm
@@ -1490,10 +1427,7 @@ describe("lesson metadata lifecycle", () => {
       failureCode: "thin_note",
       attempts: 1,
       transcriptPath: `transcripts/${lesson.id}.json`,
-      // The model output quotes the lesson verbatim, so the discard owes it the same
-      // deletion it owes the transcript.
       modelOutputPath: `transcripts/model-output/${lesson.id}.json`,
-      // r4_verify M1: metrics.warnings is verbatim lesson content.
       metrics: { asr_secs: 12, warnings: ["dropped_unverifiable_quote: keep your wrist relaxed on"] },
     });
     const { note, annotations } = await mkNote(lesson.id, {
@@ -1583,9 +1517,6 @@ describe("lesson metadata lifecycle", () => {
   });
 
   it("a solo self note never blocks the discard — it is the owner's own data", async () => {
-    // The sent-note guard is scoped to origin='teacher': a self note is 'sent' by
-    // construction, so scoping it wrongly would make every solo recording
-    // undeletable the moment its note landed.
     const lesson = await mkLesson({ owner: solo, ownerRole: "student" });
     await mkJob(lesson.id, { status: "ready_for_review" });
     const { note } = await mkNote(lesson.id, {
@@ -1609,7 +1540,6 @@ describe("lesson metadata lifecycle", () => {
       .set("Authorization", `Bearer ${mdT.token}`)
       .send({});
     const id = created.body.lesson.id;
-    // Simulate the race: the row leaves 'created' between the read and the CAS.
     const app = makeApp();
     const inFlight = request(app).delete(`/v1/lessons/${id}`).set("Authorization", `Bearer ${mdT.token}`);
     await db.orm
@@ -1617,8 +1547,6 @@ describe("lesson metadata lifecycle", () => {
       .set({ status: "submitted" })
       .where(and(eq(lessonSessions.id, id), eq(lessonSessions.status, "created")));
     const res = await inFlight;
-    // Either the CAS lost (409) or it won before the update landed (200) — but a
-    // 409 must never have mutated anything.
     if (res.status === 409) {
       expect(res.body.error).toBe("status_changed");
       const [row] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, id));
@@ -1628,15 +1556,7 @@ describe("lesson metadata lifecycle", () => {
     }
   });
 
-  // ── D2: what the discard destroys is read UNDER the lock ────────────────────
-
   it("cascades and deletes from the post-lock read, not from the pre-lock snapshot", async () => {
-    // The worker takes the same lesson row FOR UPDATE before it inserts a note or
-    // stamps a transcript, so its write lands in the window between the pre-lock
-    // read and the CAS. A trigger on the CAS itself reproduces that window
-    // exactly and deterministically: what a snapshot cannot see is a note that
-    // then outlives the discard, and a transcript blob orphaned PERMANENTLY
-    // (notes-assets has no lifecycle rule) behind an audit that says it is gone.
     const lesson = await mkLesson({ studentId: mdS.id });
     const job = await mkJob(lesson.id, { status: "failed", failureCode: "thin_note" });
     await db.orm.execute(sqlRaw`
@@ -1662,8 +1582,6 @@ describe("lesson metadata lifecycle", () => {
     try {
       const res = await del(lesson.id);
       expect(res.status).toBe(200);
-      // Neither write may survive a discard the user was told deleted the
-      // recording and its transcript.
       const survivors = await db.orm.select().from(notes).where(eq(notes.lessonSessionId, lesson.id));
       expect(survivors.length).toBe(0);
       expect(fakeAssets.deleted).toContain("transcripts/raced.json");
@@ -1682,9 +1600,6 @@ describe("lesson metadata lifecycle", () => {
   });
 
   it("unwinds the CAS when the post-lock read revokes the permission", async () => {
-    // Same window, other direction: a note that becomes SENT in it must revoke a
-    // discard the pre-lock read had already allowed. Returning from the callback
-    // would commit the cancel, so the recheck has to throw.
     const lesson = await mkLesson({ studentId: mdS.id });
     const job = await mkJob(lesson.id, { status: "failed", failureCode: "thin_note" });
     await db.orm.execute(sqlRaw`
@@ -1709,7 +1624,6 @@ describe("lesson metadata lifecycle", () => {
       const res = await del(lesson.id);
       expect(res.status).toBe(409);
       expect(res.body.error).toBe("status_changed");
-      // Nothing committed: the lesson is still live and the job untouched.
       const [row] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, lesson.id));
       expect(row!.status).toBe("submitted");
       expect(row!.audioPath).toBe(lesson.audioPath);
@@ -1722,11 +1636,7 @@ describe("lesson metadata lifecycle", () => {
     }
   });
 
-  // ── D6: a discarded lesson's queued work cannot still run ───────────────────
-
   it("terminalizes a live job, and never relabels one that already had a real cause", async () => {
-    // The Service Bus message outlives the discard; the worker gates on this
-    // status, so this is what stops the run.
     const wedged = await mkLesson();
     const live = await mkJob(wedged.id, { status: "queued", movedAgoMs: 2 * HOUR });
     expect((await del(wedged.id)).status).toBe(200);
@@ -1736,7 +1646,6 @@ describe("lesson metadata lifecycle", () => {
     expect(liveRow!.stage).toBeNull();
     expect(liveRow!.discardedAt).not.toBeNull();
 
-    // An ASR failure is a real statistic; the discard must not claim it.
     const failed = await mkLesson();
     const real = await mkJob(failed.id, { status: "failed", failureCode: "asr_error", attempts: 1 });
     expect((await del(failed.id)).status).toBe(200);
@@ -1745,7 +1654,6 @@ describe("lesson metadata lifecycle", () => {
     expect(realRow!.failureCode).toBe("asr_error");
     expect(realRow!.discardedAt).not.toBeNull();
 
-    // ready_for_review is an outcome too, not a failure.
     const ready = await mkLesson();
     const done = await mkJob(ready.id, { status: "ready_for_review" });
     expect((await del(ready.id)).status).toBe(200);
@@ -1753,8 +1661,6 @@ describe("lesson metadata lifecycle", () => {
     expect(doneRow!.status).toBe("ready_for_review");
     expect(doneRow!.failureCode).toBeNull();
   });
-
-  // ── D5 / D7: audio_path is the sentinel, and Discard-again really retries ────
 
   it("nulls audio_path on a confirmed delete, keeps it on a failure, and retries on the next tap", async () => {
     const ok = await mkLesson();
@@ -1770,23 +1676,18 @@ describe("lesson metadata lifecycle", () => {
     expect(res.status).toBe(200); // best effort: a blob failure never un-discards
     const [badRow] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, bad.id));
     expect(badRow!.status).toBe("canceled");
-    // "canceled AND audio_path IS NOT NULL" is the whole reaper query.
     expect(badRow!.audioPath).toBe(bad.audioPath);
     const audits = await db.orm.select().from(auditEvents).where(eq(auditEvents.subjectId, bad.id));
     expect((audits.find((a) => a.action === "lesson.discard")!.detail as { audioDeleted: boolean }).audioDeleted).toBe(false);
 
-    // The second tap is idempotent for the row and NOT a no-op for the blob.
     expect(fakeLessons.deleted).not.toContain(bad.audioPath);
     expect((await del(bad.id)).status).toBe(200);
     expect(fakeLessons.deleted).toContain(bad.audioPath);
     const [healed] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, bad.id));
     expect(healed!.audioPath).toBeNull();
-    // The ledger records that the deletion the first discard promised finally happened.
     const after = await db.orm.select().from(auditEvents).where(eq(auditEvents.subjectId, bad.id));
     expect(after.some((a) => (a.detail as { retriedAudioDelete?: boolean }).retriedAudioDelete === true)).toBe(true);
   });
-
-  // ── C3 anti-drift: discardAllowed and the DELETE guard are one function ──────
 
   it("discardAllowed on the wire agrees with the DELETE guard on every row of the table", async () => {
     const cases: { name: string; build: () => Promise<string>; allowed: boolean }[] = [
@@ -1861,12 +1762,9 @@ describe("lesson metadata lifecycle", () => {
       expect(read.status, c.name).toBe(200);
       expect(read.body.lesson.discardAllowed, c.name).toBe(c.allowed);
       const res = await del(id);
-      // The flag on the wire IS the answer the route gives. No second implementation.
       expect(res.status === 200, c.name).toBe(c.allowed);
     }
   });
-
-  // ── Retry policy ────────────────────────────────────────────────────────────
 
   it("caps retries by failure code, and naming the piece buys exactly one more", async () => {
     const lesson = await mkLesson({ studentId: mdS.id });
@@ -1879,7 +1777,6 @@ describe("lesson metadata lifecycle", () => {
     expect(exhausted.body.error).toBe("retry_exhausted");
     expect(exhausted.body.message).toContain("as many times as it usefully can");
 
-    // Naming the piece changes the prompt, so it is a genuinely different attempt.
     const edited = await patch(lesson.id, { pieceId: "short_piece" });
     expect(edited.status).toBe(200);
     const allowed = await request(makeApp())
@@ -1893,11 +1790,7 @@ describe("lesson metadata lifecycle", () => {
     expect(allowed.body.job.startedAt).not.toBe(null);
   });
 
-  // ── D4: what the bonus is allowed to fund ───────────────────────────────────
-
   it("a student assignment never funds a paid re-run — only the piece does", async () => {
-    // The prompt reads the piece and nothing else about the lesson, so a pure
-    // reassignment must leave a byte-identical run un-armed.
     const lesson = await mkLesson({ pieceId: "short_piece" });
     await mkJob(lesson.id, { status: "failed", failureCode: "thin_note", attempts: 2 });
     const assigned = await patch(lesson.id, { studentId: mdS.id });
@@ -1910,19 +1803,15 @@ describe("lesson metadata lifecycle", () => {
     expect(denied.status).toBe(409);
     expect(denied.body.error).toBe("retry_exhausted");
 
-    // Re-sending the SAME piece is not a change either.
     const same = await patch(lesson.id, { pieceId: "short_piece" });
     expect(same.status).toBe(200);
     expect(same.body.job.retryAllowed).toBe(false);
 
-    // A different piece is.
     const changed = await patch(lesson.id, { pieceId: "seed_piece" });
     expect(changed.body.job.retryAllowed).toBe(true);
   });
 
   it("no_speech is categorical: cap 0, and no piece edit can resurrect it", async () => {
-    // no_speech is raised before the LLM ever runs, so a funded re-run would be a
-    // byte-identical paid ASR call the app's own explainer says cannot help.
     const lesson = await mkLesson();
     await mkJob(lesson.id, { status: "failed", failureCode: "no_speech", attempts: 0 });
     const first = await request(makeApp())
@@ -1941,7 +1830,6 @@ describe("lesson metadata lifecycle", () => {
       .send({});
     expect(stillDenied.status).toBe(409);
 
-    // Same for the other categorical code.
     const noAudio = await mkLesson();
     await mkJob(noAudio.id, { status: "failed", failureCode: "no_audio", attempts: 0 });
     await patch(noAudio.id, { pieceId: "short_piece" });
@@ -1953,8 +1841,6 @@ describe("lesson metadata lifecycle", () => {
     expect(na.body.error).toBe("retry_exhausted");
   });
 
-  // ── D8: the PATCH answer carries the job it just re-armed ───────────────────
-
   it("PATCH returns the job so a freshly granted retry is visible without a refetch", async () => {
     const lesson = await mkLesson();
     const job = await mkJob(lesson.id, { status: "failed", failureCode: "thin_note", attempts: 2 });
@@ -1965,13 +1851,10 @@ describe("lesson metadata lifecycle", () => {
     expect(res.body.job.id).toBe(job.id);
     expect(res.body.job.retryAllowed).toBe(true);
     expect(res.body.job.attempts).toBe(2);
-    // A lesson with no job at all still answers, with null rather than a missing key.
     const jobless = await mkLesson();
     const noJob = await patch(jobless.id, { pieceLabel: "Anything" });
     expect(noJob.body.job).toBeNull();
   });
-
-  // ── D3: a failed requeue send unwinds completely ────────────────────────────
 
   it("a queue failure on retry restores the job exactly, bonus included", async () => {
     const lesson = await mkLesson();
@@ -1985,7 +1868,6 @@ describe("lesson metadata lifecycle", () => {
       .update(noteJobs)
       .set({ stage: "llm", error: "thin_note: too few annotations", failureHints: ["Try naming the piece."] })
       .where(eq(noteJobs.id, job.id));
-    // The piece edit is what funds this attempt; a rollback must not eat it.
     await patch(lesson.id, { pieceId: "short_piece" });
     const [armed] = await db.orm.select().from(noteJobs).where(eq(noteJobs.id, job.id));
 
@@ -2008,8 +1890,6 @@ describe("lesson metadata lifecycle", () => {
     expect(after!.startedAt!.getTime()).toBe(armed!.startedAt!.getTime());
     expect(after!.updatedAt.getTime()).toBe(armed!.updatedAt.getTime());
 
-    // The bonus survives, so the next tap is still allowed — the sheet's
-    // "as many times as it usefully can" would have been a lie otherwise.
     const detail = await getOne(lesson.id);
     expect(detail.body.job.retryAllowed).toBe(true);
     fakeQueue.throwNext = false;
@@ -2057,8 +1937,6 @@ describe("lesson metadata lifecycle", () => {
     expect(row!.createdAt.getTime()).toBeLessThanOrEqual(row!.startedAt!.getTime());
   });
 
-  // ── Wire contract ───────────────────────────────────────────────────────────
-
   it("list and detail both carry attempts/failureCode/retryAllowed and discardAllowed", async () => {
     const lesson = await mkLesson({ studentId: mdS.id });
     await mkJob(lesson.id, { status: "failed", failureCode: "thin_note", attempts: 2 });
@@ -2085,8 +1963,6 @@ describe("lesson metadata lifecycle", () => {
     expect(detail.body.job.retryAllowed).toBe(true);
   });
 });
-
-// ── 6. Notes: teacher flow ──────────────────────────────────────────────────────────
 
 describe("notes: teacher flow", () => {
   it("list and detail are scoped to the owning teacher; non-teachers 403, other teachers 404", async () => {
@@ -2116,7 +1992,6 @@ describe("notes: teacher flow", () => {
 
   it("PATCH edits annotations by stable id, deletes omitted ones, ignores unsourced new rows, and never lets a client alter a quote", async () => {
     const { note, annotations } = await seedNote({ teacherId: teacher.id, pieceId: "seed_piece" });
-    // seedNote inserts >= 2 annotations; keep the first (edited), drop the rest.
     const keepId = annotations[0]!.id;
     const originalQuote = annotations[0]!.quote;
     const droppedId = annotations[1]!.id;
@@ -2135,7 +2010,6 @@ describe("notes: teacher flow", () => {
             location: { type: "absolute", measureStart: 9, grounded: true },
           },
           {
-            // No id: annotations are worker-authored, so this must be dropped, not created.
             instruction: "Brand new annotation",
             quote: "should never appear",
             category: "other",
@@ -2145,16 +2019,13 @@ describe("notes: teacher flow", () => {
       });
     expect(res.status).toBe(200);
     expect(res.body.note.content.lessonSummary).toBe("Edited summary");
-    // Only the kept row survives: the omitted id was deleted, the id-less row ignored.
     expect(res.body.annotations.length).toBe(1);
     expect(res.body.annotations[0].id).toBe(keepId);
-    // The kept row's stored quote is untouched by the client payload.
     expect(res.body.annotations[0].quote).toBe(originalQuote);
     expect(res.body.annotations[0].instruction).toBe("Revised instruction");
     expect(res.body.annotations[0].category).toBe("rhythm");
     expect(res.body.annotations[0].location.measureStart).toBe(9);
 
-    // A second PATCH using the (still valid) id keeps the quote — no stale-id nulling.
     const again = await request(makeApp())
       .patch(`/v1/notes/${note.id}`)
       .set("Authorization", `Bearer ${teacher.token}`)
@@ -2281,8 +2152,6 @@ describe("notes: teacher flow", () => {
     expect(original.body.note.supersededBy).toBe(res.body.id);
   });
 });
-
-// ── 7. Notes: student flow ──────────────────────────────────────────────────────────
 
 describe("notes: student flow", () => {
   let stuT: TestUser;
@@ -2419,7 +2288,6 @@ describe("notes: student flow", () => {
     expect(undone.status).toBe(200);
     expect(undone.body.doneAt).toBeNull();
 
-    // The teacher is not the student on this note.
     const asTeacher = await request(makeApp())
       .put(`/v1/me/notes/${note.id}/annotations/${aid}/practiced`)
       .set("Authorization", `Bearer ${stuT.token}`)
@@ -2469,7 +2337,6 @@ describe("notes: student flow", () => {
     await db.orm.update(users).set({ trialStartedAt: daysAgo(90) }).where(eq(users.id, lapS.id));
     await setMonetization(daysAgo(90).toISOString());
     try {
-      // Trial ended ~60d ago; that is the lock boundary.
       const recent = await seedNote({
         teacherId: stuT.id,
         studentId: lapS.id,
@@ -2509,14 +2376,11 @@ describe("notes: student flow", () => {
   });
 });
 
-// ── 7b. Narration read path ─────────────────────────────────────────────────────────
-
 describe("notes: narration", () => {
   let narT: TestUser;
   let narS: TestUser;
   let otherS: TestUser; // same teacher, different student
   let otherT: TestUser;
-  // The worker asserts these same digests are what it produces for the golden's scripts.
   const goldenHashes = (GOLDEN.wire.response.clips as { textHash: string }[]).map((c) => c.textHash);
 
   beforeAll(async () => {
@@ -2528,8 +2392,6 @@ describe("notes: narration", () => {
     await linkActive(narT.id, otherS.id);
   });
 
-  // What the worker leaves behind: one manifest row per synthesized clip, plus its blob.
-  // The hashes are the golden's own — this route's only job is to hand them back whole.
   async function seedClips(noteId: string, clipIds: string[], voice: "jessica" | "george" = "jessica") {
     for (const [i, clipId] of clipIds.entries()) {
       const blobPath = narrationClipPath(noteId, voice, clipId);
@@ -2550,8 +2412,6 @@ describe("notes: narration", () => {
     }
   }
 
-  // The path comes from the golden, so the client and this route cannot drift apart:
-  // the app builds the same string from the same file.
   function narrationPath(noteId: string, voice?: string) {
     const [path, query] = GOLDEN.wire.endpoint.split("?") as [string, string];
     const base = path.replace("{noteId}", noteId);
@@ -2586,12 +2446,8 @@ describe("notes: narration", () => {
     expect(res.body.clips[1].annotationId).toBe(annotations[0]!.id);
     expect(res.body.clips[1].kind).toBe("step");
     expect(res.body.clips[0].bytes).toBe(4096);
-    // The app re-derives this and refuses to play a clip whose text moved. Handed back
-    // WHOLE and from the manifest table — a truncated or re-derived hash is one the app
-    // can never match, and every clip would fall silently to the error path.
     expect(res.body.clips[0].textHash).toBe(goldenHashes[0]);
     expect(res.body.clips[0].textHash).toHaveLength(64);
-    // Every URL is minted for exactly one blob under this note's prefix.
     expect(fakeAssets.signed).toEqual([
       narrationClipPath(note.id, "jessica", "overview"),
       narrationClipPath(note.id, "jessica", annotations[0]!.id),
@@ -2602,9 +2458,6 @@ describe("notes: narration", () => {
     expect(new Date(res.body.expiresAt).getTime()).toBeLessThanOrEqual(Date.now() + 15 * 60 * 1000);
   });
 
-  // A silent fallback is indistinguishable from correct behaviour, so the wire is pinned
-  // to the sample the iOS decoder is tested against byte-for-byte. If either side renames
-  // a field, adds one the other must see, or drops one, this fails here and there.
   it("answers in exactly the shape the iOS client is tested against", async () => {
     const sample = GOLDEN.wire.response as {
       clips: Record<string, unknown>[];
@@ -2625,7 +2478,6 @@ describe("notes: narration", () => {
     expect(res.body.voices).toEqual(GOLDEN.wire.voices);
     expect(res.body.clips[0].clipId).toBe(GOLDEN.wire.overviewClipId);
     expect(res.body.clips[0].annotationId).toBeNull();
-    // The sample's own clips are the golden's first two scripts, in order.
     expect(res.body.clips.map((c: { textHash: string }) => c.textHash)).toEqual(
       sample.clips.map((c) => c.textHash),
     );
@@ -2685,7 +2537,6 @@ describe("notes: narration", () => {
     const ids = res.body.clips.map((c: { clipId: string }) => c.clipId);
     expect(ids).toEqual(["overview", annotations[0]!.id]);
     expect(res.body.pending).toEqual([]);
-    // The blob outlives the annotation; nothing may hand it to a client.
     expect(fakeAssets.blobs.has(narrationClipPath(note.id, "jessica", annotations[1]!.id))).toBe(true);
     expect(fakeAssets.signed).not.toContain(narrationClipPath(note.id, "jessica", annotations[1]!.id));
   });
@@ -2701,8 +2552,6 @@ describe("notes: narration", () => {
       .send({ annotations: [{ id: annotations[0]!.id }] });
     expect(res.status).toBe(200);
 
-    // The manifest row cascades with the annotation; without this the audio would sit in
-    // the container forever, addressable by nothing.
     for (const voice of ["jessica", "george"] as const) {
       expect(fakeAssets.deleted).toContain(narrationClipPath(note.id, voice, annotations[1]!.id));
       expect(fakeAssets.blobs.has(narrationClipPath(note.id, voice, annotations[0]!.id))).toBe(true);
@@ -2725,9 +2574,6 @@ describe("notes: narration", () => {
       .where(eq(noteAnnotations.noteId, copyId))
       .orderBy(asc(noteAnnotations.idx));
 
-    // Same words in the same order = the same content hash, which is exactly what makes
-    // the worker skip a clip. A group send is N duplicates: without this it is N full
-    // vendor runs for audio the account already owns.
     const rows = await db.orm
       .select()
       .from(noteNarrationClips)
@@ -2739,7 +2585,6 @@ describe("notes: narration", () => {
     expect(overview.annotationId).toBeNull();
     expect(overview.textHash).toBe(goldenHashes[0]);
     expect(rows.find((r) => r.clipId === copied[0]!.id)!.annotationId).toBe(copied[0]!.id);
-    // The copy's audio is where the copy's own signed URL points.
     for (const row of rows) {
       expect(row.blobPath).toBe(narrationClipPath(copyId, "jessica", row.clipId));
       expect(fakeAssets.blobs.has(row.blobPath)).toBe(true);
@@ -2754,7 +2599,6 @@ describe("notes: narration", () => {
   it("a duplicate whose audio cannot be copied is still a duplicate, minus the clip", async () => {
     const { note, annotations } = await seedNote({ teacherId: narT.id, status: "draft", pieceId: "seed_piece" });
     await seedClips(note.id, ["overview", annotations[0]!.id]);
-    // The manifest row exists but the blob does not: the copy must not claim audio.
     fakeAssets.blobs.delete(narrationClipPath(note.id, "jessica", "overview"));
 
     const res = await request(makeApp())
@@ -2839,10 +2683,8 @@ describe("notes: narration", () => {
       .set({ status: "removed", removedAt: new Date() })
       .where(eq(teacherStudentLinks.id, link.id));
 
-    // Parity with the note text: what was delivered stays readable.
     expect((await get(delivered.note.id, dropS.token)).status).toBe(200);
 
-    // The removed link is not a key to anything else the teacher holds.
     const forOther = await seedNote({
       teacherId: narT.id,
       studentId: narS.id,
@@ -2853,7 +2695,6 @@ describe("notes: narration", () => {
     await seedClips(forOther.note.id, ["overview"]);
     expect((await get(forOther.note.id, dropS.token)).status).toBe(404);
 
-    // And the teacher can no longer send them a new one.
     const fresh = await seedNote({ teacherId: narT.id, status: "draft", pieceId: "seed_piece" });
     const send = await request(makeApp())
       .post(`/v1/notes/${fresh.note.id}/send`)
@@ -2893,8 +2734,6 @@ describe("notes: narration", () => {
       .set("Authorization", `Bearer ${narT.token}`)
       .send({ studentId: narS.id });
     expect(ok.status).toBe(200);
-    // ONE message, on the narration lane, in the golden's shape — the worker refuses a
-    // body it cannot read rather than guessing which voices to bill for.
     expect(fakeQueue.narrationSent).toEqual([
       { noteId: first.note.id, voices: ["jessica", "george"], reqId: expect.any(String) },
     ]);
@@ -2974,7 +2813,6 @@ describe("notes: narration", () => {
     expect(res.status).toBe(200);
     expect(fakeAssets.deletedPrefixes).toContain(narrationPrefix(draft.note.id));
     expect(fakeAssets.deletedPrefixes).not.toContain(narrationPrefix(sent.note.id));
-    // The student's copy is still playable.
     expect((await get(sent.note.id, kept.token)).status).toBe(200);
   });
 
@@ -3015,8 +2853,6 @@ describe("notes: narration", () => {
   });
 });
 
-// ── 8. Devices ──────────────────────────────────────────────────────────────────────
-
 describe("devices", () => {
   let devU1: TestUser;
   let devU2: TestUser;
@@ -3052,7 +2888,6 @@ describe("devices", () => {
       .set("Authorization", `Bearer ${devU1.token}`)
       .send({ token: "apns-token-B" });
 
-    // A different user cannot delete it.
     await request(makeApp()).delete("/v1/devices/apns-token-B").set("Authorization", `Bearer ${devU2.token}`);
     let rows = await db.orm.select().from(devices).where(eq(devices.token, "apns-token-B"));
     expect(rows.length).toBe(1);
@@ -3063,16 +2898,11 @@ describe("devices", () => {
   });
 });
 
-// ── 8b. Push on send ────────────────────────────────────────────────────────────────
-
 describe("push on send", () => {
   let pTeacher: TestUser;
   let pStudent: TestUser;
 
   beforeAll(async () => {
-    // Notifications ship OFF; this suite opts in so the machinery under the switch
-    // stays pinned while it waits. A failure here after removing the opt-in means the
-    // switch moved — never delete the opt-in to make it pass.
     process.env.PUSH_ENABLED = "true";
     pTeacher = await makeUser({ oid: "push-teacher", name: "Push Tessa", role: "teacher" });
     pStudent = await makeUser({ oid: "push-student", name: "Push Sam", role: "student" });
@@ -3120,7 +2950,6 @@ describe("push on send", () => {
       },
       noteId: "note-123",
     });
-    // The alert is a constant: nothing about the lesson can reach a lock screen through it.
     expect(payload.aps.alert).toEqual({ ...NOTE_ARRIVED_ALERT });
     const wire = JSON.stringify(payload);
     for (const leak of ["lessonSummary", "practicePlan", "Nice sense of line today", "Czerny", "Push Sam", "Push Tessa"]) {
@@ -3164,7 +2993,6 @@ describe("push on send", () => {
 
   it("a token re-registered by a second account stops notifying the first", async () => {
     await register(pStudent, "shared-device");
-    // Same phone, next student signs in: POST /v1/devices rebinds the token.
     await register(student, "shared-device");
 
     const { res } = await send(makeApp());
@@ -3182,7 +3010,6 @@ describe("push on send", () => {
     expect(res.body.sentAt).not.toBeNull();
     const [row] = await db.orm.select().from(notes).where(eq(notes.id, noteId));
     expect(row!.status).toBe("sent");
-    // A transient outage must never be read as a dead token.
     const rows = await db.orm.select().from(devices).where(eq(devices.userId, pStudent.id));
     expect(rows.length).toBe(1);
   });
@@ -3210,11 +3037,8 @@ describe("push on send", () => {
   });
 });
 
-// ── 9. Auth ───────────────────────────────────────────────────────────────────────
-
 describe("account deletion", () => {
   it("scrubs the deleting user, ends links, deletes their private data, and purges audio", async () => {
-    // Fresh users so this test doesn't collide with the shared fixtures' links.
     const dt = await makeUser({ oid: "del-teacher", name: "Del Teacher", email: "dt@k.com", role: "teacher" });
     const ds = await makeUser({ oid: "del-student", name: "Del Student", email: "dsx@k.com", role: "student" });
     await sync(ds.token, { notesConsent: true, consentKind: "solo" });
@@ -3227,7 +3051,6 @@ describe("account deletion", () => {
       .post("/v1/lessons").set("Authorization", `Bearer ${dt.token}`).send({ studentId: ds.id });
     const audioPath = lessonRes.body.lesson.audioPath as string;
 
-    // The STUDENT deletes their account.
     const del = await request(makeApp()).delete("/v1/me").set("Authorization", `Bearer ${ds.token}`);
     expect(del.status).toBe(200);
 
@@ -3239,18 +3062,15 @@ describe("account deletion", () => {
     expect(srow!.soloConsentAt).toBeNull();
     expect(srow!.teacherConsentAt).toBeNull();
 
-    // Received note gone; link removed.
     const remaining = await db.orm.select().from(notes).where(eq(notes.id, sent.note.id));
     expect(remaining.length).toBe(0);
     const [link] = await db.orm.select().from(teacherStudentLinks)
       .where(and(eq(teacherStudentLinks.teacherId, dt.id), eq(teacherStudentLinks.studentId, ds.id)));
     expect(link!.status).toBe("removed");
 
-    // The deleted user's token no longer resolves to an active account.
     const reuse = await request(makeApp()).get("/v1/notes").set("Authorization", `Bearer ${ds.token}`);
     expect(reuse.status).toBe(403);
 
-    // TEACHER deletes: lesson + audio purged.
     const delT = await request(makeApp()).delete("/v1/me").set("Authorization", `Bearer ${dt.token}`);
     expect(delT.status).toBe(200);
     expect(fakeLessons.deleted).toContain(audioPath);

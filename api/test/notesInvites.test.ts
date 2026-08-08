@@ -16,10 +16,6 @@ import { createTestDb } from "./testdb";
 import { auditEvents, invites, teacherStudentLinks, users } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 
-// Pairing contracts: one live code per issuer per direction (S-4), stated
-// direction (S-3), the transactional redeem (S-5), removal semantics (S-6),
-// per-account containment (S-7) and the message-on-every-rejection rule (S-1).
-// Own PGlite instance (per-file), oids all prefixed "pi-".
 const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
 const AUDIENCE = "api://karaorchee";
 const KID = "test-key";
@@ -88,8 +84,6 @@ beforeAll(async () => {
   });
   db = await createTestDb();
 });
-
-// ── S-4: one live code per issuer per direction ─────────────────────────────────
 
 describe("one live code per issuer per direction", () => {
   let t: TestUser;
@@ -166,8 +160,6 @@ describe("one live code per issuer per direction", () => {
   });
 });
 
-// ── S-3: direction is stated and authorized ─────────────────────────────────────
-
 describe("stated direction", () => {
   it("a dual-role account can mint student_to_teacher (the derivation could not)", async () => {
     const dual = await makeUser("pi-dir-dual", "Dir Dual", "teacher");
@@ -215,13 +207,10 @@ describe("stated direction", () => {
   });
 });
 
-// ── S-5: the redeem transaction ─────────────────────────────────────────────────
-
 describe("redeem is one transaction", () => {
   it("two codes for one pair race to one 201 and one clean 409 — never a 500", async () => {
     const t = await makeUser("pi-tx-teacher", "Tx Teacher", "teacher");
     const s = await makeUser("pi-tx-student", "Tx Student");
-    // Seeded directly: the per-issuer cap is what normally makes this unreachable.
     const rows = await db.orm
       .insert(invites)
       .values([
@@ -246,18 +235,12 @@ describe("redeem is one transaction", () => {
       .where(and(eq(teacherStudentLinks.teacherId, t.id), eq(teacherStudentLinks.studentId, s.id)));
     expect(links.length).toBe(1);
 
-    // Exactly one code is spent. NOTE (risk register): this holds because the loser
-    // 409s on the pre-transaction already-linked check, NOT because the claim rolls
-    // back — drizzle COMMITs on a normal callback return, and the harness runs one
-    // PGlite connection, so neither half of this Promise.all can actually interleave.
     const after = await db.orm.select().from(invites).where(eq(invites.teacherId, t.id));
     const spent = after.filter((r) => r.usedCount > 0);
     expect(spent.length).toBe(1);
     expect(rows.length).toBe(2);
   });
 });
-
-// ── S-6: removal revokes, and consent never travels backwards ───────────────────
 
 describe("ending a link", () => {
   it("a code minted before the removal cannot re-form the pair, and says so in its own words", async () => {
@@ -274,8 +257,6 @@ describe("ending a link", () => {
     expect((await redeem(s, { code: r1.body.code, consent: true })).status).toBe(201);
     expect((await request(makeApp()).delete(`/v1/me/teachers/${t.id}`).set("Authorization", auth(s))).status).toBe(200);
 
-    // PL-1: re-typing correct characters can never fix this, so it must not be the
-    // unknown-code refusal the client renders as "check the six characters".
     const stale = await redeem(s, { code: "RMOLD1", consent: true });
     expect(stale.status).toBe(404);
     expect(stale.body.error).toBe("stale_code");
@@ -299,7 +280,6 @@ describe("ending a link", () => {
     expect((await redeem(s, { code: first, consent: true })).status).toBe(201);
     expect((await request(makeApp()).delete(`/v1/me/teachers/${t.id}`).set("Authorization", auth(s))).status).toBe(200);
 
-    // Well past the 5-failure threshold: an innocent rejoiner must not be locked out.
     for (let i = 0; i < 7; i++) {
       const res = await redeem(s, { code: "STALE1", consent: true });
       expect(res.status, `attempt ${i}`).toBe(404);
@@ -312,7 +292,6 @@ describe("ending a link", () => {
     expect(rows.length).toBe(7);
     expect(rows.every((r) => (r.detail as { reason: string }).reason === "stale_code")).toBe(true);
 
-    // Still usable: a code minted after the departure goes straight through.
     const rejoin = await mint(t, { rejoinUserId: s.id });
     expect(rejoin.status).toBe(201);
     expect((await redeem(s, { code: rejoin.body.code, consent: true })).status).toBe(201);
@@ -324,7 +303,6 @@ describe("ending a link", () => {
     const code = (await mint(t)).body.code as string;
     expect((await redeem(s, { code, consent: true })).status).toBe(201);
 
-    // The teacher's pending invitation to SOMEBODY ELSE.
     const pending = await mint(t);
     expect(pending.status).toBe(201);
     expect((await liveCodes(t)).body.length).toBe(1);
@@ -338,7 +316,6 @@ describe("ending a link", () => {
     expect(live.body.length).toBe(1);
     expect(live.body[0].id).toBe(pending.body.id);
 
-    // It still works for the person it was meant for...
     const other = await makeUser("pi-rm2-other", "Rm2 Other");
     expect((await redeem(other, { code: pending.body.code, consent: true })).status).toBe(201);
   });
@@ -351,11 +328,9 @@ describe("ending a link", () => {
     const pending = await mint(t);
     expect(pending.status).toBe(201);
 
-    // The STUDENT leaves: the teacher's live code is not theirs to revoke.
     expect((await request(makeApp()).delete(`/v1/me/teachers/${t.id}`).set("Authorization", auth(s))).status).toBe(200);
     expect((await liveCodes(t)).body.length).toBe(1);
 
-    // The blanket revoke this replaces was duplicating the redeem-side stale guard.
     const back = await redeem(s, { code: pending.body.code, consent: true });
     expect(back.status).toBe(404);
     expect(back.body.error).toBe("stale_code");
@@ -367,7 +342,6 @@ describe("ending a link", () => {
     const forward = (await mint(t)).body.code as string;
     expect((await redeem(s, { code: forward, consent: true })).status).toBe(201);
 
-    // The student's own outstanding invitation to a DIFFERENT teacher.
     const reverse = await mint(s, { direction: "student_to_teacher", consent: true });
     expect(reverse.status).toBe(201);
 
@@ -383,8 +357,6 @@ describe("ending a link", () => {
   it("a multi-use code the counterpart already redeemed IS retired with the pair", async () => {
     const t = await makeUser("pi-rm5-teacher", "Rm5 Teacher", "teacher");
     const s = await makeUser("pi-rm5-student", "Rm5 Student");
-    // Seeded: nothing mints maxUses > 1 today, so this is the scoped revoke's only
-    // live case — the code that formed the pair is otherwise spent, hence not live.
     const [multi] = await db.orm
       .insert(invites)
       .values({ code: "MULTI1", teacherId: t.id, maxUses: 3, expiresAt: daysFromNow(7) })
@@ -398,18 +370,14 @@ describe("ending a link", () => {
   });
 });
 
-// ── PL-1: re-inviting someone who left ──────────────────────────────────────────
-
 describe("rejoin mint", () => {
   async function endedPair(prefix: string): Promise<{ t: TestUser; s: TestUser; preRemoval: string }> {
     const t = await makeUser(`${prefix}-teacher`, "Rejoin Teacher", "teacher");
     const s = await makeUser(`${prefix}-student`, "Rejoin Student");
     const code = (await mint(t)).body.code as string;
     expect((await redeem(s, { code, consent: true })).status).toBe(201);
-    // The teacher's next code, minted while the pair was still live.
     const pre = await mint(t);
     expect(pre.status).toBe(201);
-    // The STUDENT leaves, so nothing revokes the teacher's code.
     expect((await request(makeApp()).delete(`/v1/me/teachers/${t.id}`).set("Authorization", auth(s))).status).toBe(200);
     return { t, s, preRemoval: pre.body.id as string };
   }
@@ -438,7 +406,6 @@ describe("rejoin mint", () => {
     expect(back.status).toBe(201);
     expect(back.body.link.status).toBe("active");
 
-    // Both halves of the swap are on the trail.
     const revokes = await db.orm
       .select()
       .from(auditEvents)
@@ -496,7 +463,6 @@ describe("rejoin mint", () => {
     const pre = await mint(s, { direction: "student_to_teacher", consent: true });
     expect(pre.status).toBe(201);
 
-    // The TEACHER removes the student, so the student's own code survives.
     expect((await request(makeApp()).delete(`/v1/me/students/${s.id}`).set("Authorization", auth(t))).status).toBe(200);
     const fresh = await mint(s, { direction: "student_to_teacher", consent: true, rejoinUserId: t.id });
     expect(fresh.status).toBe(201);
@@ -504,8 +470,6 @@ describe("rejoin mint", () => {
     expect((await redeem(t, { code: fresh.body.code, acceptTeacherRole: true })).status).toBe(201);
   });
 });
-
-// ── S-7 / S-8: containment, audit, hygiene ──────────────────────────────────────
 
 describe("containment and hygiene", () => {
   it("five unknown codes lock the account with a message and a wait", async () => {
@@ -521,12 +485,10 @@ describe("containment and hygiene", () => {
     expect(locked.body.retryAfterSec).toBeGreaterThan(0);
     expect(locked.headers["retry-after"]).toBeTruthy();
 
-    // The lock is on the account, not on the code: a valid code is refused too.
     const t = await makeUser("pi-bf-teacher", "Brute Teacher", "teacher");
     const good = (await mint(t)).body.code as string;
     expect((await redeem(s, { code: good, consent: true })).status).toBe(429);
 
-    // Every failure is auditable — a million tries can no longer be invisible.
     const failures = await db.orm
       .select()
       .from(auditEvents)
@@ -534,7 +496,6 @@ describe("containment and hygiene", () => {
     expect(failures.length).toBe(5);
     expect(failures[0]!.detail).toMatchObject({ reason: "invalid_code" });
 
-    // Once the window empties the account is usable again.
     await db.orm
       .delete(auditEvents)
       .where(and(eq(auditEvents.actorUserId, s.id), eq(auditEvents.action, "invite.redeem_failed")));
@@ -562,8 +523,6 @@ describe("containment and hygiene", () => {
     const id = (await mint(t)).body.id as string;
     expect((await request(makeApp()).delete(`/v1/invites/${id}`).set("Authorization", auth(t))).status).toBe(200);
 
-    // Revoking twice is idempotent for the caller (replace-then-mint must not
-    // dead-end on a stale screen) but writes exactly one event.
     expect((await request(makeApp()).delete(`/v1/invites/${id}`).set("Authorization", auth(t))).status).toBe(200);
     const rows = await db.orm
       .select()
@@ -572,7 +531,6 @@ describe("containment and hygiene", () => {
     expect(rows.length).toBe(1);
     expect(rows[0]!.subjectId).toBe(id);
 
-    // Someone else's code is a 404, never a revoke.
     const other = await makeUser("pi-audit-other", "Audit Other", "teacher");
     const theirs = (await mint(other)).body.id as string;
     expect((await request(makeApp()).delete(`/v1/invites/${theirs}`).set("Authorization", auth(t))).status).toBe(404);
@@ -617,8 +575,6 @@ describe("containment and hygiene", () => {
     expect(done.body.link.createdVia).toBe("invite_code");
   });
 });
-
-// ── RT-2 (server half): the role-less account ───────────────────────────────────
 
 describe("role-less account", () => {
   let none: TestUser;
@@ -681,12 +637,7 @@ describe("role-less account", () => {
   });
 });
 
-// ── S-1 / R3: no rejection leaves the client guessing ───────────────────────────
-
 describe("every rejection carries a message", () => {
-  // The founder was shown "Something went wrong. Pull to refresh." for a
-  // deterministic 403. A rejection with no message cannot be rendered truthfully by
-  // any client, so the pairing files are held to the whole rule, not a sample.
   const files = ["src/routes/links.ts", "src/routes/users.ts", "src/notes/user.ts"];
 
   it("every 4xx/5xx literal in the pairing files ships one", () => {
@@ -715,8 +666,6 @@ describe("every rejection carries a message", () => {
   });
 });
 
-// ── v0.9: a code is a named seat ────────────────────────────────────────────────
-
 function seats(u: TestUser) {
   return request(makeApp()).get("/v1/invites?include=seats").set("Authorization", auth(u));
 }
@@ -743,7 +692,6 @@ describe("labelled invite seats", () => {
     expect(emma.status).toBe(201);
     expect(jack.status).toBe(201);
     expect(jack.body.code).not.toBe(emma.body.code);
-    // Labelled codes live on the seats endpoint; the legacy list is unlabelled-only.
     const open = await seats(t);
     expect(open.body.map((r: { intendedLabel: string }) => r.intendedLabel).sort()).toEqual(["Emma", "Jack"]);
   });
@@ -907,9 +855,6 @@ describe("seats and dismissal", () => {
 });
 
 describe("a refused redeem does not spend the code", () => {
-  // The route's refusals THROW from inside the transaction. This pins the reason:
-  // drizzle commits a callback that returns, so the old `return` kept the claim and
-  // burned a single-use code for a redeemer who was turned away.
   it("a throw rolls the use-count claim back; a plain return commits it", async () => {
     const t = await makeUser("pi-burn-teacher", "Burn Teacher", "teacher");
     const [thrown] = await db.orm
@@ -976,7 +921,6 @@ describe("a revoked code is never a seat", () => {
     const codes = legacy.body.map((r: { code: string }) => r.code);
     expect(codes).toEqual([plain.body.code]);
     expect(codes).not.toContain(named.body.code);
-    // And the legacy row is the legacy shape — the new columns stay off that wire.
     expect(Object.keys(legacy.body[0])).not.toContain("intendedLabel");
     expect(Object.keys(legacy.body[0])).not.toContain("dismissedAt");
   });

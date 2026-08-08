@@ -54,7 +54,6 @@ def test_anchor_hole_fails_coverage_p90_and_gap(tmp_path):
 
 
 def test_gap_check_tolerates_held_chords_in_long_measures():
-    # rach op23/4 / scriabin op8/11 class: multi-second silence inside long measures
     anchors = [0.0, 1.0, 2.0, 8.0, 9.0, 10.0, 11.0]
     bounds = [(4.0 * k, 4.0 * (k + 1)) for k in range(4)]
     assert anchor_gap_check(anchors, bounds)["ok"]               # 6s gap / 4s measures = 1.5x
@@ -96,7 +95,6 @@ def test_reasons_endpoint_release_early_ok_overrun_fails():
 
 
 def test_schema1_build_over_expanded_timemap_hard_fails(tmp_path):
-    # the shipped split-brain reproduced: repeats in the XML, no playback map (pre-07-12 path)
     ms = [measure(1, ATTRS), measure(2, FWD)]
     ms += [measure(i) for i in range(3, 8)]
     ms += [measure(8, bwd())]
@@ -207,7 +205,6 @@ def test_real_czerny_repeat_piece_passes_incl_endpoint():
 
 
 def test_real_pastorale_shipped_bundle_trips_every_new_check():
-    # the published split-brain build (16.3s anchor hole, 50/226 onsets anchorless)
     b = json.loads((FIX / f"{PASTORALE}.staff.json").read_text())
     assert b["schema"] == 1
     anchors = [a[0] for a in b["variants"]["phone"]["cursor_anchors"]]

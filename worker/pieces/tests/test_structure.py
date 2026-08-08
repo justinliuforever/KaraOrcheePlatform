@@ -74,7 +74,6 @@ def test_volta_first_second_ending():
 
 
 def test_arabesque_shape_33_to_55():
-    # m3-10 with volta1=m10/volta2=m11; m12-27 with volta1=m27/volta2=m28; coda m29-33
     ms = [measure(1, ATTRS), measure(2), measure(3, FWD)]
     ms += [measure(i) for i in range(4, 10)]
     ms += [measure(10, estart("1"), estop("1")), measure(11, estart("2"), estop("2", repeat=False))]
@@ -129,7 +128,6 @@ def test_rejects_times_out_of_range():
 
 
 def test_rejects_volta_undercoverage():
-    # times=3 but endings only cover passes 1 and 2
     p = score(measure(1, ATTRS, FWD),
               measure(2, estart("1"), estop("1")),
               measure(3, estart("2"), estop("2", repeat=False)),
@@ -162,7 +160,6 @@ def test_playback_map_spans_and_passes():
     pm = build_playback_map(st, exp, secs, secs)
     assert pm["counts"] == {"written_measures": 5, "played_measures": 6,
                             "max_passes": 2, "expanded_duration_sec": 6.0}
-    # spans: [1-3 p1] [2-2 p2 backward] [4-5 p?]... pass semantics: m4 pass1, m5 pass1
     spans = pm["spans"]
     assert spans[0]["written_start"] == 1 and spans[0]["written_end"] == 3 and spans[0]["pass"] == 1
     assert spans[1]["written_start"] == 2 and spans[1]["pass"] == 2 and spans[1]["jump_in"] == "backward"
@@ -173,7 +170,6 @@ def test_playback_map_spans_and_passes():
 
 
 def test_unpaired_trailing_forward_is_decorative():
-    # Innocence Op.100/5 shape: A repeated with voltas, then a ||: that never closes
     ms = [measure(1, ATTRS)] + [measure(i) for i in range(2, 8)]
     ms += [measure(8, estart("1"), estop("1")), measure(9, estart("2"), estop("2", repeat=False))]
     ms += [measure(10, FWD)] + [measure(i) for i in range(11, 18)]

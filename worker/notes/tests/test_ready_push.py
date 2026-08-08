@@ -69,8 +69,6 @@ class FakeConn:
 METRICS = {"annotations": 3, "grounded": 2}
 
 
-# --- mark_ready: the flip that may only happen once ---------------------------
-
 def test_mark_ready_flips_once_and_guards_on_the_current_status():
     conn = FakeConn()
     assert main.mark_ready(conn, "job-1", METRICS) is True
@@ -87,8 +85,6 @@ def test_mark_ready_reports_false_when_another_delivery_already_flipped():
     conn = FakeConn(rowcounts={"status <> 'ready_for_review'": 0})
     assert main.mark_ready(conn, "job-1", METRICS) is False
 
-
-# --- post_ready_push: best-effort by contract ---------------------------------
 
 def test_post_ready_push_calls_the_internal_route_with_the_key(monkeypatch, capsys):
     monkeypatch.setenv("API_INTERNAL_BASE_URL", "https://api.internal/")
@@ -128,8 +124,6 @@ def test_post_ready_push_sends_nothing_when_unconfigured(monkeypatch, capsys):
 
     main.post_ready_push("job-9")
 
-    # Named, not stumbled into: a half-wired deployment must read as "unconfigured" in the
-    # ops log, never as whatever exception the missing value happens to raise.
     line = json.loads(capsys.readouterr().out.strip())
     assert line == {"kind": "notes-worker", "level": "warn", "job": "job-9",
                     "event": "ready_push_failed", "reason": "unconfigured"}
@@ -145,8 +139,6 @@ def test_post_ready_push_swallows_a_dead_api(monkeypatch):
     monkeypatch.setattr(main.requests, "post", boom)
     main.post_ready_push("job-9")  # must not raise
 
-
-# --- process(): which flip fires the POST -------------------------------------
 
 def stub_pipeline(monkeypatch, status="queued", flipped_rowcount=1, real_push=False):
     """Everything process() needs, replaced at its seams. Returns the recorder."""
@@ -201,15 +193,12 @@ def test_a_genuine_transition_pushes_exactly_once(monkeypatch):
 
 
 def test_a_redelivered_ready_job_never_pushes_again(monkeypatch):
-    # The row already says ready: process() skips before any spend, so no second banner.
     seen = stub_pipeline(monkeypatch, status="ready_for_review")
     main.process(seen["conn"], seen["blob"], "cs", "job-1")
     assert seen["pushed"] == []
 
 
 def test_a_delivery_that_loses_the_flip_race_never_pushes(monkeypatch):
-    # Both deliveries passed the 'processing' check and rebuilt the draft; only the
-    # one whose UPDATE landed announces it.
     seen = stub_pipeline(monkeypatch, status="processing", flipped_rowcount=0)
     main.process(seen["conn"], seen["blob"], "cs", "job-1")
     assert seen["pushed"] == []

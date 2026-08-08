@@ -9,9 +9,6 @@ import {
   narrationClipPath,
 } from "../src/notes/narration";
 
-// PUBLISH_ROLES exists in two languages by necessity (worker stages artifacts, API
-// filters them at publish). If they drift, a new artifact role is silently dropped
-// from — or leaked into — the immutable bundle.
 describe("publish-roles parity (worker py <-> api ts)", () => {
   it("gates.py PUBLISH_ROLES equals studio.ts PUBLISH_ROLES", () => {
     const py = readFileSync(join(__dirname, "../../worker/pieces/gates.py"), "utf8");
@@ -25,10 +22,6 @@ describe("publish-roles parity (worker py <-> api ts)", () => {
   });
 });
 
-// Narration is written by the worker, served by this API and played by the iOS client,
-// and every mismatch between them is SILENT: the app simply never plays a clip. The
-// golden is the one statement of the contract; these assert this repo's two halves
-// against it, and Tests/NoteNarrationTests.swift asserts the third against the same file.
 describe("narration contract (golden <-> api ts <-> worker py)", () => {
   const golden = JSON.parse(
     readFileSync(join(__dirname, "../../worker/notes/narration_parity.json"), "utf8"),
@@ -43,7 +36,6 @@ describe("narration contract (golden <-> api ts <-> worker py)", () => {
     expect(consumed, "NARRATION_QUEUE not found in main.py").toBeTruthy();
     expect(NARRATION_QUEUE).toBe(consumed![1]);
     expect(NARRATION_QUEUE).toBe(golden.wire.queue);
-    // Its own lane: on notes-jobs this message is one the ASR consumer cannot read.
     expect(py).toMatch(/QUEUE\s*=\s*"notes-jobs"/);
     expect(NARRATION_QUEUE).not.toBe("notes-jobs");
   });

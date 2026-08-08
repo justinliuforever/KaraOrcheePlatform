@@ -6,8 +6,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# main.py imports azure/psycopg at module load; stub the heavy ones so the pure
-# ASR-polling logic can be tested without the SDKs installed.
 for name in ("azure", "azure.servicebus", "azure.storage", "azure.storage.blob", "psycopg"):
     sys.modules.setdefault(name, types.ModuleType(name))
 sys.modules["azure.servicebus"].AutoLockRenewer = object

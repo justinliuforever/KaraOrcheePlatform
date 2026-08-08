@@ -77,7 +77,6 @@ def test_check_monotone_violation_fails_on_either_axis():
 
 
 def test_check_tier1_straight_map_passes():
-    # origin bp exempt (piece may start with a rest); tail bp sits past the last onset
     onsets = [0.5, 1.0, 1.5, 2.0]
     check_map_invariants([0.0, 2.4], [0.1, 2.6], onsets, 2.0)
 

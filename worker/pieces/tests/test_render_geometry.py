@@ -95,9 +95,6 @@ def _gaps_in_staff_spaces(mei, svg):
             for f, n in pairs if f in fing_y and n in note_y}
 
 
-# The right hand runs low enough to be written on the bass staff; the left hand
-# runs high enough to be written on the treble one. This is Hanon's scale layout,
-# and it is where deciding a side by the printed staff goes wrong.
 CROSS_STAFF = (
     _note("C", 4, 1, 2, ["1"]) + _note("D", 4, 1, 2, ["2"])
     + "<backup><duration>8</duration></backup>"

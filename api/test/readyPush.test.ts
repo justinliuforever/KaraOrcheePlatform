@@ -38,7 +38,6 @@ function makeApp() {
   return mount(KEY);
 }
 
-// The shipped state until the founder installs the shared secret on both containers.
 function makeAppWithoutKey() {
   return mount(undefined);
 }
@@ -51,9 +50,6 @@ function mount(key: string | undefined) {
 }
 
 beforeAll(async () => {
-  // Notifications ship OFF; this suite opts in so the machinery under the switch stays
-  // pinned while it waits. A failure here after removing the opt-in means the switch
-  // moved — never delete the opt-in to make it pass.
   process.env.PUSH_ENABLED = "true";
   db = await createTestDb();
 });
@@ -167,7 +163,6 @@ describe("B6-2 internal ready-push route", () => {
 
   it("sends the review alert to the teacher-owner's devices only", async () => {
     const built = await buildReadyJob({ ownerRole: "teacher", token: "tok-owner" });
-    // A device belonging to somebody else must not hear about this job.
     const orm = db.orm;
     const [stranger] = await orm
       .insert(users)
@@ -208,7 +203,6 @@ describe("B6-2 internal ready-push route", () => {
     for (const forbidden of ["Burgmüller", "Op. 100", "Pupil", "left hand", "bars 9-12"]) {
       expect(wire).not.toContain(forbidden);
     }
-    // The only variable that crosses: the id the app exchanges for the note.
     expect(JSON.parse(wire)).toEqual({
       aps: {
         alert: { ...NOTES_READY_TEACHER_ALERT },

@@ -43,8 +43,6 @@ def test_align_identical_is_diagonal():
 
 
 def test_align_survives_ornament_surplus():
-    # MIDI has 5 extra trill notes inserted mid-stream; matched pairs must stay
-    # index-true on both flanks (index pairing would shift the whole tail).
     xa = [ev_x(i, [60 + i % 12]) for i in range(40)]
     xb = [ev_m(i, [60 + i % 12]) for i in range(20)]
     for k in range(5):
@@ -53,7 +51,4 @@ def test_align_survives_ornament_surplus():
     pairs = _align(xa, xb)
     d = dict(pairs)
     assert d.get(10) == 10   # before the burst
-    # After the burst the aligner must follow CONTENT (pitch), not index: xa[30]
-    # (pitch 66) pairs with the xb event carrying pitch 66 at index 35. The residual
-    # beat delta of +1 is exactly the structure-divergence signal downstream reads.
     assert d.get(30) == 35

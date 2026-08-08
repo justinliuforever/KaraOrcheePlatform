@@ -13,8 +13,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# main.py imports azure/psycopg at module load; stub the heavy ones (same
-# pattern as test_asr_poll.py — idempotent if that file already ran).
 for name in ("azure", "azure.servicebus", "azure.storage", "azure.storage.blob", "psycopg"):
     sys.modules.setdefault(name, types.ModuleType(name))
 sys.modules["azure.servicebus"].AutoLockRenewer = object
@@ -95,9 +93,6 @@ ANNS = [
 ]
 
 
-# The row replace_draft re-reads under FOR UPDATE — never the job snapshot.
-# (status, teacher_id, student_id, piece_id, piece_label, custom_piece_id, owner_role,
-#  published_version, facts)
 LOCK = "FOR UPDATE OF l"
 
 
@@ -121,19 +116,15 @@ def teacher_lock(status="submitted", student_id="student-4", piece_id="piece-1",
 
 def solo_lock(status="submitted", piece_id="piece-1", piece_label="Etude No. 3",
               custom_piece_id=None, published_version=7, facts=None):
-    # Solo lesson_sessions carry no student_id; the owner is teacher_id.
     return (status, "owner-9", None, piece_id, piece_label, custom_piece_id, "student",
             published_version, facts)
 
-
-# --- replace_draft: teacher path (pre-B1.5 behavior, byte-for-byte sequence) ---
 
 def test_teacher_path_wipes_draft_then_inserts_teacher_origin():
     conn = FakeConn({LOCK: teacher_lock(), "INSERT INTO notes": ("note-1",)})
     nid = main.replace_draft(conn, "job-1", "lesson-1", CONTENT, ORIGINAL, ANNS)
     assert nid == "note-1"
     sqls = [s for s, _ in conn.executed]
-    # The discard guard runs first, and holds the lesson row for the whole insert.
     assert sqls[0].startswith("SELECT l.status, l.teacher_id") and sqls[0].endswith(LOCK)
     assert conn.executed[0][1] == ("lesson-1",)
     assert sqls[1].startswith("DELETE FROM note_annotations") and "status = 'draft'" in sqls[1]
@@ -142,7 +133,6 @@ def test_teacher_path_wipes_draft_then_inserts_teacher_origin():
     assert "'sent'" not in sqls[3] and "sent_at" not in sqls[3]
     assert all("INSERT INTO note_annotations" in s for s in sqls[4:])
     assert len(sqls) == 4 + len(ANNS)
-    # the piece row rides the lock statement — no second round trip
     assert not any(s.startswith("SELECT published_version") or "origin = 'self'" in s
                    for s in sqls)
     w = note_insert(conn)
@@ -150,8 +140,6 @@ def test_teacher_path_wipes_draft_then_inserts_teacher_origin():
     assert json.loads(w["content_original"]) == ORIGINAL and json.loads(w["content"]) == CONTENT
     assert conn.commits == 1
 
-
-# --- replace_draft: solo path (born 'sent' to the owner) ---
 
 def test_solo_first_run_inserts_one_born_sent_note():
     conn = FakeConn({
@@ -172,7 +160,6 @@ def test_solo_first_run_inserts_one_born_sent_note():
     assert w["teacher_id"] == "owner-9" and w["student_id"] == "owner-9"  # owner is both
     assert w["piece_version"] == 7                  # from published_version
     assert json.loads(w["content_original"]) == ORIGINAL and json.loads(w["content"]) == CONTENT
-    # annotations inserted after the note, one row each, bound to the new id
     ann = conn.executed[3:]
     assert len(ann) == len(ANNS)
     assert all(s.startswith("INSERT INTO note_annotations") for s, _ in ann)
@@ -199,8 +186,6 @@ def test_lesson_row_gone_is_treated_as_discarded():
     assert conn.commits == 1
 
 
-# --- BK-1: insert-guard idempotency (redelivered/requeued solo job = no-op) ---
-
 def test_solo_insert_guard_converges_without_second_insert():
     conn = FakeConn({
         LOCK: solo_lock(),
@@ -208,7 +193,6 @@ def test_solo_insert_guard_converges_without_second_insert():
     })
     nid = main.replace_draft(conn, "job-2", "lesson-1", CONTENT, ORIGINAL, ANNS)
     assert nid == "existing-note"
-    # discard guard + insert guard only — no INSERT, no annotations
     assert len(conn.executed) == 2
     sql, params = conn.executed[1]
     assert sql.startswith("SELECT id FROM notes")
@@ -217,12 +201,7 @@ def test_solo_insert_guard_converges_without_second_insert():
     assert conn.commits == 1  # still commits (closes the transaction cleanly)
 
 
-# --- AS-3: the repair made DURING the run is what lands, not the job snapshot ---
-
 def test_student_reassigned_mid_run_is_the_one_the_note_is_written_to():
-    # Seq A (wrong recipient): the lesson was created naming alice; the teacher
-    # fixed it to bob while ASR+LLM ran. The PATCH cascade found no note to fix
-    # because the note did not exist yet, so this insert is the only writer.
     conn = FakeConn({
         LOCK: teacher_lock(student_id="student-bob"),
         "INSERT INTO notes": ("note-5",),
@@ -230,14 +209,10 @@ def test_student_reassigned_mid_run_is_the_one_the_note_is_written_to():
     main.replace_draft(conn, "job-5", "lesson-1", CONTENT, ORIGINAL, ANNS)
     w = note_insert(conn)
     assert w["student_id"] == "student-bob"
-    # the snapshot value never appears anywhere in the write
     assert "student-4" not in [str(v) for v in w.values()]
 
 
 def test_piece_named_mid_run_lands_on_the_note_with_its_version():
-    # Seq B (the unrecoverable one): the lesson was created piece-less, so the
-    # note used to be born piece_id NULL — after which re-picking the SAME piece
-    # is a no-op on both the inherit test and the reground pass.
     conn = FakeConn({
         LOCK: solo_lock(piece_id="short_piece", piece_label="Op. 100 No. 2",
                         published_version=5),
@@ -252,9 +227,6 @@ def test_piece_named_mid_run_lands_on_the_note_with_its_version():
 
 
 def test_a_piece_named_mid_run_bounds_the_grounding_it_never_had():
-    # The anchors were computed with measure_count None (unbounded); the piece
-    # named under the lock is 32 bars, so bar 84 must land unplaced, not on a
-    # score that has no bar 84.
     anns = [
         {"category": "technique", "instruction": "Past the end", "quote": "bar eighty four",
          "location": {"type": "absolute", "raw": "bar 84", "grounded": True,
@@ -275,7 +247,6 @@ def test_a_piece_named_mid_run_bounds_the_grounding_it_never_had():
     assert locs[0]["raw"] == "bar 84"           # the words survive as the clue
     assert locs[0]["hint"] == main.REGROUND_HINT
     assert locs[1]["grounded"] is True and locs[1]["measureStart"] == 4
-    # the caller's list is not mutated in place
     assert anns[0]["location"]["grounded"] is True
 
 
@@ -289,8 +260,6 @@ def test_rebound_leaves_human_pins_and_unbounded_pieces_alone():
     assert main.piece_measures(None) is None
     assert main.piece_measures({"measures": 32}) == 32
 
-
-# --- fetch_job tuple shape: 14 columns, owner_role in the position process() expects ---
 
 FETCH_ROW_14 = ("job-1", "queued", 0, "lesson-1", "owner-9", None, "piece-1",
                 "Etude No. 3", "audio/a.m4a", 300, "student",
@@ -310,16 +279,12 @@ def test_fetch_job_selects_14_columns_with_owner_role_after_duration():
 
 
 def test_process_unpacks_14_field_row():
-    # Terminal status → process returns right after the unpack; a wrong arity
-    # in either fetch_job or the destructuring raises ValueError here.
     row = list(FETCH_ROW_14)
     row[1] = "ready_for_review"
     conn = FakeConn({"FROM note_jobs j": tuple(row)})
     main.process(conn, None, "", "job-1")
     assert len(conn.executed) == 1  # fetch only — skip path touched nothing else
 
-
-# --- metrics: process() seeds metrics with owner_role ---
 
 class FakeBlobService:
     def __init__(self):
@@ -376,11 +341,8 @@ def test_process_seeds_metrics_with_owner_role(monkeypatch):
     assert final_params[cols.index("status")] == "ready_for_review"
     metrics = json.loads(final_params[cols.index("metrics")])
     assert metrics["owner_role"] == "student"
-    # solo note actually landed through replace_draft under process()
     assert any(s.startswith("INSERT INTO notes") for s, _ in conn.executed)
 
-
-# --- R4: failure_code map ---------------------------------------------------
 
 def _codes_written(conn):
     out = []
@@ -414,7 +376,6 @@ LIVE_LESSON = {"SELECT status FROM lesson_sessions": ("submitted",)}
 
 
 def test_gate_fails_carry_codes_that_reach_failure_code():
-    # The real gates raise the real codes, and the real handler writes them.
     from pipeline import check_transcript, normalize_note
     with pytest.raises(main.GateFail) as silent:
         check_transcript("too short", [])
@@ -443,7 +404,6 @@ def test_asr_failure_writes_asr_error_and_never_crashes_out(monkeypatch):
     conn = FakeConn({"FROM note_jobs j": FETCH_ROW_14})
     _process_env(monkeypatch, asr=boom)
     main.process(conn, FakeBlobService(), "cs", "job-1")
-    # 'processing' clears the previous code; the failure then stamps asr_error.
     assert _codes_written(conn) == [("processing", None), ("failed", "asr_error")]
 
 
@@ -466,20 +426,15 @@ def test_worker_crash_handler_stamps_its_code_and_spares_a_delivered_job():
     assert params == ("job-1",)
 
 
-# --- R4: the discard-vs-worker race (r4_verify M2 / M3) ----------------------
-
 def test_replace_draft_drops_everything_when_the_lesson_was_discarded():
     conn = FakeConn({LOCK: teacher_lock(status="canceled")})
     assert main.replace_draft(conn, "job-1", "lesson-1", CONTENT, ORIGINAL, ANNS) is None
-    # The guard SELECT and nothing else: no wipe, no insert, no annotations.
     assert len(conn.executed) == 1
     assert conn.executed[0][0].endswith(LOCK)
     assert conn.commits == 1
 
 
 def test_discard_before_note_insert_never_flips_the_job_to_ready(monkeypatch):
-    # Live through ASR and the transcript stamp, canceled by the time the note
-    # would be inserted (the FOR UPDATE read is what sees it).
     conn = FakeConn({
         LOCK: teacher_lock(status="canceled"),
         "FROM note_jobs j": FETCH_ROW_14,
@@ -491,15 +446,11 @@ def test_discard_before_note_insert_never_flips_the_job_to_ready(monkeypatch):
     assert not any(s.startswith("INSERT INTO notes") for s, _ in conn.executed)
     assert not any("ready_for_review" in str(p) for _, p in conn.executed)
     assert _codes_written(conn)[-1] == ("failed", "lesson_discarded")
-    # metrics carry quoted instruction text — a discarded job must not gain them.
     assert not any("metrics" in _update_cols(s) for s, _ in conn.executed
                    if s.startswith("UPDATE note_jobs"))
 
 
 def test_discard_before_asr_never_submits_and_never_says_asr_error(monkeypatch):
-    # DI-7 / IN-10: the check used to sit downstream of the ASR submit and of the
-    # failure-code labelling, so an owner-initiated discard was attributed to
-    # asr_error in the facet this batch added.
     submitted = []
     conn = FakeConn({
         "FROM note_jobs j": FETCH_ROW_14,
@@ -510,12 +461,10 @@ def test_discard_before_asr_never_submits_and_never_says_asr_error(monkeypatch):
     main.process(conn, blob, "cs", "job-9")
     assert submitted == []
     assert blob.uploads == []
-    # never even claimed the job: no 'processing' stamp, one terminal write
     assert _codes_written(conn) == [("failed", "lesson_discarded")]
 
 
 def test_discard_during_asr_uploads_no_transcript_at_all(monkeypatch):
-    # Live at the pre-ASR check, canceled by the time ASR returns.
     conn = FakeConn({
         "FROM note_jobs j": FETCH_ROW_14,
         "SELECT status FROM lesson_sessions": [("submitted",), ("canceled",)],
@@ -530,9 +479,6 @@ def test_discard_during_asr_uploads_no_transcript_at_all(monkeypatch):
 
 
 def test_asr_outrunning_the_check_deletes_the_transcript_it_just_wrote(monkeypatch):
-    # The pre-check passes, the discard commits mid-upload, so the conditional
-    # stamp matches no rows: notes-assets has no lifecycle rule, so the blob we
-    # wrote must be deleted rather than left permanent behind a nulled column.
     conn = FakeConn(
         {"FROM note_jobs j": FETCH_ROW_14, **LIVE_LESSON},
         rowcounts={"UPDATE note_jobs j SET transcript_path": 0},
@@ -564,8 +510,6 @@ def test_live_lesson_still_stamps_the_transcript_and_finishes(monkeypatch):
     cols = _update_cols(final_sql)
     assert final_params[cols.index("status")] == "ready_for_review"
 
-
-# --- W5/W6 piece spine: the entity rides the note, the mentions ride the job ---
 
 def test_the_note_inherits_the_lessons_custom_piece_entity():
     teacher = FakeConn({LOCK: teacher_lock(custom_piece_id="entity-1"),

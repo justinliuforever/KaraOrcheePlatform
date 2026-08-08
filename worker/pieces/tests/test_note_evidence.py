@@ -24,8 +24,6 @@ def test_note_hits_require_matching_pitch():
     mapped = np.array([0.0, 1.0, 2.0])
     by_pitch = {60: np.array([0.02]), 62: np.array([5.0]), 65: np.array([2.0])}
     hits = note_hits(notes, mapped, by_pitch, tol_sec=0.100)
-    # 60: onset of its pitch nearby -> hit; 62: right pitch wrong time -> miss;
-    # 64: an onset exists at the right time but of pitch 65 -> miss (the blind spot fix)
     assert hits.tolist() == [True, False, False]
 
 
@@ -37,7 +35,6 @@ def test_note_hits_tolerance_boundary():
 
 
 def test_evidence_rates_catch_nonterminal_break():
-    # 40s of notes at 4/s; one mid-piece 5s window fully missed
     sec = np.arange(0, 40, 0.25)
     hits = np.ones(len(sec), dtype=bool)
     hits[(sec >= 15) & (sec < 20)] = False
@@ -47,7 +44,6 @@ def test_evidence_rates_catch_nonterminal_break():
 
 
 def test_evidence_rates_terminal_window_exempt_from_kill_but_counted():
-    # all perfect except the terminal region (map-endpoint artifact class)
     sec = np.arange(0, 40, 0.25)
     hits = np.ones(len(sec), dtype=bool)
     hits[sec >= 40 - TERMINAL_EXEMPT_SEC] = False
@@ -78,12 +74,10 @@ def test_span_duration_check_flags_crammed_pass():
              "expanded_sec_start": 10.0, "expanded_sec_end": 20.0},
         ],
     }
-    # map crams the second span: 10s of score -> 1s of audio
     ms = np.array([0.0, 10.0, 20.0])
     ma = np.array([0.0, 10.0, 11.0])
     ratio, span = _span_duration_check(playback, ms, ma)
     assert span["pass"] == 2 and ratio < 0.4
 
-    # healthy map: proportional throughout
     ratio, _ = _span_duration_check(playback, ms, np.array([0.0, 10.0, 20.0]))
     assert ratio > 0.95

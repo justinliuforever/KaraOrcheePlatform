@@ -62,15 +62,12 @@ def test_icon_rect_is_3_4_window_at_system_left():
     band_h = 2000 + 2 * pad
     assert x0 == pytest.approx((500 - pad) * scale)
     assert y0 == pytest.approx((1000 - pad) * scale)
-    # width = band height * 3/4: the window ITSELF is 3:4, so the crop fills the
-    # canvas — no letterboxed thin strip.
     assert x1 == pytest.approx((500 - pad + band_h * ICON_W / ICON_H) * scale)
     assert y1 == pytest.approx((1000 + 2000 + pad) * scale)
     assert (x1 - x0) / (y1 - y0) == pytest.approx(ICON_W / ICON_H)
 
 
 def test_icon_rect_width_clamped_to_narrow_system():
-    # A tall band on a NARROW system: width must clamp to the system, not spill.
     staff = _staff([{"bbox": [500.0, 1000.0, 900.0, 2000.0]}],
                    sysbbox=(500.0, 1000.0, 1000.0, 2000.0))
     rect, source = icon_crop_rect(staff, 1200)
@@ -121,7 +118,6 @@ def test_catalog_art_registered_for_staging_and_publish():
     row = next(r for r in ARTIFACT_LAYOUT if r[0] == "row_icon.webp")
     assert (row[1], row[2], row[3]) == ("row_icon.webp", "row_icon", None)
     assert "thumbnail" in PUBLISH_ROLES and "row_icon" in PUBLISH_ROLES
-    # source-text check (parity.test.ts style): importing main drags azure/psycopg
     main_src = (Path(__file__).parent.parent / "main.py").read_text()
     assert '".webp": "image/webp"' in main_src
 
@@ -162,19 +158,15 @@ def test_e2e_catalog_art_from_built_svg(tmp_path):
     img = Image.open(tmp_path / "thumbnail.webp")
     assert img.format == "WEBP" and img.size == (THUMB_W, THUMB_H)
     assert m["bytes"] > 2000
-    # not blank: paper corner, real ink somewhere, spread above noise
-    # (measured: blank page 0, this bare 12-whole-note score 7.2, real piece 33.9)
     assert m["ink_stddev"] > 4.0
     corner = img.convert("RGB").getpixel((THUMB_W - 3, 3))
     assert all(abs(a - b) <= 6 for a, b in zip(corner, PAPER_RGB))
     px = list(img.convert("L").getdata())
     assert sum(1 for p in px if p < 100) > 200
-    # row icon: from system-0 geometry, right size, carries ink
     assert m["row_icon"]["source"] == "system0"
     icon = Image.open(tmp_path / "row_icon.webp")
     assert icon.format == "WEBP" and icon.size == (ICON_W, ICON_H)
     ipx = list(icon.convert("L").getdata())
     assert sum(1 for p in ipx if p < 100) > 100
-    # thumbnail path alone still works (legacy single-artifact entry point)
     m2 = render_thumbnail(tmp_path / "t.phone.svg", tmp_path / "thumb2.webp")
     assert m2["bytes"] > 2000

@@ -37,7 +37,6 @@ def test_repeat_piece_builds_verified_playback_map(tmp_path):
     assert m["expansion_verified"] is True and m["expansion_source"] == "verovio-inferred"
     pb = state["playback"]
     assert pb["counts"]["played_measures"] == 6
-    # expanded seconds must tile monotonically
     occ = pb["occurrences"]
     assert all(occ[k]["expanded_sec_start"] < occ[k]["expanded_sec_end"] for k in range(len(occ)))
     assert all(occ[k]["expanded_sec_end"] <= occ[k + 1]["expanded_sec_start"] + 1e-6
@@ -69,7 +68,6 @@ def _midi_from_timeline(xml: Path, tmp: Path, expanded: bool) -> Path:
 
 
 def _repeat_score():
-    # long enough for a meaningful pitch alignment: 12 written measures, m3-8 repeated
     ms = [measure(1, ATTRS), measure(2), measure(3, FWD)]
     ms += [measure(i) for i in range(4, 8)]
     ms += [measure(8, bwd())]

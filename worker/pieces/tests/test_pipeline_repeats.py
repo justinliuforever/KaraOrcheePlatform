@@ -38,10 +38,8 @@ def test_full_preflight_on_repeat_piece(tmp_path):
     assert len(idm) == 12                                  # one row per WRITTEN measure
     assert [m["measure_index"] for m in idm] == list(range(1, 13))
     assert all(m["passes"] == (2 if 3 <= m["measure_index"] <= 8 else 1) for m in idm)
-    # anchors stay monotone in expanded time
     anchors = staff["variants"]["phone"]["cursor_anchors"]
     assert all(anchors[k][0] <= anchors[k + 1][0] for k in range(len(anchors) - 1))
-    # max data-measure-index rendered == written count (SVG stays compact)
     svg = (tmp_path / "piece.phone.svg").read_text()
     import re
     assert max(int(x) for x in re.findall(r'data-measure-index="(\d+)"', svg)) == 12

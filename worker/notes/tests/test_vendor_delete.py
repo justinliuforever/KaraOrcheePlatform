@@ -101,7 +101,6 @@ def test_a_delivered_job_tells_the_vendor_to_delete_its_copy(monkeypatch, capsys
 
 
 def test_the_vendor_is_told_only_after_our_copy_is_durable(monkeypatch):
-    # Delete-then-store would leave a window with no copy anywhere if the stamp lost.
     order = []
     deletes = []
     _asr_env(monkeypatch, deletes)
@@ -131,7 +130,6 @@ def test_the_vendor_is_told_only_after_our_copy_is_durable(monkeypatch):
 def test_a_discard_during_the_run_still_retires_the_vendor_copy(monkeypatch):
     deletes = []
     _asr_env(monkeypatch, deletes)
-    # live at the pre-ASR check, canceled by the time the transcript would be written
     conn = FakeConn({"FROM note_jobs j": FETCH_ROW_14,
                      "SELECT status FROM lesson_sessions": [("submitted",), ("canceled",)]})
     blob = FakeBlobService()

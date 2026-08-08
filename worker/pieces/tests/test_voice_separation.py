@@ -34,7 +34,6 @@ def _onsets(part):
             for m, v, o in _measure_note_onsets(part.find("measure"))]
 
 
-# Dolet's shape: voice 1 note, back up, voice 2 note, back up, voice 1 note...
 INTERLEAVED = (_n("C", 4, 1, 1) + _back(4) + _n("E", 3, 2, 1)
                + _n("D", 4, 1, 1) + _back(4) + _n("F", 3, 2, 1))
 
@@ -67,8 +66,6 @@ def test_an_already_contiguous_measure_is_left_alone():
     assert _separate_interleaved_voices(part) is False
 
 
-# K.331 m115: one voice, written across both staves. Splitting it by (staff,
-# voice) would tear a hand in half — the grouping must key on voice alone.
 CROSS_STAFF_ONE_VOICE = (_n("C", 5, 1, 1) + _n("A", 3, 1, 2)
                          + _n("D", 5, 1, 1) + _n("B", 3, 1, 2))
 
@@ -114,9 +111,6 @@ def test_a_chord_is_not_broken_off_from_its_principal():
             assert body[i - 1].tag == "note", "a chord follower lost its principal"
 
 
-# Fugue BWV 846 m16: voice 1 fills the bar, then returns to qstamp 16. The importer
-# fills a layer forward and never seeks back into it, so giving voice 1 a layer puts
-# those two notes after the barline and the bar gains a beat.
 REWINDING_VOICE = (_n("C", 4, 1, 1) + _n("D", 4, 1, 1)
                    + _back(8) + _n("E", 3, 2, 1) + _n("F", 3, 2, 1)
                    + _back(8) + _n("G", 4, 1, 1))

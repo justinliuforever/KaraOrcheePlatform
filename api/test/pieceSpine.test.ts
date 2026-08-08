@@ -99,8 +99,6 @@ async function customRows(teacherId: string) {
   return db.orm.select().from(customPieces).where(eq(customPieces.teacherId, teacherId));
 }
 
-// The worker's output shape, minimal: a job + a draft note carrying the lesson's
-// piece facts, exactly as replace_draft leaves them.
 async function seedDraft(opts: {
   teacherId: string;
   studentId?: string | null;
@@ -209,8 +207,6 @@ beforeEach(async () => {
   await db.orm.delete(customPieces);
 });
 
-// ── W4 · provenance ─────────────────────────────────────────────────────────────
-
 describe("W4 piece_source", () => {
   it("persists the three known sources at create", async () => {
     for (const source of ["catalog", "vendored", "typed"] as const) {
@@ -262,7 +258,6 @@ describe("W4 piece_source", () => {
     expect(afterNamed.pieceSource).toBe("catalog");
     expect(afterNamed.pieceUpdatedAt).not.toBeNull();
 
-    // A lone source is not a piece change: the request has nothing to update.
     const lone = await patch(`/v1/lessons/${id}`, teacher.token).send({ pieceSource: "typed" });
     expect(lone.status).toBe(400);
     expect(lone.body.error).toBe("nothing_to_update");
@@ -283,8 +278,6 @@ describe("W4 piece_source", () => {
     expect((await lessonRow(id)).pieceSource).toBeNull();
   });
 });
-
-// ── W5 · the custom-piece entity ────────────────────────────────────────────────
 
 describe("W5 custom pieces", () => {
   it("mints and stamps on a typed create, reuses the entity for a case/whitespace variant", async () => {
@@ -345,7 +338,6 @@ describe("W5 custom pieces", () => {
       pieceSource: "catalog",
     });
     expect((await lessonRow(id)).customPieceId).toBeNull();
-    // The entity itself survives: it groups the lessons that already used the name.
     expect(await customRows(teacher.id)).toHaveLength(1);
   });
 
@@ -358,7 +350,6 @@ describe("W5 custom pieces", () => {
     const lessonId = created.body.lesson.id as string;
     const lessonEntityId = (await lessonRow(lessonId)).customPieceId;
 
-    // Retyped at review: differing label is typed provenance, whatever the lesson says.
     const retyped = await seedDraft({
       teacherId: teacher.id,
       studentId: student.id,
@@ -373,7 +364,6 @@ describe("W5 custom pieces", () => {
     expect(mintedAtSend).toBeDefined();
     expect(sentRetyped.body.customPieceId).toBe(mintedAtSend!.id);
 
-    // Equal label: the note inherits the lesson's entity and mints nothing new.
     const before = (await customRows(teacher.id)).length;
     const inherited = await seedDraft({
       teacherId: teacher.id,
@@ -491,7 +481,6 @@ describe("W5 backfill", () => {
       pieceSource: "typed",
       attested: true,
     });
-    // Pre-release rows: no provenance at all.
     const [preRelease] = await db.orm
       .insert(lessonSessions)
       .values([
@@ -533,8 +522,6 @@ describe("W5 backfill", () => {
   });
 });
 
-// ── W6 · the suggestion chip ────────────────────────────────────────────────────
-
 describe("W6 suggestion compute", () => {
   const clementi = {
     id: "clementi_op36_no1_i",
@@ -568,9 +555,6 @@ describe("W6 suggestion compute", () => {
   });
 
   it("is always silent on a composer-only mention, even with one piece by that composer", () => {
-    // Including the multi-word form the token arms WOULD otherwise accept: every word
-    // the teacher said is the composer's name, and a catalog that happens to hold one
-    // piece by them is not evidence they named the piece.
     for (const said of ["Burgmuller", "the Burgmüller", "Clementi",
                         "Johann Friedrich Burgmüller", "Muzio Clementi"]) {
       expect(computeSuggestion({ mentions: [said], candidates: [clementi, arabesque], dismissedPieceIds: [] }))
@@ -693,8 +677,6 @@ describe("W6 suggestion endpoints", () => {
       .send({ action: "confirm", pieceId: "clementi_op36_no1_i" });
     expect(res.body.prior.pieceSource).toBeNull();
 
-    // Undo restores exactly that triple through the lesson piece-change path — and a
-    // vendored restore mints nothing.
     const undo = await patch(`/v1/lessons/${draft.lessonId}`, teacher.token)
       .send({ pieceId: null, pieceLabel: "Spinning Song", pieceSource: "vendored" });
     expect(undo.status).toBe(200);
@@ -743,7 +725,6 @@ describe("W6 suggestion endpoints", () => {
     const [entity] = await customRows(teacher.id);
     expect(entity!.dismissedPieceIds).toEqual(["clementi_op36_no1_i"]);
 
-    // Re-read, and after a catalog republish: still silent.
     await db.orm
       .update(pieces)
       .set({ publishedVersion: 3 })
@@ -790,17 +771,14 @@ describe("W6 suggestion endpoints", () => {
 
   it("never forces a match: the only path to notes.piece_id is the confirm endpoint", async () => {
     const draft = await draftWithMention({ mention: "the Sonatina in C major", pieceSource: "typed" });
-    // After worker completion (the seeded draft IS that state).
     let [row] = await db.orm.select().from(notes).where(eq(notes.id, draft.note.id));
     expect(row!.pieceId).toBeNull();
 
-    // After the review GET that computes the suggestion.
     const shown = await get(`/v1/notes/${draft.note.id}`, teacher.token);
     expect(shown.body.pieceSuggestion).not.toBeNull();
     [row] = await db.orm.select().from(notes).where(eq(notes.id, draft.note.id));
     expect(row!.pieceId).toBeNull();
 
-    // After send.
     const sent = await post(`/v1/notes/${draft.note.id}/send`, teacher.token).send({});
     expect(sent.status).toBe(200);
     [row] = await db.orm.select().from(notes).where(eq(notes.id, draft.note.id));
@@ -821,8 +799,6 @@ describe("W6 suggestion endpoints", () => {
   });
 });
 
-// ── Integration pass · claims that outlived their name ──────────────────────────
-
 describe("the library claim tracks the name on the screen", () => {
   it("dies when a source-less rename leaves the entity behind", async () => {
     const created = await createLesson(teacher.token, {
@@ -834,7 +810,6 @@ describe("the library claim tracks the name on the screen", () => {
     const minted = await lessonRow(lessonId);
     expect(minted.customPieceId).not.toBeNull();
 
-    // The shape the lesson-detail repair sheet sends: a new name, no source word.
     const renamed = await patch(`/v1/lessons/${lessonId}`, teacher.token)
       .send({ pieceId: null, pieceLabel: "Rondo alla Turca" });
     expect(renamed.status).toBe(200);
@@ -909,8 +884,6 @@ describe("the library claim tracks the name on the screen", () => {
     expect(sent.status).toBe(200);
     const [row] = await db.orm.select().from(notes).where(eq(notes.id, draft.note.id));
     expect(row!.pieceLabel).toBe("Rondo alla Turca");
-    // Unfiled beats filed-under-the-wrong-name: the rename destroyed the provenance
-    // that would have said which entity this is.
     expect(row!.customPieceId).toBeNull();
   });
 });
@@ -974,7 +947,6 @@ describe("dismissal stores only ever hold real pieces", () => {
     const first = await post(`/v1/notes/${draft.note.id}/piece-suggestion`, teacher.token)
       .send({ action: "dismiss", pieceId: "clementi_op36_no1_i" });
     expect(first.status).toBe(200);
-    // The chip is gone, so `fresh` is null — a retry of the same dismiss must still 200.
     const retry = await post(`/v1/notes/${draft.note.id}/piece-suggestion`, teacher.token)
       .send({ action: "dismiss", pieceId: "clementi_op36_no1_i" });
     expect(retry.status).toBe(200);

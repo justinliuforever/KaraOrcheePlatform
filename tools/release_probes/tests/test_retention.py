@@ -92,7 +92,6 @@ WORKSPACE = {"retentionInDays": 30, "sku": {"name": "PerGB2018"}}
 TABLES = [{"name": "ContainerAppConsoleLogs_CL", "retentionInDays": 30},
           {"name": "ContainerAppSystemLogs_CL", "retentionInDays": 30},
           {"name": "ContainerAppHTTPLogs", "retentionInDays": 30},
-          # Application Insights tables: unwired, and Azure floors them at 90.
           {"name": "AppTraces", "retentionInDays": 90},
           {"name": "AzureActivity", "retentionInDays": 90}]
 
@@ -176,8 +175,6 @@ def test_a_service_log_table_overridden_past_30_days_is_named():
 
 
 def test_the_checked_in_policy_is_the_one_the_document_describes():
-    # The artifact FG-9 signs must itself pass the by-name number assertions;
-    # otherwise the probe proves live == a file that says the wrong thing.
     assert failures(retention.check_management_policy(retention.load_intended_policy())) == []
     rules = retention.rules_by_name(retention.load_intended_policy())
     assert rules["notes-narration-cool"]["enabled"] is False
@@ -205,7 +202,6 @@ def test_the_signature_count_is_what_the_rule_would_delete_on_its_first_pass():
     assert report["over_retention"] == 2
     assert report["names"] == ["transcripts/model-output/old.json", "transcripts/old.json"]
     assert report["oldest_days"] == 218
-    # exactly 90 days old is inside the window the notice promises
     assert retention.transcript_age_report(
         [{"name": "t", "mod": "2026-05-09T00:00:00+00:00"}], now)["over_retention"] == 0
 

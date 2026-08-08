@@ -414,7 +414,6 @@ describe("pinned drafts (upload new version)", () => {
     expect(draft.body.metadata.title).toBe("Original Title"); // prefilled server-side
     expect(draft.body.metadata.pinnedPieceId).toBe("pinned_target");
 
-    // Rename in the wizard — the id must NOT re-derive.
     const patched = await request(app)
       .patch(`/admin/studio/jobs/${draft.body.id}/metadata`)
       .set("Authorization", `Bearer ${adminToken}`)
@@ -461,8 +460,6 @@ describe("retry + publish", () => {
   it("publishes: copies blobs, upserts piece+version, rebuilds catalog, audits", async () => {
     const studio = fakeStudio();
     const app = makeApp({ studio });
-    // Publish now REQUIRES the referenced book to exist (silent coverless
-    // auto-create was the drift hole the audit closed).
     await db.orm.insert(books).values({ id: "clementi_op36", title: "Sonatinas Op. 36" }).onConflictDoNothing();
     const meta = { ...FULL_META, book: { id: "clementi_op36", title: "Sonatinas Op. 36", index: 1 } };
     const [job] = await db.orm
@@ -542,7 +539,6 @@ describe("retry + publish", () => {
     expect(blocked.status).toBe(409);
     expect(blocked.body.error).toBe("repeats_not_supported_yet");
     expect(blocked.body.message).toContain("33 written / 55 played");
-    // the block must fire BEFORE any side effect — no version blobs copied
     expect(blockedStudio.copies).toHaveLength(0);
 
     const allowedJob = await mk("repeat_allowed");
@@ -557,7 +553,6 @@ describe("retry + publish", () => {
       type: "repeats", written_measures: 33, played_measures: 55, max_passes: 2,
       n_spans: 5, expanded_duration_sec: 52.4, expansion_source: "verovio-inferred",
     });
-    // Old app binaries must never treat a repeat piece as followable.
     expect(piece!.followReady).toBe(false);
     const cat = allowedStudio.jsons.find((j) => j.path === "catalog.json")!.body as {
       pieces: { id: string; follow_ready: boolean }[];
@@ -696,7 +691,6 @@ describe("retry + publish", () => {
     };
     expect(cat2.pieces.find((p) => p.id === "tempo_default_piece")!.follow_ready).toBe(true);
 
-    // Old bundles without the field pass through untouched.
     const absentField = await mk(undefined);
     const res3 = await request(makeApp())
       .post(`/admin/studio/jobs/${absentField.id}/publish`)

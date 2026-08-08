@@ -119,7 +119,6 @@ beforeAll(async () => {
       id: "burgmuller_100_2",
       title: "25 Études faciles",
       subtitle: "No. 2 Arabesque",
-      // Alias form on purpose: registry must match it through aliases.
       composer: "J. F. Burgmüller",
       workId: "burgmuller_op100",
       workIndex: 2,
@@ -255,7 +254,6 @@ describe("composers CRUD", () => {
 
 describe("rename propagation", () => {
   it("renaming appends the old name to aliases; usage and catalog match survive", async () => {
-    // A published piece carries the shorthand string the registry starts from.
     await db.orm.insert(pieces).values({
       id: "beyer_101_8",
       title: "Vorschule im Klavierspiel",
@@ -291,7 +289,6 @@ describe("rename propagation", () => {
     expect(renamed.body.name).toBe("Ferdinand Beyer");
     expect(renamed.body.aliases).toContain("Beyer");
 
-    // The piece string "Beyer" now alias-matches: usage count unchanged.
     const after = await request(makeApp())
       .get("/admin/composers")
       .set("Authorization", `Bearer ${adminToken}`);
@@ -301,7 +298,6 @@ describe("rename propagation", () => {
     expect(str.matched).toBe("alias");
     expect(str.composerId).toBe("beyer");
 
-    // Catalog composers[] still matches the published piece via the auto-alias.
     const studio = fakeStudio();
     await rebuildCatalog(db.orm, studio);
     const cat = studio.jsons.find((j) => j.path === "catalog.json")!.body as {
@@ -312,8 +308,6 @@ describe("rename propagation", () => {
   });
 
   it("dedupes on repeated renames and strips the new name from aliases", async () => {
-    // Rename back: "Ferdinand Beyer" becomes an alias, "Beyer" leaves the aliases
-    // (a name must never double as its own alias).
     const back = await request(makeApp())
       .patch("/admin/composers/beyer")
       .set("Authorization", `Bearer ${adminToken}`)
@@ -321,7 +315,6 @@ describe("rename propagation", () => {
     expect(back.status).toBe(200);
     expect(back.body.aliases).toEqual(["Ferdinand Beyer"]);
 
-    // Rename forward again WITH aliases supplied: old name still auto-appended, no dupes.
     const forward = await request(makeApp())
       .patch("/admin/composers/beyer")
       .set("Authorization", `Bearer ${adminToken}`)
@@ -331,7 +324,6 @@ describe("rename propagation", () => {
   });
 
   afterAll(async () => {
-    // Fixtures here must not leak into the catalog-emission assertions below.
     await db.orm.delete(pieceVersions).where(eq(pieceVersions.pieceId, "beyer_101_8"));
     await db.orm.delete(pieces).where(eq(pieces.id, "beyer_101_8"));
     await db.orm.delete(composers).where(eq(composers.id, "beyer"));
@@ -347,7 +339,6 @@ describe("composers list: usage + unregistered", () => {
     const burgmuller = res.body.items.find(
       (c: { id: string }) => c.id === "johann_friedrich_burgmuller",
     );
-    // 1 piece under the canonical name + 1 under the "J. F. Burgmüller" alias.
     expect(burgmuller.usageCount).toBe(2);
     const czerny = res.body.items.find((c: { id: string }) => c.id === "carl_czerny");
     expect(czerny.usageCount).toBe(1);
@@ -365,7 +356,6 @@ describe("composers list: usage + unregistered", () => {
     expect(byValue.get("J. F. Burgmüller")!.matched).toBe("alias");
     expect(byValue.get("J. F. Burgmüller")!.composerId).toBe("johann_friedrich_burgmuller");
     expect(byValue.get("Nobody Registered")!.matched).toBeNull();
-    // Works-side strings count too (the work row carries the canonical form).
     expect(byValue.get("Johann Friedrich Burgmüller")!.workCount).toBe(1);
 
     expect(
@@ -443,8 +433,6 @@ describe("catalog emission", () => {
     const work = cat.works.find((w) => w.id === "burgmuller_op100")!;
     expect(work.movement_count).toBe(25);
 
-    // Burgmüller matches a published piece VIA ALIAS; Czerny via name. An entry
-    // matching only drafts/nothing must not leak (live-values law).
     expect(cat.composers.map((c) => c.name).sort()).toEqual([
       "Carl Czerny",
       "Johann Friedrich Burgmüller",
@@ -455,7 +443,6 @@ describe("catalog emission", () => {
     expect(b.birth_year).toBe(1806);
     expect(b.death_year).toBe(1874);
     expect(b.bio).toContain("pedagogical");
-    // Nullable passthrough: Czerny was registered without years/bio.
     const cz = cat.composers.find((c) => c.name === "Carl Czerny")!;
     expect(cz.birth_year).toBeNull();
     expect(cz.bio).toBeNull();
@@ -502,7 +489,6 @@ describe("catalog emission", () => {
     const app = createServer({ catalog: store });
     const res = await request(app).get("/v1/catalog");
     expect(res.status).toBe(200);
-    // composers[] is additive: the caps gate must pass it through untouched.
     expect(res.body.composers).toHaveLength(1);
     expect(res.body.composers[0].portrait_url.endsWith("?sig=fake")).toBe(true);
     expect(res.body.books[0].cover_url.endsWith("?sig=fake")).toBe(true);
@@ -577,7 +563,6 @@ describe("canonicalize on write", () => {
     const [row] = await db.orm.select().from(pieces).where(eq(pieces.id, "czerny_599_3"));
     expect(row.composer).toBe("Ludwig van Beethoven");
 
-    // Unregistered strings pass through untouched — normalizer, never a gate.
     const untouched = await request(makeApp())
       .patch("/admin/pieces/czerny_599_3")
       .set("Authorization", `Bearer ${adminToken}`)
@@ -610,7 +595,6 @@ describe("alias hygiene", () => {
     expect(aliasClash.status).toBe(409);
     expect(aliasClash.body.owner).toBe("Muzio Clementi");
 
-    // Own name inside one's own aliases is silently stripped, not an error.
     const own = await request(makeApp())
       .patch("/admin/composers/muzio_clementi")
       .set("Authorization", `Bearer ${adminToken}`)

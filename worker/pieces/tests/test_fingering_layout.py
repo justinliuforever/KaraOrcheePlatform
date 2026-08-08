@@ -71,7 +71,6 @@ def test_stack_reanchors_per_chord_note_and_gets_offsets(frozen):
     adjusted, report = adjust_mei(frozen, OPTS)
     assert report == {"stacks": 1, "beside": 1, "fallback": 0}
     by_digit = {f["digit"]: f for f in _fing_map(adjusted)}
-    # digits descending <-> pitch ascending: 5->G3, 3->B3, 1->D4
     assert by_digit["5"]["target"] == ("g", "3")
     assert by_digit["3"]["target"] == ("b", "3")
     assert by_digit["1"]["target"] == ("d", "4")
@@ -121,7 +120,6 @@ def test_count_mismatch_leaves_group_alone():
 
 
 def test_bundle_carries_layout_report(frozen, tmp_path):
-    # smoke the staff.py hook end-to-end on the fixture piece
     from pipeline.staff import build_staff_assets
     xml = _score(
         _note("G", 3, ("1", "3", "5")) + _note("B", 3, chord=True) + _note("D", 4, chord=True)

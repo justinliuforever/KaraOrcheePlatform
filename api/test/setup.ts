@@ -1,19 +1,8 @@
 import type { AddressInfo, Server } from "node:net";
 import supertest from "supertest";
 
-// INVARIANT: a test server must be bound to the exact address supertest dials.
 //
-// supertest gives every request its own throwaway server via `app.listen(0)` — the
-// IPv6 WILDCARD, dual-stack — and then hand-builds the URL as 127.0.0.1:<port>.
-// The kernel will hand a wildcard bind an ephemeral port that another process
-// already holds a 127.0.0.1-SPECIFIC listener on (ssh -L forwards, editor helpers,
-// dev servers), and loopback IPv4 is routed to the most specific socket — so that
-// process answers the test instead: a foreign 404, an ECONNRESET, or a hang, in
-// whichever file happened to draw the port. Binding loopback removes the ambiguity;
-// the kernel will not hand out a port already listening on 127.0.0.1.
 //
-// The bind has to move into end() because listen(port, host) resolves the host
-// through dns.lookup, so address() is not readable in the same tick.
 const Test = (supertest as unknown as { Test: SupertestTest }).Test;
 
 interface SupertestTest {

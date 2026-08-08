@@ -109,7 +109,6 @@ def test_invented_quote_dropped_structurally():
     obj = make_obj()
     obj["annotations"][0]["quote"] = "practice with a metronome daily"
     with pytest.raises(GateFail):
-        # dropping the invented one leaves 1 annotation -> below the floor
         normalize_note(obj, TRANSCRIPT, 32)
 
 

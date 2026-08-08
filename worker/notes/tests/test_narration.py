@@ -23,8 +23,6 @@ JESSICA = narration.VOICES["jessica"]
 GEORGE = narration.VOICES["george"]
 
 
-# ── fakes ────────────────────────────────────────────────────────────────────────
-
 class FakeSynth:
     """Records what it was asked to say. `fail_on` matches on the clip text. Meters at a
     rate deliberately far from 1:1 — a fake that billed one credit per character would
@@ -173,8 +171,6 @@ def blob(monkeypatch):
     return FakeBlob()
 
 
-# ── text parity with NoteReadAloudScript.swift ───────────────────────────────────
-
 @pytest.mark.parametrize("case", GOLDEN["overview"], ids=lambda c: c["case"])
 def test_overview_matches_the_app_script(case):
     assert narration.overview_lines(case["summary"], case["stepCount"]) == case["lines"]
@@ -249,8 +245,6 @@ def test_a_step_with_nothing_to_say_gets_no_clip():
 def test_a_bare_note_produces_no_clips_at_all():
     assert narration.plan_clips(None, [], False) == []
 
-
-# ── hashing and the cache ────────────────────────────────────────────────────────
 
 def test_content_hash_is_stable_for_the_same_text_and_voice():
     assert narration.content_hash("Step 1.", JESSICA) == narration.content_hash("Step 1.", JESSICA)
@@ -364,8 +358,6 @@ def test_the_blob_carries_the_same_hashes_as_its_manifest_row(blob):
     assert meta["clipid"] == "a1" and meta["voice"] == "jessica"
 
 
-# ── the character ceiling ────────────────────────────────────────────────────────
-
 def test_a_runaway_note_spends_nothing_at_all(blob):
     conn = db(annotations=[annotation("a1", instruction="x" * 20000)])
     synth = FakeSynth()
@@ -426,8 +418,6 @@ def test_the_ceiling_gates_on_characters_sent_not_on_credits(blob):
     assert synth.calls == []
 
 
-# ── what the vendor actually bills ───────────────────────────────────────────────
-
 @pytest.mark.parametrize("value,expected", [
     ("239", 239), (239, 239), ("238.6", 239), ("0", 0),
     (None, None), ("", None), ("not-a-number", None),
@@ -467,8 +457,6 @@ def test_an_unreadable_meter_is_unknown_rather_than_a_made_up_charge(blob):
     assert result["credits"] == 0
     assert all(row["credits"] is None for row in conn.clips.values())
 
-
-# ── fail closed ──────────────────────────────────────────────────────────────────
 
 def test_one_failing_clip_does_not_stop_the_others(blob):
     conn = db()
@@ -534,8 +522,6 @@ def test_an_unknown_voice_is_never_synthesized(blob):
     assert narration.narrate(conn, blob, NOTE, ["morgan"], synth=synth)["status"] == "no_voices"
     assert synth.calls == []
 
-
-# ── the config switch ────────────────────────────────────────────────────────────
 
 def test_no_config_row_means_the_stage_is_off(blob):
     conn = db(config=None)
@@ -608,8 +594,6 @@ def test_config_is_read_from_platform_config():
     assert any("FROM platform_config" in s for s in conn.executed)
 
 
-# ── retry policy ─────────────────────────────────────────────────────────────────
-
 class Resp:
     def __init__(self, status, content=b"mp3"):
         self.status_code = status
@@ -656,8 +640,6 @@ def test_only_unbilled_statuses_are_transient():
     assert not any(narration.transient(s) for s in (400, 401, 403, 404, 422))
 
 
-# ── nothing here can reach the vendor ────────────────────────────────────────────
-
 def test_the_real_synthesizer_refuses_to_exist_under_pytest():
     with pytest.raises(RuntimeError, match="not reachable from a test"):
         narration.ElevenLabsSynthesizer("would-be-key")
@@ -691,8 +673,6 @@ def test_clip_is_hashable_and_carries_its_own_length():
     assert clip.text_hash == narration.text_hash(["Step 1."])
     assert {clip}
 
-
-# ── pipeline wiring: narration is downstream of delivery ─────────────────────────
 
 import main  # noqa: E402
 

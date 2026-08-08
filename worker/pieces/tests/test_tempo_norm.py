@@ -22,7 +22,6 @@ def test_plain_units():
 
 
 def test_dotted_units():
-    # The verovio 6.2.1 bug case: dotted quarter = 1.5 quarters, NOT 4/3.
     assert _metronome_qpm(met("quarter", "60", dots=1)) == 90
     assert _metronome_qpm(met("eighth", "120", dots=1)) == 90
     assert _metronome_qpm(met("quarter", "40", dots=2)) == 70  # double dot = x1.75

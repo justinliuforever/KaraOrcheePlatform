@@ -27,17 +27,10 @@ import type { Db } from "../src/db/client";
 import type { LessonStore } from "../src/notes/lessons_store";
 import type { NotesQueue } from "../src/queue";
 
-// B1.5 Wave 2 roster/history contracts: students + teachers roster lists, student
-// detail, invite code history states, write-once organization, admin trust watch.
-// Own PGlite instance (per-file), oids all prefixed "nr-".
 const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
 const AUDIENCE = "api://karaorchee";
 const KID = "test-key";
 
-// Every timestamp on the wire is ISO-8601 UTC. The iOS client parses dates with
-// ISO8601DateFormatter, which rejects Postgres's own text form
-// ("2026-07-25 13:38:26.463294+00"); JS `new Date(...)` accepts both, so an
-// assertion that only round-trips through Date cannot see the difference.
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 
 let verifier: AuthVerifier;
@@ -150,7 +143,6 @@ function auth(u: TestUser) {
   return `Bearer ${u.token}`;
 }
 
-// Teacher-origin note the classic way: lesson + job + note (+2 annotations).
 async function seedNote(opts: {
   teacherId: string;
   studentId?: string | null;
@@ -209,7 +201,6 @@ async function seedNote(opts: {
   return { note: note!, job: job!, lesson: lesson! };
 }
 
-// The worker's born-sent solo output: teacher_id = student_id = owner.
 async function seedSelfNote(ownerId: string) {
   const content = { lessonSummary: "Solo practice reflections.", practicePlan: ["Slow left hand first"] };
   const [note] = await db.orm
@@ -228,8 +219,6 @@ async function seedSelfNote(ownerId: string) {
   return note!;
 }
 
-// Lessons are seeded straight to submitted — the trust watch reads rows, not the
-// upload flow.
 async function seedSubmittedLesson(
   teacherId: string,
   over: Partial<typeof lessonSessions.$inferInsert> = {},
@@ -254,8 +243,6 @@ beforeAll(async () => {
   fakeLessons = makeFakeLessons();
   fakeQueue = makeFakeQueue();
 });
-
-// ── 1+2. Students roster: list + detail ─────────────────────────────────────────
 
 describe("students roster (teacher side)", () => {
   let t1: TestUser;
@@ -367,8 +354,6 @@ describe("students roster (teacher side)", () => {
     expect(res.body.notes[0].status).toBe("sent");
   });
 
-  // A student who leaves withdraws their address with them; the history stays
-  // readable so "Invite again" still works.
   it("detail: a removed link is still served, but the email is withdrawn", async () => {
     const res = await request(makeApp()).get(`/v1/me/students/${s2.id}`).set("Authorization", auth(t1));
     expect(res.status).toBe(200);
@@ -388,8 +373,6 @@ describe("students roster (teacher side)", () => {
     expect(res.body.canReceiveNotes).toBe(false);
   });
 });
-
-// ── 3. Teachers roster (student side) ───────────────────────────────────────────
 
 describe("teachers roster (student side)", () => {
   let st: TestUser;
@@ -422,7 +405,6 @@ describe("teachers roster (student side)", () => {
     expect(ids).toContain(ta.id);
     expect(ids).toContain(tc.id);
     expect(ids).not.toContain(tb.id);
-    // The self-note (teacherId = the student) creates no phantom roster row.
     expect(ids).not.toContain(st.id);
 
     const rowA = res.body.items.find((i: { teacherId: string }) => i.teacherId === ta.id);
@@ -459,7 +441,6 @@ describe("teachers roster (student side)", () => {
     const del = await request(makeApp()).delete("/v1/me").set("Authorization", auth(tc));
     expect(del.status).toBe(200);
 
-    // Account delete ends the link, so the tombstone lives under include=removed.
     const dflt = await request(makeApp()).get("/v1/me/teachers").set("Authorization", auth(st));
     expect(dflt.body.items.map((i: { teacherId: string }) => i.teacherId)).not.toContain(tc.id);
 
@@ -475,8 +456,6 @@ describe("teachers roster (student side)", () => {
     expect(row.displayName).toBeNull();
   });
 });
-
-// ── 4. Invite code history ──────────────────────────────────────────────────────
 
 describe("invite code history", () => {
   let ti: TestUser;
@@ -506,8 +485,6 @@ describe("invite code history", () => {
     sr = await makeUser({ oid: "nr-inv-redeemer", name: "Redeemer Renee", role: "student" });
     sd = await makeUser({ oid: "nr-inv-redeemer-del", name: "Redeemer Dana", role: "student" });
 
-    // One live code per issuer per direction, so each code must leave the live set
-    // (revoked / spent / expired) before the next mint. The live one comes last.
     revokedInv = await mint();
     const rev = await request(makeApp()).delete(`/v1/invites/${revokedInv.id}`).set("Authorization", auth(ti));
     if (rev.status !== 200) throw new Error(`revoke failed: ${rev.status}`);
@@ -572,8 +549,6 @@ describe("invite code history", () => {
   });
 });
 
-// ── 5. Organization (write-once, admin-only surface) ────────────────────────────
-
 describe("organization", () => {
   let orgT: TestUser;
   let orgS: TestUser;
@@ -637,8 +612,6 @@ describe("organization", () => {
   });
 });
 
-// ── 6. Admin trust watch ────────────────────────────────────────────────────────
-
 describe("admin trust watch", () => {
   let adminToken: string;
   let tw1: TestUser; // qualifies: submitted teacher lessons, zero reach
@@ -667,8 +640,6 @@ describe("admin trust watch", () => {
       .values({ teacherId: tw2.id, studentId: sw.id, status: "active", consentAt: new Date() });
 
     await seedSubmittedLesson(tw3.id);
-    // Retracted counts as a lifetime send — "one send exits forever" survives a
-    // later retraction (PLAT-1: status IN sent, retracted).
     await seedNote({ teacherId: tw3.id, studentId: sw.id, status: "retracted", sentAt: new Date() });
 
     await seedSubmittedLesson(tw4.id);
@@ -722,11 +693,7 @@ describe("admin trust watch", () => {
   });
 });
 
-// ── v0.9: the roster carries the caption's subject ──────────────────────────────
-
 describe("roster payload v2", () => {
-  // linkedDaysAgo matters: a pair that started today outranks every note inside it,
-  // by design — a new student belongs at the top of the roster on the day they join.
   async function linked(prefix: string, linkedDaysAgo = 0): Promise<{ t: TestUser; s: TestUser }> {
     const t = await makeUser({ oid: `nr-${prefix}-t`, name: `${prefix} Teacher`, role: "teacher" });
     const s = await makeUser({ oid: `nr-${prefix}-s`, name: `${prefix} Student`, role: "student" });
@@ -739,9 +706,6 @@ describe("roster payload v2", () => {
     return { t, s };
   }
 
-  // seedNote leaves its lesson row undated, and lastLessonAt falls back to the row's
-  // created_at — i.e. now. Any test about ordering has to put the lesson in the past
-  // too, or "the lesson happened" drowns out the signal under test.
   async function backdateLessons(teacherId: string, at: Date) {
     await db.orm
       .update(lessonSessions)
@@ -827,7 +791,6 @@ describe("roster payload v2", () => {
     expect(row.latestNote.pieceTitle).toBe("New Piece");
     expect(row.latestNote.stepCount).toBe(2);
     expect(row.latestNote.doneCount).toBe(1);
-    // The lifetime pair still ships one more release, and still counts everything.
     expect(row.practicedTotal).toBe(4);
     expect(row.practicedDone).toBe(3);
   });
@@ -853,7 +816,6 @@ describe("roster payload v2", () => {
 
     const after = await rowFor(t, s.id);
     expect(new Date(after.lastActivityAt).getTime()).toBe(tickedAt.getTime());
-    // The caption still belongs to the newest note — only the ordering moved.
     expect(after.latestNote.pieceTitle).toBe("Newer");
   });
 
@@ -871,8 +833,6 @@ describe("roster payload v2", () => {
     expect(new Date(row.latestNote.readAt).getTime()).toBe(openedAt.getTime());
   });
 
-  // Enforced by the teacher scoping, not by an origin filter: a solo note is authored
-  // by the student, so it can never match this teacher's id.
   it("a student's own solo recording stays out of their teacher's roster", async () => {
     const { t, s } = await linked("v2-solo");
     await seedSelfNote(s.id);
@@ -980,13 +940,7 @@ describe("student detail carries the lessons the history interleaves", () => {
   });
 });
 
-// ── v0.9: the batched entitlement read, and the wire invariant ──────────────────
-
 describe("canReceiveNotes after the paywall goes live", () => {
-  // The batch path (notesAccessMany) and the per-student path must agree. Until
-  // monetization_live_at is set every student is beta_free, so this branch — the one
-  // that decides whether a teacher can still serve a family — runs for the first
-  // time on the day it matters most.
   it("distinguishes an active subscriber, a fresh trial and a lapsed family in one roster", async () => {
     const t = await makeUser({ oid: "nr-money-t", name: "Money Teacher", role: "teacher" });
     const paid = await makeUser({ oid: "nr-money-paid", name: "Paid Pupil", role: "student" });
@@ -1017,8 +971,6 @@ describe("canReceiveNotes after the paywall goes live", () => {
       expect(by.get(paid.id)).toBe(true);
       expect(by.get(trialing.id)).toBe(true);
       expect(by.get(lapsed.id)).toBe(false);
-      // Nobody may fall out of the batch and land on the `?? null` default, which
-      // would read as "locked" for a student who is perfectly fine.
       expect(by.size).toBe(3);
     } finally {
       await db.orm.delete(platformConfig).where(eq(platformConfig.key, "monetization_live_at"));
@@ -1027,8 +979,6 @@ describe("canReceiveNotes after the paywall goes live", () => {
 });
 
 describe("every new timestamp reaches the wire as ISO-8601", () => {
-  // A bare sql<Date> without mapWith ships the Postgres driver's own text, which the
-  // app's ISO8601DateFormatter rejects — taking the whole screen down, not one field.
   it("roster and detail timestamps all parse", async () => {
     const t = await makeUser({ oid: "nr-iso-t", name: "Iso Teacher", role: "teacher" });
     const s = await makeUser({ oid: "nr-iso-s", name: "Iso Student", role: "student" });
@@ -1069,8 +1019,6 @@ describe("lesson history states a time only when one was recorded", () => {
     await db.orm.insert(teacherStudentLinks).values({
       teacherId: t.id, studentId: s.id, consentAt: new Date(),
     });
-    // Never started: the row was born when the upload began, so created_at is when we
-    // heard about it. It is still a lesson the teacher recorded — deliberate, present.
     await db.orm.insert(lessonSessions).values({
       teacherId: t.id, studentId: s.id, status: "created",
       pieceLabel: "Never started", createdAt: daysAgo(9),
@@ -1105,7 +1053,6 @@ describe("the join date and the way it happened describe the same event", () => 
 
     await request(makeApp()).delete(`/v1/me/students/${s.id}`).set("Authorization", auth(t));
 
-    // This time the student invites the teacher back in.
     const reverse = await request(makeApp())
       .post("/v1/invites")
       .set("Authorization", auth(s))

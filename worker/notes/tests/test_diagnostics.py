@@ -29,11 +29,7 @@ TRANSCRIPT = ("Let's look at bar three. The left hand D to F sharp leap needs to
               "prepared in advance. Circle those two bars where the change happens. " * 4)
 
 
-# ── Ops severity: every terminal failure has to reach the error tier ──────────────
-
 def test_every_jlog_event_the_worker_emits_has_a_deliberate_level():
-    # The defect this guards: a failure event that nobody classified logs as `info`
-    # and is invisible on the Ops page. Read the real call sites, not a hand list.
     source = (Path(main.__file__).parent / "main.py").read_text()
     source += (Path(main.__file__).parent / "narration.py").read_text()
     emitted = set()
@@ -58,13 +54,10 @@ def test_failure_events_log_at_error_and_recoveries_at_warn(capsys):
 
 
 def test_a_crashing_message_names_its_job_in_a_structured_error_line(capsys):
-    # The traceback alone is unstructured stderr with no job id on it.
     main.jlog(job="job-1", event="worker_crash", error="KeyError: 'jobId'")
     line = json.loads(capsys.readouterr().out.strip())
     assert line["level"] == "error" and line["job"] == "job-1"
 
-
-# ── Which annotation the gate dropped, and why ───────────────────────────────────
 
 def _obj(annotations):
     return {"lesson_summary": "Summary.", "annotations": annotations, "practice_plan": []}
@@ -89,7 +82,6 @@ def test_a_dropped_annotation_is_named_with_its_index_reason_and_text():
     assert drops[0]["reason"] == "unverifiable_quote"
     assert drops[0]["instruction"] == INVENTED["instruction"]
     assert drops[0]["quote"] == INVENTED["quote"]
-    # The old count-only summary is unchanged for the job row.
     assert warnings == [f"dropped_unverifiable_quote: {INVENTED['instruction'][:60]}"]
     assert drop_reasons(drops) == {"unverifiable_quote": 1}
 
@@ -111,8 +103,6 @@ def test_malformed_annotations_are_dropped_with_a_reason_not_silently():
         TRANSCRIPT, 32)
     assert [(d["index"], d["reason"]) for d in drops] == [(0, "not_an_object"), (1, "empty_instruction")]
 
-
-# ── The artifact: what the model actually produced ───────────────────────────────
 
 MODEL_TEXT = '{"lesson_summary": "s", "annotations": [], "practice_plan": []}'
 
@@ -141,18 +131,15 @@ def test_a_gate_failure_persists_the_model_output_that_explains_it(monkeypatch):
 
     path, payload = _uploaded(blob, main.MODEL_OUTPUT_PREFIX)[0]
     assert path == "transcripts/model-output/job-9.json"
-    # Under transcripts/ so the 90-day lifecycle rule collects it like the transcript.
     assert path.startswith(main.TRANSCRIPT_PREFIX)
     assert payload["outcome"] == "thin_note" and payload["stage"] == "gates"
     assert payload["attempts"][0]["text"] == MODEL_TEXT
     assert payload["attempts"][0]["model"] == "claude-sonnet-5"
     assert payload["evidence"]["drops"][0]["quote"] == "never said this"
 
-    # The path is stamped on the row, guarded on the lesson still being live.
     stamp = [s for s, _ in conn.executed if "SET model_output_path" in s]
     assert len(stamp) == 1 and "l.status <> 'canceled'" in stamp[0]
 
-    # ...and the counts (never the text) ride the failure row through record_gate_fail.
     gf = exc.value
     assert gf.artifact == path
     assert gf.metrics["annotations_in"] == 3 and gf.metrics["kept"] == 1
@@ -186,7 +173,6 @@ def test_llm_invalid_keeps_both_rejected_outputs_and_each_validator_message(monk
     assert "not valid JSON" in payload["attempts"][0]["error"]
     assert payload["outcome"] == "llm_invalid"
     assert _codes_written(conn)[-1] == ("failed", "llm_invalid")
-    # The failure row now carries the LLM timings it used to throw away.
     final_sql, final_params = [(s, p) for s, p in conn.executed if s.startswith("UPDATE note_jobs")][-1]
     metrics = json.loads(final_params[_update_cols(final_sql).index("metrics")])
     assert metrics["llm_model"] == "claude-sonnet-5" and "llm_secs" in metrics
@@ -247,11 +233,8 @@ def test_no_speech_reports_how_much_speech_there_actually_was(monkeypatch):
         main.process(conn, blob, "cs", "job-9")
     assert exc.value.metrics["transcript_words"] == 11
     assert exc.value.metrics["min_transcript_words"] == 50
-    # Raised before the LLM ran, so there is no model output to keep.
     assert _uploaded(blob, main.MODEL_OUTPUT_PREFIX) == []
 
-
-# ── The artifact obeys the transcript's privacy contract ─────────────────────────
 
 def test_a_discard_landing_mid_write_deletes_the_artifact_it_just_wrote(monkeypatch):
     conn = FakeConn(
@@ -268,7 +251,6 @@ def test_a_discard_landing_mid_write_deletes_the_artifact_it_just_wrote(monkeypa
 def test_a_lesson_already_discarded_is_never_given_a_new_artifact(monkeypatch):
     conn = FakeConn({
         "FROM note_jobs j": FETCH_ROW_14,
-        # live at the pre-ASR check and the transcript stamp, canceled by the LLM gate
         "SELECT status FROM lesson_sessions": [("submitted",), ("submitted",), ("canceled",)],
     })
     blob = FakeBlobService()
@@ -290,7 +272,6 @@ def test_a_blob_that_refuses_the_artifact_never_takes_the_job_down(monkeypatch, 
     _process_env(monkeypatch, normalize=lambda obj, text, mc: (_ for _ in ()).throw(
         ValueError("lesson_summary missing or empty")))
     main.process(conn, BrokenBlob(), "cs", "job-9")
-    # The job still reaches its real terminal state, and the storage failure is logged.
     assert _codes_written(conn)[-1] == ("failed", "llm_invalid")
     events = [json.loads(l)["event"] for l in capsys.readouterr().out.strip().splitlines()]
     assert "model_output_unwritten" in events

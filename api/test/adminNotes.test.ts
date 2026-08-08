@@ -168,9 +168,7 @@ beforeAll(async () => {
   fakeAssets = makeFakeAssets();
 
   await db.orm.insert(users).values([
-    // The main test admin holds transcript access (the founder case).
     { entraOid: "an-admin-oid", email: "admin@karaorchee.com", displayName: "Notes Admin", isAdmin: true, canViewTranscripts: true },
-    // A second admin WITHOUT the flag (the colleague case).
     { entraOid: "an-admin2-oid", email: "admin2@karaorchee.com", displayName: "Pieces Admin", isAdmin: true },
     { entraOid: "an-plain-oid", email: "plain@example.com", displayName: "Plain" },
   ]);
@@ -182,8 +180,6 @@ beforeAll(async () => {
 beforeEach(() => {
   fakeQueue.throwNext = false;
 });
-
-// ── Auth gate ──────────────────────────────────────────────────────────────────────
 
 describe("adminNotes gate", () => {
   it("401s without a token", async () => {
@@ -197,8 +193,6 @@ describe("adminNotes gate", () => {
     expect(res.body).toEqual({ error: "forbidden" });
   });
 });
-
-// ── Pairings ─────────────────────────────────────────────────────────────────────
 
 describe("notes links", () => {
   let teacher: typeof users.$inferSelect;
@@ -325,8 +319,6 @@ describe("notes links", () => {
   });
 });
 
-// ── Invites ──────────────────────────────────────────────────────────────────────
-
 describe("notes invites", () => {
   let teacher: typeof users.$inferSelect;
   let activeInvite: typeof invites.$inferSelect;
@@ -385,8 +377,6 @@ describe("notes invites", () => {
     expect(missing.status).toBe(404);
   });
 });
-
-// ── Entitlements ─────────────────────────────────────────────────────────────────
 
 describe("notes entitlements", () => {
   let target: typeof users.$inferSelect;
@@ -457,14 +447,11 @@ describe("notes entitlements", () => {
       .send({ reason: "Refund processed via Apple." });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("revoked");
-    // Grant reason is preserved, not clobbered by the revoke reason.
     expect(res.body.note).toBe("grant reason kept");
     const audits = await auditFor("entitlement.revoke");
     expect(audits.some((a) => a.subjectId === ent!.id)).toBe(true);
   });
 });
-
-// ── Monetization config ──────────────────────────────────────────────────────────
 
 describe("monetization config", () => {
   it("reads beta_free by default, flips to paid_after, then clears, auditing from/to", async () => {
@@ -514,8 +501,6 @@ describe("monetization config", () => {
   });
 });
 
-// ── Notes-jobs monitoring ────────────────────────────────────────────────────────
-
 describe("note-jobs monitoring", () => {
   let teacher: typeof users.$inferSelect;
   let readyJob: string;
@@ -528,7 +513,6 @@ describe("note-jobs monitoring", () => {
       { pieceLabel: "Minuet in G" },
     );
     readyJob = job.id;
-    // A note produced by that job.
     const content = { lessonSummary: "y", practicePlan: [] };
     await db.orm.insert(notes).values({
       noteJobId: job.id,
@@ -582,7 +566,6 @@ describe("note-jobs monitoring", () => {
       .get(`/admin/note-jobs/${job.id}`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
-    // no_speech is a categorical cap of 0 — a re-run would be byte-identical.
     expect(res.body.retry).toMatchObject({ allowed: false, cap: 0, attempts: 1 });
     expect(res.body.retry.reason).toBe("retry_exhausted");
 
@@ -640,8 +623,6 @@ describe("note-jobs monitoring", () => {
     expect(row!.status).toBe("failed");
   });
 
-  // ── r4: failure_code + discard visibility ─────────────────────────────────
-
   it("list carries failureCode / discardedAt / lessonStatus and a failureCode facet", async () => {
     const codeTeacher = await mkUser({ displayName: "Code Teacher", email: "codeteach@k.com", isTeacher: true });
     await seedJob(codeTeacher.id, { status: "failed", failureCode: "no_speech" });
@@ -690,9 +671,6 @@ describe("note-jobs monitoring", () => {
   });
 
   it("requeue refuses a discarded lesson — the owner asked for exactly that", async () => {
-    // The failed-only check cannot see it: a discard leaves the job in 'failed'.
-    // This is the deterministic, no-race leg — an admin looking at a failed job
-    // has no reason to know the owner deleted the recording underneath it.
     const { job } = await seedJob(
       teacher.id,
       { status: "failed", failureCode: "lesson_discarded", discardedAt: new Date() },
@@ -711,8 +689,6 @@ describe("note-jobs monitoring", () => {
     expect(row!.status).toBe("failed");
     expect(row!.attempts).toBe(0); // not charged for a run that was refused
 
-    // A canceled lesson refuses even when the job carries no discard stamp
-    // (a pre-0016 row, or a cancel that never reached the job).
     const stampless = await seedJob(teacher.id, { status: "failed", failureCode: "asr_error" }, { status: "canceled" });
     const second = await request(app())
       .post(`/admin/note-jobs/${stampless.job.id}/requeue`)
@@ -726,8 +702,6 @@ describe("note-jobs monitoring", () => {
     const { job } = await seedJob(teacher.id, {
       status: "failed",
       failureCode: "no_speech",
-      // no_speech is categorically un-retryable for an end user; an admin re-run
-      // is a different act from tapping Retry, so the cap does not apply here.
       attempts: 9,
       startedAt: new Date(Date.now() - 47 * 60 * 1000),
     });
@@ -742,8 +716,6 @@ describe("note-jobs monitoring", () => {
     expect(Date.now() - row!.startedAt!.getTime()).toBeLessThan(60 * 1000);
   });
 });
-
-// ── Transcript break-glass ───────────────────────────────────────────────────────
 
 describe("transcript break-glass", () => {
   let teacher: typeof users.$inferSelect;
@@ -781,21 +753,18 @@ describe("transcript break-glass", () => {
   it("only a flag holder can change canViewTranscripts, and never on their own row", async () => {
     const [admin2] = await db.orm.select().from(users).where(eq(users.entraOid, "an-admin2-oid"));
     const [admin1] = await db.orm.select().from(users).where(eq(users.entraOid, "an-admin-oid"));
-    // Non-holder cannot self-grant (or grant at all).
     const selfGrant = await request(app())
       .patch(`/admin/users/${admin2!.id}/roles`)
       .set("Authorization", `Bearer ${admin2Token}`)
       .send({ canViewTranscripts: true });
     expect(selfGrant.status).toBe(403);
     expect(selfGrant.body.error).toBe("transcript_grant_forbidden");
-    // Holder cannot change their own row.
     const own = await request(app())
       .patch(`/admin/users/${admin1!.id}/roles`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ canViewTranscripts: false });
     expect(own.status).toBe(409);
     expect(own.body.error).toBe("cannot_change_own_transcript_access");
-    // Holder grants to another admin — audited with the dedicated action.
     const grant = await request(app())
       .patch(`/admin/users/${admin2!.id}/roles`)
       .set("Authorization", `Bearer ${adminToken}`)
@@ -804,7 +773,6 @@ describe("transcript break-glass", () => {
     expect(grant.body.canViewTranscripts).toBe(true);
     const audits = await auditFor("user.set_transcript_access");
     expect(audits.length).toBeGreaterThan(0);
-    // Revoke it back so other tests keep the colleague-without-flag fixture.
     const revoke = await request(app())
       .patch(`/admin/users/${admin2!.id}/roles`)
       .set("Authorization", `Bearer ${adminToken}`)
@@ -838,7 +806,6 @@ describe("transcript break-glass", () => {
     const { job } = await seedJob(teacher.id, {
       status: "failed",
       failureCode: "thin_note",
-      // Exactly the shape the discard transaction leaves behind.
       transcriptPath: null,
       discardedAt: new Date(),
     });
@@ -849,12 +816,9 @@ describe("transcript break-glass", () => {
     expect(res.status).toBe(410);
     expect(res.body.error).toBe("transcript_discarded");
     expect(fakeAssets.reads).not.toContain(null);
-    // Nothing was read, so nothing is audited as read.
     expect((await auditFor("transcript.view")).length).toBe(before);
   });
 });
-
-// ── Model-output break-glass ─────────────────────────────────────────────────────
 
 describe("model output break-glass", () => {
   let teacher: typeof users.$inferSelect;
@@ -918,7 +882,6 @@ describe("model output break-glass", () => {
     const { job } = await seedJob(teacher.id, {
       status: "failed",
       failureCode: "thin_note",
-      // Exactly the shape the discard transaction leaves behind.
       modelOutputPath: null,
       transcriptPath: null,
       discardedAt: new Date(),
@@ -941,8 +904,6 @@ describe("model output break-glass", () => {
     expect(row.metrics.drop_reasons).toEqual({ unverifiable_quote: 2 });
   });
 });
-
-// ── User activity ────────────────────────────────────────────────────────────────
 
 describe("user notes-activity", () => {
   it("aggregates links, invites, lessons, note counts, and effective entitlement", async () => {
@@ -970,7 +931,6 @@ describe("user notes-activity", () => {
     expect(res.body.lessons.recentPieceLabels).toEqual(expect.arrayContaining(["Sonatina", "Arabesque"]));
     expect(res.body.notes.sent).toBe(2);
     expect(res.body.notes.received).toBe(0);
-    // Teachers bypass entitlements.
     expect(res.body.access.status).toBe("teacher_free");
   });
 
@@ -981,8 +941,6 @@ describe("user notes-activity", () => {
     expect(res.status).toBe(404);
   });
 });
-
-// ── v0.9: the label an admin action can outlive ─────────────────────────────────
 
 describe("admin actions honour the label's lifetime", () => {
   it("revoking a code retires its label and never returns it to the console", async () => {

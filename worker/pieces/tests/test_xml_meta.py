@@ -63,8 +63,6 @@ def test_dolet_export_clean(tmp_path):
 
 
 def test_musescore_never_warns(tmp_path):
-    # The stack check is a Dolet-artifact fingerprint — other engravers omit
-    # default-x legitimately and must not trip it.
     meta = _extract(tmp_path, MUSESCORE, UNPOSITIONED_STACK)
     assert meta["export_warnings"] == []
 
@@ -87,7 +85,5 @@ def test_no_identification_block(tmp_path):
 
 
 def test_direct_export_never_runs_stack_check(tmp_path):
-    # The direct-export marker CONTAINS the word "Dolet" — a substring match must
-    # not route direct exports into the Dolet-artifact stack check.
     meta = _extract(tmp_path, DIRECT, UNPOSITIONED_STACK)
     assert meta["export_warnings"] == [{"code": "sibelius_direct_export"}]

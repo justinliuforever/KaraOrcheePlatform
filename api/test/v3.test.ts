@@ -187,7 +187,6 @@ describe("solo-part change resets preflight", () => {
     expect(res.body.gates).toEqual({});
     expect(queue.preflights).toHaveLength(2); // initial + reset
 
-    // Title-only patch must NOT reset.
     await db.orm.update(studioJobs).set({ checkStatus: "pass" }).where(eq(studioJobs.id, draft.body.id));
     const res2 = await request(app)
       .patch(`/admin/studio/jobs/${draft.body.id}/metadata`)
@@ -300,7 +299,6 @@ describe("publish v3", () => {
       .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
 
-    // preview never copied into the bundle
     expect(studio.copies.map((c) => c.to)).toEqual([
       "mozart_k330_mvt2/v1/score_events.json",
       "mozart_k330_mvt2/v1/score.phone.svg",
@@ -406,7 +404,6 @@ describe("library work membership editing", () => {
       publishedVersion: 1,
     });
 
-    // same work + same movement + same (default piano) instrument → must confirm
     const clash = await request(app)
       .patch("/admin/pieces/mozart_k330_alt")
       .set("Authorization", `Bearer ${adminToken}`)
@@ -422,7 +419,6 @@ describe("library work membership editing", () => {
     expect(ok.body.workId).toBe("mozart_k330");
     expect(ok.body.workIndex).toBe(1);
 
-    // moving to a free number needs no confirm
     const move = await request(app)
       .patch("/admin/pieces/mozart_k330_alt")
       .set("Authorization", `Bearer ${adminToken}`)
@@ -430,7 +426,6 @@ describe("library work membership editing", () => {
     expect(move.status).toBe(200);
     expect(move.body.workIndex).toBe(3);
 
-    // a movement number without a work is meaningless
     await db.orm.insert(pieces).values({
       id: "loner", title: "Loner", composer: "X", rights: "licensed",
       status: "published", publishedVersion: 1,
@@ -449,18 +444,15 @@ describe("library work membership editing", () => {
     expect(missing.status).toBe(400);
     expect(missing.body.error).toBe("work_missing");
 
-    // list joins work title + catalogue for search/columns
     const list = await request(app).get("/admin/pieces").set("Authorization", `Bearer ${adminToken}`);
     const row = list.body.items.find((p: { id: string }) => p.id === "mozart_k330_alt");
     expect(row.workTitle).toContain("Sonata");
     expect(row.workCatalogue).toBe("K. 330");
 
-    // detail carries the work row + every sibling in the composition
     const det = await request(app).get("/admin/pieces/mozart_k330_alt").set("Authorization", `Bearer ${adminToken}`);
     expect(det.body.work.id).toBe("mozart_k330");
     expect(det.body.workSiblings.some((s: { id: string }) => s.id === "mozart_k330_mvt1")).toBe(true);
 
-    // detaching from the work clears the movement number with it
     const clear = await request(app)
       .patch("/admin/pieces/mozart_k330_alt")
       .set("Authorization", `Bearer ${adminToken}`)

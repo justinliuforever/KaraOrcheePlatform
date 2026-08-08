@@ -39,7 +39,6 @@ def test_the_disclosure_is_interpolated_into_the_rendered_deletion_paragraph():
     notice = privacy_parity.render_notice(SWIFT)
     assert "This also removes this email’s sign-in." in notice
     assert "\\(signInDisclosure)" not in notice
-    # Order matters: the deletion paragraph sits where the array puts it.
     assert notice.index("What we collect.") < notice.index("Deletion.")
 
 

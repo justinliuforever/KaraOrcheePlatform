@@ -74,10 +74,7 @@ def test_bottom_staff_stack_placed_below_and_reordered(tmp_path):
     src = _build(tmp_path, m1_notes=RH_NOTE + LH_STACK_NOTE)
     out = normalize_engraving(src, tmp_path)
     assert out != src
-    # document order becomes top-to-bottom visual order: 1, 3, 5
     assert _fingerings(out, "2") == [("1", "below"), ("3", "below"), ("5", "below")]
-    # the upper hand now states its side too — that is what keeps a right-hand
-    # voice's fingerings above its notes when the voice crosses to the bass staff
     assert _fingerings(out, "1") == [("1", "above")]
 
 
@@ -97,7 +94,6 @@ CROSS_LH_ON_TREBLE = """<note>
 
 
 def test_hand_follows_the_voice_not_the_printed_staff(tmp_path):
-    # Each voice keeps its home staff by majority, then crosses once.
     src = _build(tmp_path,
                  m1_notes=RH_NOTE + LH_STACK_NOTE + CROSS_RH_ON_BASS + CROSS_LH_ON_TREBLE,
                  m2_notes=RH_NOTE + LH_STACK_NOTE)
@@ -106,12 +102,8 @@ def test_hand_follows_the_voice_not_the_printed_staff(tmp_path):
     for note in root.iter("note"):
         for f in note.iter("fingering"):
             sides[(note.findtext("voice"), note.findtext("staff"), f.text)] = f.get("placement")
-    # A voice reaching DOWN keeps its digits in the gap between the staves, which
-    # from its anchor staff reads as "below" — asking for its hand's side throws
-    # them clean outside the system, 16.6 staff spaces from the notehead.
     assert sides[("1", "2", "2")] == "below", "right hand crossing down sits in the gap"
     assert sides[("5", "1", "4")] == "below", "left hand crossing up stays below"
-    # Same-staff notes keep the hand rule.
     assert sides[("1", "1", "1")] == "above"
     assert sides[("5", "2", "1")] == "below"
 
@@ -119,7 +111,6 @@ def test_hand_follows_the_voice_not_the_printed_staff(tmp_path):
 def test_explicit_placement_trusted(tmp_path):
     src = _build(tmp_path, m1_notes=LH_EXPLICIT_NOTE)
     out = normalize_engraving(src, tmp_path)
-    # one fingering declares a side -> the whole note's stack is left alone
     assert _fingerings(out, "2") == [("2", "above"), ("4", None)]
 
 
@@ -174,8 +165,6 @@ def test_idempotent(tmp_path):
     assert twice == once  # second pass finds nothing to fix
 
 
-# --- mis-anchored chord fingerings (Dolet x-proximity picks the wrong voice) ---
-
 def _two_voice_measure(fing_a='<fingering default-y="6">2</fingering>',
                        fing_b='<fingering default-y="-22">5</fingering>',
                        chord_extra="", chord_fing=""):
@@ -205,7 +194,6 @@ def test_misanchored_stack_moves_to_sounding_chord(tmp_path):
         if step:
             by_pitch.setdefault(step, []).extend(
                 (f.text, f.get("placement")) for f in note.iter("fingering"))
-    # stack re-anchored to the chord principal, placed below, editor order (2 above 5)
     assert by_pitch["F"] == [("2", "below"), ("5", "below")]
     assert by_pitch["D"] == []
 
@@ -217,7 +205,6 @@ def test_count_mismatch_stays_put(tmp_path):
     out = normalize_engraving(src, tmp_path)
     root = ET.parse(out).getroot()
     d_note = [n for n in root.iter("note") if n.findtext("pitch/step") == "D"][0]
-    # 3-note chord vs 2 fingerings -> no move; placement still applied on the D
     assert [(f.text, f.get("placement")) for f in d_note.iter("fingering")] == \
         [("2", "below"), ("5", "below")]
 

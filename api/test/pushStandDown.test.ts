@@ -5,10 +5,6 @@ import { notifyNoteSent, notifyNotesReady, pushEnabled, type PushSender } from "
 import { devices, users } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 
-// The founder deferred notifications to a later release. "Unconfigured" is not the same
-// as "off": these pin that the switch is what silences it, with a working sender wired
-// up and a device row waiting. Delete the gate in notify() and this file fails.
-
 let db: Db;
 let sent: string[];
 let sender: PushSender;
@@ -51,7 +47,6 @@ describe("notifications are deliberately off", () => {
     });
     expect(sent).toEqual([]);
     expect(outcome).toBeNull();
-    // And the device row survives: an off switch is not a pruning event.
     expect((await db.orm.select().from(devices).where(eq(devices.userId, userId))).length).toBe(1);
   });
 

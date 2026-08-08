@@ -22,9 +22,6 @@ import { createTestDb } from "./testdb";
 import { auditEvents, users } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 
-// W7: the account delete removes the CIAM identity, and a token from a deleted account
-// can never re-create the row (B2); the age question is answered once, beside the role
-// grant (B3). Own PGlite instance, oids prefixed "ai-".
 const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
 const AUDIENCE = "api://karaorchee";
 const KID = "test-key";
@@ -35,8 +32,6 @@ let privateKey: CryptoKey;
 
 interface FakeGraph extends GraphIdentityClient {
   calls: string[];
-  /// What the users row looked like at the moment Graph was called — the only way to
-  /// prove the platform purge ran first.
   rowsAtCall: { entraOid: string | null; status: string; ciamOidAtDelete: string | null }[];
   answer: GraphDeleteResult;
 }
@@ -137,8 +132,6 @@ function events(kind: string): string[] {
   return logged.filter((line) => line.includes(`"kind":"${kind}"`));
 }
 
-// ── B2: the delete removes the directory identity ───────────────────────────────
-
 describe("account delete removes the CIAM identity", () => {
   it("purges the platform row BEFORE calling Graph, and hands it the released oid", async () => {
     const u = await makeUser("ai-order");
@@ -148,7 +141,6 @@ describe("account delete removes the CIAM identity", () => {
     expect(del.body.identityDeleted).toBe(true);
 
     expect(graph.calls).toEqual([u.oid]);
-    // Graph saw an already-scrubbed row: the purge is not waiting on the directory.
     expect(graph.rowsAtCall.length).toBe(1);
     expect(graph.rowsAtCall[0]!.status).toBe("deleted");
     expect(graph.rowsAtCall[0]!.entraOid).toBeNull();
@@ -156,7 +148,6 @@ describe("account delete removes the CIAM identity", () => {
 
     const [row] = await db.orm.select().from(users).where(eq(users.id, u.id));
     expect(row!.ciamDeletedAt).not.toBeNull();
-    // Retained forever: it is what recognises a token from this deleted account.
     expect(row!.ciamOidAtDelete).toBe(u.oid);
   });
 
@@ -219,7 +210,6 @@ describe("account delete removes the CIAM identity", () => {
     expect(del.body.identityDeleted).toBe(true);
     expect(events("ciam_delete_stamp_failed").length).toBe(1);
 
-    // The runbook query finds the unstamped row, and any retry answers 404 = removed.
     const [row] = await db.orm.select().from(users).where(eq(users.id, u.id));
     expect(row!.ciamOidAtDelete).toBe(u.oid);
     expect(row!.ciamDeletedAt).toBeNull();
@@ -233,8 +223,6 @@ describe("account delete removes the CIAM identity", () => {
     expect(rows.some((r) => r.action === "account.delete")).toBe(true);
   });
 });
-
-// ── B2: resurrection guard, both states ─────────────────────────────────────────
 
 describe("a token from a deleted account can never re-create it", () => {
   it("pending state: 410, exactly one Graph retry, no new row", async () => {
@@ -253,7 +241,6 @@ describe("a token from a deleted account can never re-create it", () => {
     const after = await db.orm.select({ n: sql<number>`count(*)::int` }).from(users);
     expect(after[0]!.n).toBe(before[0]!.n);
 
-    // The retry that succeeded is recorded, so the next sync does not repeat it.
     const [row] = await db.orm.select().from(users).where(eq(users.id, u.id));
     expect(row!.ciamDeletedAt).not.toBeNull();
   });
@@ -279,8 +266,6 @@ describe("a token from a deleted account can never re-create it", () => {
     expect(res.body.id).toBe(live.id);
   });
 });
-
-// ── B2: the Graph client's own contract ─────────────────────────────────────────
 
 describe("Graph client", () => {
   function stubFetch(handler: (url: string, init?: RequestInit) => Response) {
@@ -341,13 +326,9 @@ describe("Graph client", () => {
 
     const half = unresolvedGraphLog(graphFromEnv({ GRAPH_TENANT_ID: "t" } as NodeJS.ProcessEnv));
     expect(half).toEqual({ kind: "ciam_delete_pending", reason: "graph_config_incomplete" });
-    // The alert fires on ciam_delete_pending; before FG-7 the runbook tells operators that
-    // ciam_delete_skipped is noise, so a dropped secret may not arrive wearing that label.
     expect(half.kind).not.toBe(unset.kind);
   });
 });
-
-// ── B3: age attestation ─────────────────────────────────────────────────────────
 
 describe("age attestation", () => {
   it("stamps only alongside a role grant, once, and ignores junk", async () => {
@@ -358,8 +339,6 @@ describe("age attestation", () => {
     expect(row!.ageBracket).toBe("under_13");
     expect(row!.ageAttestedAt).not.toBeNull();
 
-    // A second sync carrying a different answer changes nothing: the role is already
-    // granted, so there is no grant for the answer to ride on.
     const second = await sync(token, { role: "student", ageBracket: "over_13" });
     expect(second.status).toBe(200);
     const [after] = await db.orm.select().from(users).where(eq(users.id, first.body.id));
@@ -388,8 +367,6 @@ describe("age attestation", () => {
     expect(row!.ageBracket).toBeNull();
   });
 });
-
-// ── Migrations 0026/0027, proved against the database the routes run on ─────────
 
 describe("probe_schema (0026, 0027)", () => {
   it("every column the routes write exists on users", async () => {

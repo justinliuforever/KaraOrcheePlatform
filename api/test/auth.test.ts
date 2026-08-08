@@ -120,8 +120,6 @@ describe("requireAuth accepts a valid locally-signed token", () => {
   });
 });
 
-// Every authenticated body is per-identity. Without these two headers, "account B never
-// sees account A's inbox" holds only because no cache happens to sit between them.
 describe("authenticated responses are not cacheable and key on the bearer", () => {
   function protectedApp(v: AuthVerifier) {
     const app = express();

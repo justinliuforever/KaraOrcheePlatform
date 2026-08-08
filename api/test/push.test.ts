@@ -18,14 +18,12 @@ let publicKey: CryptoKey;
 let server: Http2Server;
 let origin: string;
 
-// One request as APNs saw it, so the wire contract can be asserted rather than assumed.
 interface Seen {
   headers: IncomingHttpHeaders;
   body: string;
 }
 const seen: Seen[] = [];
 
-// Keyed by device token: the status and reason APNs will answer with.
 const replies = new Map<string, { status: number; reason?: string }>();
 
 beforeAll(async () => {
@@ -73,7 +71,6 @@ describe("APNs sender wire contract", () => {
     expect(req.headers["apns-topic"]).toBe(BUNDLE_ID);
     expect(req.headers["apns-push-type"]).toBe("alert");
     expect(req.headers["apns-priority"]).toBe("10");
-    // One banner per note, however many times a send is retried.
     expect(req.headers["apns-collapse-id"]).toBe("note-1");
     expect(JSON.parse(req.body)).toEqual(noteArrivedPayload("note-1"));
   });
@@ -117,15 +114,12 @@ describe("APNs sender wire contract", () => {
     expect(byToken.get("tok-live")).toEqual({ token: "tok-live", ok: true, gone: false });
     expect(byToken.get("tok-unregistered")!.gone).toBe(true);
     expect(byToken.get("tok-bad")!.gone).toBe(true);
-    // A rate limit and a server fault are this minute's problem, not the device's — pruning on
-    // either would silently unsubscribe a phone that works.
     expect(byToken.get("tok-busy")).toEqual({ token: "tok-busy", ok: false, gone: false });
     expect(byToken.get("tok-server")).toEqual({ token: "tok-server", ok: false, gone: false });
     replies.clear();
   });
 
   it("an unreachable APNs resolves as undelivered — it never throws, and never prunes", async () => {
-    // Port 1 on loopback: nothing listens, so the session fails to connect.
     const sender = createApnsSender(config, "http://127.0.0.1:1");
     const results = await sender.sendNoteArrived(["tok-x", "tok-y"], "note-6");
     expect(results).toEqual([
