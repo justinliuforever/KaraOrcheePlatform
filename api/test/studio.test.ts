@@ -645,7 +645,7 @@ describe("retry + publish", () => {
     expect(entry2.row_icon_url).toBeUndefined();
   });
 
-  it("default tempo_source publishes follow_ready=false; a real-tempo re-publish clears it", async () => {
+  it("default tempo_source publishes follow_ready=false; a real-tempo re-publish clears it; an absent tempo_source (old bundle) leaves it null", async () => {
     const mk = async (xmlMeta: object | undefined) => {
       const [job] = await db.orm
         .insert(studioJobs)

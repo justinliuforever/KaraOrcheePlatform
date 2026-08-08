@@ -240,7 +240,7 @@ describe("W4 piece_source", () => {
     expect((await lessonRow(wrongType.body.lesson.id)).pieceSource).toBeNull();
   });
 
-  it("PATCH carries the source alongside a piece change and never stamps pieceUpdatedAt on its own", async () => {
+  it("PATCH carries the source alongside a piece change, never stamps pieceUpdatedAt on its own, and 400s a source-only patch as nothing_to_update", async () => {
     const created = await createLesson(teacher.token, {
       pieceLabel: "Spinning Song",
       pieceSource: "typed",
@@ -323,7 +323,7 @@ describe("W5 custom pieces", () => {
     expect(await customRows(otherTeacher.id)).toHaveLength(1);
   });
 
-  it("clears custom_piece_id when the lesson becomes a catalog piece", async () => {
+  it("clears custom_piece_id when the lesson becomes a catalog piece but leaves the shared custom-piece entity for other lessons", async () => {
     const created = await createLesson(teacher.token, {
       pieceLabel: "Spinning Song",
       pieceSource: "typed",

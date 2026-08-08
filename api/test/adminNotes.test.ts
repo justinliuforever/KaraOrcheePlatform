@@ -428,7 +428,7 @@ describe("notes entitlements", () => {
     expect((evt!.detail as { userId: string }).userId).toBe(target.id);
   });
 
-  it("revokes an entitlement (reason required) and audits", async () => {
+  it("revokes an entitlement (reason required), audits, and keeps the original grant reason", async () => {
     const [ent] = await db.orm
       .insert(entitlements)
       .values({ userId: target.id, source: "admin_grant", status: "active", note: "grant reason kept" })

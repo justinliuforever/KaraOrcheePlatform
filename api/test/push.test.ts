@@ -97,7 +97,7 @@ describe("APNs sender wire contract", () => {
     expect(seen[0]!.headers["authorization"]).toBe(seen[1]!.headers["authorization"]);
   });
 
-  it("410 Unregistered and 400 BadDeviceToken mark the token dead; 429 does not", async () => {
+  it("410 Unregistered and 400 BadDeviceToken mark the token dead; 429 and a server fault do not", async () => {
     seen.length = 0;
     replies.set("tok-unregistered", { status: 410, reason: "Unregistered" });
     replies.set("tok-bad", { status: 400, reason: "BadDeviceToken" });

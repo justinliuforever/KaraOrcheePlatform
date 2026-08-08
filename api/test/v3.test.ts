@@ -164,7 +164,7 @@ describe("checks: work-aware findings", () => {
 });
 
 describe("solo-part change resets preflight", () => {
-  it("PATCH soloPart clears gates and re-queues preflight", async () => {
+  it("PATCH soloPart clears gates and re-queues preflight; title-only patch does not", async () => {
     const queue = fakeQueue();
     const app = makeApp({ queue });
     const draft = await request(app)

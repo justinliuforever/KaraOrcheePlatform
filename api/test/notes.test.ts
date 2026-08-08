@@ -827,7 +827,7 @@ describe("roster", () => {
 });
 
 describe("lessons", () => {
-  it("POST requires a Notes role; solo student path validates its own contract", async () => {
+  it("POST requires a Notes role, and a solo lesson rejects a named student or missing attestation", async () => {
     const noRole = await request(makeApp())
       .post("/v1/lessons")
       .set("Authorization", `Bearer ${stranger.token}`)
@@ -1372,7 +1372,7 @@ describe("lesson metadata lifecycle", () => {
     expect(alsoNotMine.status).toBe(404);
   });
 
-  it("is allowed on a created lesson — the divergence case a local-only edit cannot fix", async () => {
+  it("PATCH survives a client's later create-retry with the same clientLessonId", async () => {
     const created = await request(makeApp())
       .post("/v1/lessons")
       .set("Authorization", `Bearer ${mdT.token}`)

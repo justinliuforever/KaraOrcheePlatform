@@ -518,7 +518,7 @@ describe("containment and hygiene", () => {
     expect(rows.every((r) => (r.detail as { reason: string }).reason === "own_code")).toBe(true);
   });
 
-  it("revoking a code writes an audit event", async () => {
+  it("revoking a code is idempotent (one audit event) and refuses someone else's code with 404", async () => {
     const t = await makeUser("pi-audit-teacher", "Audit Teacher", "teacher");
     const id = (await mint(t)).body.id as string;
     expect((await request(makeApp()).delete(`/v1/invites/${id}`).set("Authorization", auth(t))).status).toBe(200);

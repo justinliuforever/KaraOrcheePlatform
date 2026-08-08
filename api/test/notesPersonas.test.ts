@@ -418,7 +418,7 @@ describe("entitlement gates on solo lessons", () => {
     expect(typeof res.body.access.lockedAfter).toBe("string");
   });
 
-  it("lapsed student submit on a pre-lapse lesson → 402 entitlement_required", async () => {
+  it("lapsed student submit on a pre-lapse lesson → 402 entitlement_required, and the lesson stays submittable", async () => {
     const res = await request(makeApp())
       .post(`/v1/lessons/${preLessonId}/submit`)
       .set("Authorization", auth(lapS))
@@ -553,7 +553,7 @@ describe("reverse invites", () => {
     expect(res.body.error).toBe("already_linked");
   });
 
-  it("after removal, a fresh reverse code reactivates the same link row (MC-4)", async () => {
+  it("after removal, a fresh reverse code reactivates the same link row and re-consents at redemption time, never the old departure (MC-4)", async () => {
     const removed = await request(makeApp())
       .delete(`/v1/me/students/${rvS.id}`)
       .set("Authorization", auth(rvT));
