@@ -84,9 +84,7 @@ function FacetGroup({
   );
 }
 
-/** Self-contained notes-jobs lane inside /ops. It does NOT ride the OpsState machine
- * (no time-range / histogram / severity): status + stage + q are its own query state,
- * with the selected job id in ?sel for a shareable deep link. */
+/** Deliberately does not use the shared OpsState machine — own status/stage/q query state, with ?sel for a shareable deep link. */
 export default function NotesJobsView() {
   const [params, setParams] = useSearchParams();
   const status = params.get("status") ?? "";
@@ -96,9 +94,7 @@ export default function NotesJobsView() {
   const sel = params.get("sel");
   const q = params.get("q") ?? "";
 
-  // The input echoes locally; the trimmed term is debounced into ?q so it's deep-linkable
-  // and stays consistent with facet clicks (which rebuild the URL from current params).
-  // replace:true keeps per-keystroke writes out of the history stack.
+  // replace:true is required — without it, every debounced keystroke would push a new history entry.
   const [search, setSearch] = useState(q);
   useEffect(() => {
     const t = setTimeout(() => {

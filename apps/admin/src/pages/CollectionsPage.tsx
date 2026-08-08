@@ -48,8 +48,7 @@ export default function CollectionsPage() {
   const tab = tabParam === "works" ? "works" : tabParam === "composers" ? "composers" : "books";
   const selected = params.get("sel");
   const [newBookOpen, setNewBookOpen] = useState(false);
-  // Create-mode target for the composer panel: an unregistered string ("" = blank
-  // form via the New composer button). The entity has no id yet, so no URL param.
+  // Create-mode target has no id yet, so unlike other selections it isn't a URL param.
   const [composerDraft, setComposerDraft] = useState<string | null>(null);
 
   const booksQ = useQuery<{ items: AdminBook[] }, Error>({
@@ -79,8 +78,7 @@ export default function CollectionsPage() {
 
   const missingCovers = booksQ.data?.items.filter((b) => !b.coverThumbUrl).length ?? 0;
 
-  // One row per distinct composer string in use, plus registered entries nothing
-  // uses yet (usage 0) so a fresh entry is still visible and editable.
+  // Includes registered entries with zero usage so a fresh entry stays visible.
   const composerRows = (() => {
     if (!composersQ.data) return [];
     const { items, strings } = composersQ.data;

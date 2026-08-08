@@ -27,8 +27,6 @@ import {
 
 const labelCls = "block text-xs font-medium text-ink-soft mb-1";
 
-/** Edit an existing registry entry (id) or create one, optionally pre-filled with
- * an unregistered composer string. */
 export type ComposerTarget = { kind: "edit"; id: string } | { kind: "create"; name: string };
 
 type EditForm = {
@@ -140,7 +138,7 @@ export default function ComposerPanel({
     mutationFn: (patch) => patchComposer(target.kind === "edit" ? target.id : "", patch),
     onSuccess: () => {
       setConfirmApply(false);
-      setSeededFor(null); // reseed from the fresh row
+      setSeededFor(null);
       invalidate();
       toast.success("Composer updated — the app catalog reflects it now");
     },

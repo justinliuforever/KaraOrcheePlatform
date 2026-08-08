@@ -1,7 +1,6 @@
 import { ServiceBusClient, ServiceBusAdministrationClient } from "@azure/service-bus";
 
-// Queue health for the Ops tab: runtime counters + a peek at dead-lettered
-// messages. Peek is non-destructive — DLQ triage stays a human decision.
+// Peek is non-destructive — never switch to receive/complete; DLQ triage stays a human decision.
 
 export interface OpsQueueCounts {
   name: string;

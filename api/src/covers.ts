@@ -1,25 +1,21 @@
 import sharp from "sharp";
 
-// Book covers render on an iOS bookshelf: portrait 3:4. Acceptance floor 900×1200
-// (visually clear covers were being rejected under the old 1200×1600 floor); storage
-// output stays a normalized 1200×1600 webp pair (mild upscale for smaller inputs) so
-// the app always receives one consistent size.
+// Acceptance floor (900×1200) is intentionally lower than stored output (1200×1600) — accepted images are mildly upscaled.
 const MIN_W = 900;
 const MIN_H = 1200;
 const OUT_W = 1200;
 const OUT_H = 1600;
-const ASPECT_MIN = 1.2; // h/w — accepts real-world book scans around 3:4
+const ASPECT_MIN = 1.2;  // h/w — accepts real-world book scans around 3:4
 const ASPECT_MAX = 1.5;
 
 export class CoverError extends Error {}
 
 export interface ProcessedCover {
-  cover: Buffer; // 1200×1600 webp
-  thumb: Buffer; // 300×400 webp
+  cover: Buffer;
+  thumb: Buffer;
 }
 
-// Composer portraits render as small square avatars in the app: any aspect is
-// accepted (center-crop), normalized to one consistent 512×512 webp.
+// Portraits accept any aspect ratio (center-cropped to 512×512) — unlike covers, no aspect-ratio rejection here.
 const PORTRAIT_MIN = 256;
 const PORTRAIT_OUT = 512;
 
@@ -68,9 +64,7 @@ export async function processCover(buf: Buffer): Promise<ProcessedCover> {
   if (!["jpeg", "png", "webp"].includes(meta.format ?? "")) {
     throw new CoverError(`Unsupported format "${meta.format}". Use JPEG, PNG, or WebP.`);
   }
-  // Phone photos carry EXIF orientation: metadata() reports pre-rotation dimensions,
-  // so swap for the aspect/size checks and .rotate() before resizing — otherwise a
-  // portrait photo is rejected as landscape or stored sideways.
+  // metadata() reports pre-rotation dimensions — swap width/height for orientation>=5 before aspect/size checks, or portraits get rejected as landscape.
   const sideways = (meta.orientation ?? 1) >= 5;
   const width = sideways ? meta.height : meta.width;
   const height = sideways ? meta.width : meta.height;

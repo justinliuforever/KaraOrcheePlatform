@@ -1,6 +1,4 @@
-// Blob layout shared verbatim with the synthesis worker and the iOS client:
-// notes-assets/narration/<noteId>/<voice>/<clipId>.mp3, clipId = "overview" or an
-// annotation id. Changing it here breaks all three.
+// Layout shared verbatim with the synthesis worker and iOS client (notes-assets/narration/<noteId>/<voice>/<clipId>.mp3) — changing it breaks all three.
 export const NARRATION_VOICES = ["jessica", "george"] as const;
 export type NarrationVoice = (typeof NARRATION_VOICES)[number];
 
@@ -8,8 +6,7 @@ export const DEFAULT_NARRATION_VOICE: NarrationVoice = "jessica";
 export const NARRATION_OVERVIEW_CLIP = "overview";
 // Exactly what the vendor returns — the worker does not transcode.
 export const NARRATION_CLIP_EXT = ".mp3";
-// Its own lane, consumed by worker/notes/main.py on its own thread: a minutes-long
-// synthesis run may not sit in front of an ASR job on notes-jobs.
+// Separate queue (own worker thread) so a minutes-long synthesis run can't sit in front of an ASR job on notes-jobs.
 export const NARRATION_QUEUE = "notes-narration";
 
 export function isNarrationVoice(value: string): value is NarrationVoice {

@@ -1,12 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { randomUUID } from "node:crypto";
 
-// Structured request logging → stdout → ContainerAppConsoleLogs_CL. One JSON line per
-// completed request. Privacy rules (COPPA/GDPR posture): identity is the opaque CIAM
-// oid only (never email/display name), no request bodies, no query strings (tokens can
-// ride in them), no client IPs (ingress logs hold those if forensics ever need them).
-// NOTE: ACA only columnizes JSON stdout when the environment has
-// --logs-dynamic-json-columns true (off by default since Oct 2023).
+// Never log PII here — no email/display name, no bodies, no query strings, no client IPs (COPPA/GDPR).
 export function requestLog() {
   return (req: Request, res: Response, next: NextFunction) => {
     const start = process.hrtime.bigint();
@@ -14,7 +9,7 @@ export function requestLog() {
     req.reqId = reqId;
     res.setHeader("x-request-id", reqId);
     res.on("finish", () => {
-      if (req.path === "/healthz") return; // probe noise
+      if (req.path === "/healthz") return;
       const ms = Number(process.hrtime.bigint() - start) / 1e6;
       console.log(JSON.stringify({
         kind: "http",

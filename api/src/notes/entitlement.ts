@@ -4,9 +4,7 @@ import { entitlements, platformConfig, type User } from "../db/schema";
 
 export const TRIAL_DAYS = 30;
 
-// What the app renders from — server is the source of truth, never local receipts.
-// lockedAfter: student-side rule "old notes stay readable, new notes lock" — a sent
-// note is locked iff status === "lapsed" AND sentAt > lockedAfter.
+// Source of truth for iOS Notes access — clients must call this, never derive access from local App Store receipts.
 export interface NotesAccess {
   status: "teacher_free" | "beta_free" | "trial" | "active" | "grace" | "lapsed";
   trialEndsAt?: string;
@@ -25,9 +23,7 @@ async function monetizationLiveAt(deps: Deps): Promise<Date | null> {
   return at;
 }
 
-// Trial expiry = max(trial_started_at, monetization_live_at) + 30d, so beta
-// testers get a fresh clock the day the paywall goes live. monetization_live_at
-// unset = paywall not launched = everything free.
+// Trial anchors to max(trialStartedAt, monetization_live_at) — do not simplify to trialStartedAt alone, or beta testers lose their fresh clock at launch.
 export async function notesAccess(deps: Deps, user: User): Promise<NotesAccess> {
   if (user.isTeacher) return { status: "teacher_free" };
 
@@ -42,9 +38,7 @@ export async function notesAccess(deps: Deps, user: User): Promise<NotesAccess> 
   return resolveAccess(user, liveAt, rows);
 }
 
-// Same rule, one round trip for a whole roster. The per-student call issued a
-// platform_config read AND an entitlements read each, which is what made a
-// 40-student roster ~90 queries.
+// Batches platform_config + entitlements into one query each — do not call notesAccess per student in a loop (N+1 reads).
 export async function notesAccessMany(deps: Deps, people: User[]): Promise<Map<string, NotesAccess>> {
   const out = new Map<string, NotesAccess>();
   const students: User[] = [];

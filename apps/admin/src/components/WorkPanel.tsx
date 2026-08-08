@@ -67,8 +67,7 @@ export default function WorkPanel({ id, onClose }: { id: string; onClose: () => 
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [mergeSearch, setMergeSearch] = useState("");
   const [mergeQ, setMergeQ] = useState("");
-  // Target survives the confirm dialog closing: a movement_taken 409 needs it for
-  // the explicit "merge anyway" retry.
+  // Target survives the confirm dialog closing — a movement_taken 409 needs it for the "merge anyway" retry.
   const [mergeTarget, setMergeTarget] = useState<AdminWork | null>(null);
   const [mergeConfirmOpen, setMergeConfirmOpen] = useState(false);
   const [mergeClash, setMergeClash] = useState<string | null>(null);
@@ -101,7 +100,7 @@ export default function WorkPanel({ id, onClose }: { id: string; onClose: () => 
     mutationFn: (patch) => patchWork(id, patch),
     onSuccess: () => {
       setConfirmApply(false);
-      setSeededFor(null); // reseed from the fresh row
+      setSeededFor(null);
       qc.invalidateQueries({ queryKey: ["work", id] });
       qc.invalidateQueries({ queryKey: ["works"] });
       // Work title/catalogue feed the pieces table's Work column.

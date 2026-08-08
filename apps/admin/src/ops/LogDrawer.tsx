@@ -58,8 +58,7 @@ export default function LogDrawer({
   onFilter: (key: FilterKey, value: string) => void;
   onTimeline: (reqId: string) => void;
 }) {
-  // ↑/↓ walk prev/next row without closing; the table's own arrow handling is
-  // suspended while the drawer is open so a single keypress moves exactly one row.
+  // Table's own arrow handling is suspended while the drawer is open, or one keypress would move two rows.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;

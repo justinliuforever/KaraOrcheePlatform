@@ -11,8 +11,7 @@ import { labelCls } from "./shared";
 export default function FilesGate() {
   const nav = useNavigate();
   const [params] = useSearchParams();
-  // ?piece=<id> = "upload new version": the draft is pinned server-side to that piece's
-  // permanent id and prefilled with its current metadata.
+  // ?piece=<id> = new-version mode — draft is pinned server-side to that piece's permanent id and prefilled with its metadata.
   const forPiece = params.get("piece");
   const [musicxml, setMusicxml] = useState<File | null>(null);
   const [midi, setMidi] = useState<File | null>(null);

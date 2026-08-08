@@ -1,7 +1,6 @@
 import type { StudioJob } from "../api";
 
-// The pipeline, drawn: Upload → Verify → Review → Live. Failure/cancel are
-// off-ramps rendered on the step where the job stopped, not stages of their own.
+// Failure/cancel are off-ramps rendered on the step where the job stopped — not separate stages in STEPS.
 const STEPS = [
   { key: "upload", label: "Upload" },
   { key: "verify", label: "Verify" },
@@ -22,7 +21,7 @@ function positionOf(job: Pick<StudioJob, "status">): number {
     case "published":
       return 3;
     default:
-      return 1; // canceled: show where it likely stopped
+      return 1;
   }
 }
 

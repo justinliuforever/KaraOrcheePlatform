@@ -410,8 +410,7 @@ function RevokeEntitlementDialog({ target, onDone }: { target: NoteEntitlement |
             variant="destructive"
             disabled={!reasonValid || revoke.isPending}
             onClick={(e) => {
-              // Always keep the dialog open (Radix Action closes by default): the mutation
-              // is async, and an in-dialog error must survive the click. Close on success.
+              // preventDefault keeps the dialog open — Radix AlertDialogAction closes by default, but an async error must stay visible.
               e.preventDefault();
               if (!reasonValid) return;
               revoke.mutate();
@@ -500,7 +499,6 @@ function MonetizationDialog({
   const [ack, setAck] = useState(false);
   const [confirmText, setConfirmText] = useState("");
 
-  // Seed the datetime input from the current value each time the Set dialog opens.
   useEffect(() => {
     if (mode === "set") {
       setDt(current?.value ? toLocalInput(current.value) : "");
@@ -582,7 +580,7 @@ function MonetizationDialog({
             variant="destructive"
             disabled={!canConfirm || save.isPending}
             onClick={(e) => {
-              // Stay open until PUT resolves so an invalid_value error stays visible.
+              // e.preventDefault() — stay open until PUT resolves so an invalid_value error isn't swallowed by Radix's auto-close.
               e.preventDefault();
               if (!canConfirm) return;
               save.mutate();
@@ -596,7 +594,6 @@ function MonetizationDialog({
   );
 }
 
-/** ISO → value for <input type="datetime-local"> (local wall time, minute precision). */
 function toLocalInput(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";

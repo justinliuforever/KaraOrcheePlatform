@@ -1,6 +1,4 @@
-// The "Possible match" chip's brain. Deterministic, no LLM, silent when unsure: a
-// confident wrong match is the one thing this product must never show, so recall is
-// deliberately low and every rule below only ever REMOVES candidates.
+// Every matching rule here must only REMOVE candidates — never loosen a match; a confident wrong match must never show.
 
 export interface CandidatePiece {
   id: string;
@@ -17,8 +15,7 @@ export interface Suggestion {
   quote?: string;
 }
 
-// Matching folds diacritics; identity does not (FG-20). Für may SUGGEST Fur; only the
-// teacher may join them.
+// fold() is for matching only — identity (customPieces) uses raw NFC, so Für may SUGGEST Fur but only the teacher may join them.
 export function fold(text: string): string {
   return text
     .normalize("NFD")
@@ -28,8 +25,7 @@ export function fold(text: string): string {
     .trim();
 }
 
-// Words that carry no identity. "no", "op", numbers and key words stay: they are how
-// one étude is told from the next.
+// Do not add "no"/"op"/numbers/key words to STOPWORDS — they distinguish one étude from another.
 const STOPWORDS = new Set([
   "a", "an", "and", "at", "for", "from", "i", "in", "is", "it", "its", "my", "of", "okay",
   "on", "one", "our", "so", "that", "the", "their", "these", "this", "those", "to", "was",
@@ -45,9 +41,7 @@ function isSuperset(outer: Set<string>, inner: string[]): boolean {
   return inner.length > 0 && inner.every((t) => outer.has(t));
 }
 
-// The teacher SAID this piece: either their words contain the whole title, or the
-// title contains all of their words and they said at least two of them. One word is
-// never enough — that is how "Beethoven" would become a match.
+// said.length must stay >= 2 for the title-contains-said arm — at 1, a bare "Beethoven" mention would match.
 export function mentionMatches(mention: string, piece: CandidatePiece): boolean {
   const said = tokens(mention);
   if (!said.length) return false;
@@ -57,9 +51,7 @@ export function mentionMatches(mention: string, piece: CandidatePiece): boolean 
   const containsTitle = isSuperset(saidSet, titleTokens);
   const titleContainsSaid = said.length >= 2 && isSuperset(pieceTokens, said);
   if (!containsTitle && !titleContainsSaid) return false;
-  // Stated as a rule rather than hoped from the token arms: uniqueness that is an
-  // accident of catalog size is not evidence the teacher named the piece. A mention
-  // whose only overlap is the composer's name is ALWAYS silent.
+  // Even when the arms above pass, overlap must include a non-composer token — composer-only overlap is never a match.
   const composerTokens = new Set(tokens(piece.composer));
   const overlap = said.filter((t) => pieceTokens.has(t));
   return overlap.some((t) => !composerTokens.has(t));
@@ -69,9 +61,7 @@ export function displayTitle(piece: CandidatePiece): string {
   return piece.subtitle ? `${piece.title} · ${piece.subtitle}` : piece.title;
 }
 
-// Exact normalized equality of a typed label with a catalog title or movement label —
-// the answer to "the catalog later gained the piece". Nothing fuzzy: this arm claims
-// the library HAS this name, and a near-miss would make that claim false.
+// Must stay exact equality, never fuzzy — this arm claims the library HAS this name, and a near-miss would make that false.
 export function libraryMatches(label: string, piece: CandidatePiece): boolean {
   const target = fold(label);
   if (!target) return false;
@@ -79,7 +69,6 @@ export function libraryMatches(label: string, piece: CandidatePiece): boolean {
 }
 
 export interface ComputeInput {
-  /// Absent for a lesson that never typed a name.
   customLabel?: string | null;
   mentions: string[];
   transcript?: string | null;
@@ -87,8 +76,7 @@ export interface ComputeInput {
   dismissedPieceIds: string[];
 }
 
-// Exactly ONE survivor, or nothing. Two candidates is not "pick the best" — it is
-// "we do not know", and the chip stays off the screen.
+// hits.length > 1 must return null, never pick "best" — ambiguity means "we do not know", not "guess".
 export function computeSuggestion(input: ComputeInput): Suggestion | null {
   const dismissed = new Set(input.dismissedPieceIds);
   const pool = input.candidates.filter((p) => !dismissed.has(p.id));

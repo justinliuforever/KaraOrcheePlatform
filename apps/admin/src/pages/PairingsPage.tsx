@@ -83,7 +83,6 @@ export default function PairingsPage() {
   const [params, setParams] = useSearchParams();
   const tabParam = params.get("tab");
   const tab = tabParam === "invites" || tabParam === "watch" ? tabParam : "links";
-  // Which account's activity sheet is open (opened from a teacher / student cell).
   const [activity, setActivity] = useState<string | null>(null);
 
   return (
@@ -502,8 +501,7 @@ function RevokeInviteDialog({ target, onDone }: { target: NoteInvite | null; onD
 
 // ── Watch ─────────────────────────────────────────────────────────────────────
 
-// Read-only in B1.5 — no action buttons by design: the list is derived live and
-// most entries are legitimate; outreach is a human emailing manually.
+// Deliberately read-only — no action buttons; the list is derived live and outreach is done by a human, not through this UI.
 function WatchTab({ onOpenActivity }: { onOpenActivity: (id: string) => void }) {
   const query = useQuery<TrustWatchResponse, Error>({
     queryKey: ["trust-watch"],

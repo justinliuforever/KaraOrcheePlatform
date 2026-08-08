@@ -18,9 +18,7 @@ import {
 export const isMac =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
-/** Global ⌘K palette. Read-only and purely additive: it reuses the app-wide
- * ["pieces"] / ["studio-jobs"] caches (same endpoints the pages hit) and only
- * navigates — no mutations, no new data flow. Queries run when first opened. */
+/** Global ⌘K palette — read-only and additive: reuses the app-wide ["pieces"]/["studio-jobs"] cache keys (same as the pages) and only navigates, no mutations. */
 export default function CommandPalette({
   open,
   onOpenChange,
@@ -155,7 +153,7 @@ export default function CommandPalette({
               key={j.id}
               value={`job-${j.id}`}
               keywords={[j.metadata?.title ?? "", j.metadata?.composer ?? "", j.pieceId, j.status].filter(Boolean)}
-              // Drafts open in the wizard, mirroring the board's row behavior.
+              // Drafts open in the wizard editor — mirrors the board's row click behavior.
               onSelect={() => go(j.status === "draft" ? `/studio/${j.id}/edit` : `/studio/${j.id}`)}
             >
               <span className="min-w-0 flex-1 truncate">

@@ -17,8 +17,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui-kit/alert-dialog";
 
-// The panel is deliberately sectioned: Notes-phase sections (subscription/entitlements,
-// lessons, teacher-student links) slot in as new <Section>s without reshaping this file.
+// Deliberately sectioned — new Notes-phase sections should slot in as additional <Section>s, not reshape this file.
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -74,8 +73,7 @@ function RoleToggle({
   );
 }
 
-// The two transcript-access rejections arrive as bare code slugs — map them to
-// human messages (all other role-patch errors ship a server message).
+// Only these two codes arrive as bare slugs — every other role-patch error ships a server message.
 function roleErrorMessage(e: Error): string {
   if (e instanceof ApiError && e.code === "transcript_grant_forbidden")
     return "Only an existing transcript-access holder can change this.";
@@ -93,9 +91,7 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
     queryFn: () => api(`/admin/users/${userId}`),
   });
 
-  // The server refuses to leave an account with neither capability until the patch
-  // is re-sent with force — that account renders a healthy home where every write
-  // 403s, so the refusal is held, not styled away.
+  // Server requires an explicit force re-send before leaving an account with no role — the refusal is held, not styled away.
   const [confirmNoRole, setConfirmNoRole] = useState<RolePatch | null>(null);
 
   const roles = useMutation<AdminUser, Error, RolePatch>({
@@ -189,8 +185,6 @@ export default function UserPanel({ userId, onClose }: { userId: string; onClose
                 disabled={roles.isPending}
                 onChange={(v) => roles.mutate({ isStudent: v })}
               />
-              {/* Capability, not a role — set apart below the three role toggles.
-                  Server enforces both rules; the self-disable mirrors the admin toggle. */}
               <div className="mt-3 pt-3 border-t border-line">
                 <RoleToggle
                   label="Transcript access"

@@ -48,8 +48,7 @@ export default function FilterBar({
   const live = state.range != null;
   const urlText = state.filters.text ?? "";
   const [textDraft, setTextDraft] = useState(urlText);
-  // Distinguish our own debounced push (echoed back via the URL) from an external
-  // change (saved view, tab switch) — only the latter may overwrite mid-typing input.
+  // pushed distinguishes our own debounced echo (via the URL) from an external change — only the latter may overwrite mid-typing input.
   const pushed = useRef(urlText);
   useEffect(() => {
     if (urlText !== pushed.current) {
@@ -166,7 +165,6 @@ function CustomRange({
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
-  // Seed the inputs from the current effective window each time the popover opens.
   useEffect(() => {
     if (!open) return;
     const w = resolveWindow(state);

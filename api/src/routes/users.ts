@@ -22,13 +22,10 @@ import {
 import { notesAccess } from "../notes/entitlement";
 import { narrationPrefix } from "../notes/narration";
 
-// Where a role grant came from. Anything else (including a client that sends
-// nothing) records as a sign-up, which is what the audit trail assumed before the
-// field existed.
 const ROLE_GRANT_ORIGINS = ["signup", "setup"] as const;
 type RoleGrantOrigin = (typeof ROLE_GRANT_ORIGINS)[number];
 
-// Which recording notice an acceptance is for. Matches NotesConsent.Kind on the app.
+// Matches NotesConsent.Kind on the app.
 const CONSENT_KINDS = ["teacher", "solo"] as const;
 type ConsentKind = (typeof CONSENT_KINDS)[number];
 
@@ -36,8 +33,6 @@ function roleGrantOrigin(via: unknown): RoleGrantOrigin {
   return ROLE_GRANT_ORIGINS.includes(via as RoleGrantOrigin) ? (via as RoleGrantOrigin) : "signup";
 }
 
-// What the person said about their own age when they signed up. Two values, because
-// the only thing the answer decides is whether the account is parent-managed.
 const AGE_BRACKETS = ["over_13", "under_13"] as const;
 type AgeBracket = (typeof AGE_BRACKETS)[number];
 
@@ -45,10 +40,7 @@ function ageBracket(value: unknown): AgeBracket | null {
   return AGE_BRACKETS.includes(value as AgeBracket) ? (value as AgeBracket) : null;
 }
 
-// Removes the deleted account's directory identity, and stamps the tombstone only when
-// Graph actually said it is gone. Returns what the caller may print: true ONLY after a
-// Graph call answered. Never throws — the platform data is already destroyed, and the
-// oid held on the tombstone is what makes an unfinished attempt findable and retryable.
+// Never throws (callers rely on this); return value is true ONLY after a Graph call actually answered.
 async function deleteCiamIdentity(
   deps: Deps,
   req: Request,
@@ -81,8 +73,7 @@ async function deleteCiamIdentity(
       .set({ ciamDeletedAt: sql`now()`, updatedAt: sql`now()` })
       .where(eq(users.id, args.userId));
   } catch {
-    // Graph answered; the identity IS gone and the caller may say so. An unstamped row is
-    // findable by the runbook query and self-heals on any retry, which Graph answers 404.
+    // Stamp failure is safe: an unstamped row self-heals via Graph 404 on the next retry.
     console.log(JSON.stringify({ kind: "ciam_delete_stamp_failed", userId: args.userId, reqId }));
   }
   return true;
@@ -103,12 +94,7 @@ export function usersRouter(deps: Deps): Router {
       const email = claims.email ?? null;
       const displayName = claims.name ?? null;
 
-      // BEFORE the upsert, or the upsert IS the resurrection. entra_oid was released at
-      // deletion so this token no longer matches any account; ciam_oid_at_delete is the
-      // only remaining witness that it belonged to one. A directory identity that still
-      // exists (the Graph delete has not been confirmed) gets one more attempt here —
-      // the person is holding a token that should not exist, which is the strongest
-      // evidence the earlier attempt did not land — but the answer is 410 either way.
+      // Must run BEFORE the upsert, or the upsert resurrects this tombstoned account (entra_oid was released at deletion).
       const [tombstone] = await deps.db.orm
         .select({ id: users.id, ciamDeletedAt: users.ciamDeletedAt })
         .from(users)
@@ -137,13 +123,7 @@ export function usersRouter(deps: Deps): Router {
         .returning();
       const row = upserted[0]!;
 
-      // Role capabilities are grow-only AND first-only: the app may name a role for
-      // an account that has NONE (sign-up, or the setup screen repairing a role-less
-      // row) and never afterwards. isTeacher is permanent, admin-only to revoke, and
-      // short-circuits entitlements to teacher_free — a client that can add it to an
-      // existing account is a self-service paywall bypass. A stale role on a
-      // returning user is a silent no-op, never an error: sync is an idempotent
-      // upsert the app calls on every launch, and the response carries the truth.
+      // Role grant is roleless-accounts-only — allowing it on an existing account is a self-service teacher_free paywall bypass.
       const body = req.body ?? {};
       const patch: Record<string, unknown> = {};
       const roleless = !row.isTeacher && !row.isStudent;
@@ -155,12 +135,7 @@ export function usersRouter(deps: Deps): Router {
         patch.isStudent = true;
         if (!row.trialStartedAt) patch.trialStartedAt = sql`now()`;
       }
-      // Each recording notice is its own promise and its own timestamp: accepting the
-      // solo notice must never satisfy the teacher gate, which is the one carrying the
-      // responsibility-to-inform language. consentKind NAMES the notice; an acceptance
-      // that does not name one (the pre-split shape, or an unrecognized kind) stamps
-      // only the legacy column and satisfies NEITHER gate — re-asking is the sole
-      // fail-closed answer to "which notice was this?". Each stamp is write-once.
+      // Solo consent must never satisfy the teacher gate — an unnamed/unrecognized consentKind stamps only the legacy column, satisfying neither.
       const accepted = body.notesConsent === true;
       const consentKind = CONSENT_KINDS.includes(body.consentKind as ConsentKind)
         ? (body.consentKind as ConsentKind)
@@ -168,15 +143,9 @@ export function usersRouter(deps: Deps): Router {
       if (accepted && !row.notesConsentAt) patch.notesConsentAt = sql`now()`;
       if (accepted && consentKind === "solo" && !row.soloConsentAt) patch.soloConsentAt = sql`now()`;
       if (accepted && consentKind === "teacher" && !row.teacherConsentAt) patch.teacherConsentAt = sql`now()`;
-      // Optional studio/school from teacher sign-up. Write-once: sign-up sets it,
-      // nothing overwrites it (admin-only surface in beta — "Not shown publicly").
       if (typeof body.organization === "string" && body.organization.trim() && !row.organization) {
         patch.organization = body.organization.trim().slice(0, 200);
       }
-      // The age question is asked once, on the screen that also names the role, so it
-      // is accepted only on the sync that grants one — the same write-once contract as
-      // the role itself. A later sync carrying a different answer changes nothing, and
-      // an account that never answered stays NULL rather than being guessed at.
       const attestedAge = grantedRole ? ageBracket(body.ageBracket) : null;
       if (attestedAge && !row.ageBracket) {
         patch.ageBracket = attestedAge;
@@ -213,35 +182,20 @@ export function usersRouter(deps: Deps): Router {
         .from(notes)
         .where(and(eq(notes.studentId, user.id), eq(notes.status, "sent"), isNull(notes.readAt)));
 
-      // canRecord lets the app warn a lapsed student BEFORE they record two hours
-      // of audio (the hard 402 still lives at lesson create/submit). needsRole is
-      // derived on every read, never stored — an account with neither capability
-      // can record nothing and connect with nobody, and must be told so by name.
+      // canRecord is an early warning only — the actual enforcement is the 402 at lesson create/submit, not this flag.
       res.status(200).json({
         ...user,
         access,
         canRecord: access.status !== "lapsed",
         unreadNotes: unread?.count ?? 0,
         needsRole: !user.isTeacher && !user.isStudent,
-        // Mirrors PASSWORD_SIGNIN_ENABLED. The app gates the set-a-password card and the Settings
-        // row on it, so it must stay false until FG-3 step 2 has actually rebound the user flow.
+        // Mirrors PASSWORD_SIGNIN_ENABLED — the app gates the set-a-password UI on this staying false until sign-in is rebound.
         features: { passwordSignIn: process.env.PASSWORD_SIGNIN_ENABLED === "true" },
       });
     }),
   );
 
-  // Apple 5.1.1(v): in-app account deletion. Full erase, not deactivation. The row
-  // survives as a PII-scrubbed tombstone so notes ALREADY DELIVERED to the other
-  // party keep their FK integrity (a student's received notes are their record; a
-  // teacher's sent notes stay with their students). Everything private to the
-  // deleting user is destroyed here; the raw lesson audio blob is purged now, not
-  // left to the 90-day lifecycle.
-  //
-  // ORDER, LOAD-BEARING: platform data first, directory identity last. The directory
-  // delete is the only step that cannot be retried from the outside — it needs a token
-  // this person is about to lose — so it must run when the tombstone that names its
-  // oid already exists. Reversed, a Graph success followed by a failed purge would
-  // leave data belonging to someone who can no longer authenticate to ask again.
+  // ORDER LOAD-BEARING: platform purge before CIAM identity delete, or a failed purge could orphan data nobody can authenticate to retry.
   router.delete(
     "/v1/me",
     requireAuth(deps.auth),
@@ -250,9 +204,7 @@ export function usersRouter(deps: Deps): Router {
       const db = deps.db!.orm;
       const me = req.notesUser!;
 
-      // Collect this user's own lesson audio AND transcript derivatives to purge
-      // from blob after the tx commits — transcripts live in the durable container
-      // (no lifecycle rule), so "full erase" must delete them explicitly.
+      // Transcripts live in the durable container with no lifecycle rule — must be purged explicitly or they persist forever.
       const myLessons = await db
         .select({ id: lessonSessions.id, audioPath: lessonSessions.audioPath })
         .from(lessonSessions)
@@ -269,11 +221,9 @@ export function usersRouter(deps: Deps): Router {
         .flatMap((j) => [j.transcriptPath, j.modelOutputPath])
         .filter((p): p is string => !!p);
 
-      // Narration follows the note row: purged for the copies destroyed below, kept
-      // for the SENT notes that stay with their students.
+      // Narration is purged only for purgedNoteIds — sent notes (and their narration) must survive with the student.
       let ciamOid: string | null = null;
       const purgedNoteIds = await db.transaction(async (tx) => {
-        // End every relationship on both sides.
         await tx
           .update(teacherStudentLinks)
           .set({ status: "removed", removedAt: sql`now()`, updatedAt: sql`now()` })
@@ -281,8 +231,7 @@ export function usersRouter(deps: Deps): Router {
             sql`(${teacherStudentLinks.teacherId} = ${me.id} OR ${teacherStudentLinks.studentId} = ${me.id})`,
             eq(teacherStudentLinks.status, "active"),
           ));
-        // Labels name other people — often children who never signed up. They cannot
-        // outlive the account that wrote them.
+        // intendedLabel often names a child who never signed up — must not outlive the account that wrote it.
         await tx.update(invites).set({ revokedAt: sql`now()`, intendedLabel: null })
           .where(and(eq(invites.teacherId, me.id), isNull(invites.revokedAt)));
         await tx.update(invites).set({ intendedLabel: null })
@@ -291,7 +240,6 @@ export function usersRouter(deps: Deps): Router {
             sql`${invites.intendedLabel} IS NOT NULL`,
           ));
 
-        // As STUDENT: the received-note copies are the student's data — delete them.
         const received = await tx.select({ id: notes.id }).from(notes).where(eq(notes.studentId, me.id));
         const receivedIds = received.map((n) => n.id);
         if (receivedIds.length) {
@@ -299,8 +247,7 @@ export function usersRouter(deps: Deps): Router {
           await tx.delete(notes).where(inArray(notes.id, receivedIds));
         }
 
-        // As TEACHER: destroy DRAFT notes (never delivered); SENT notes stay with
-        // their students, attribution collapsing to this tombstone row.
+        // SENT notes must NOT be deleted here — they stay with their students, attributed to this tombstone row.
         const drafts = await tx
           .select({ id: notes.id })
           .from(notes)
@@ -310,10 +257,7 @@ export function usersRouter(deps: Deps): Router {
           await tx.delete(noteAnnotations).where(inArray(noteAnnotations.noteId, draftIds));
           await tx.delete(notes).where(inArray(notes.id, draftIds));
         }
-        // Lessons + their jobs are the recorder's private capture — remove entirely.
-        // Surviving SENT notes to other students still reference them: detach those
-        // refs first (the tombstone contract — the note outlives its provenance) or
-        // the NO ACTION FKs abort the whole transaction with a 500.
+        // Must null notes.lessonSessionId/noteJobId before deleting lessons/jobs — NO ACTION FKs abort the whole tx otherwise.
         const lessonIds = myLessons.map((l) => l.id);
         if (lessonIds.length) {
           await tx
@@ -323,17 +267,13 @@ export function usersRouter(deps: Deps): Router {
           await tx.delete(noteJobs).where(inArray(noteJobs.lessonSessionId, lessonIds));
           await tx.delete(lessonSessions).where(inArray(lessonSessions.id, lessonIds));
         }
-        // The teacher's private piece vocabulary dies with them. The ON DELETE SET NULL
-        // references null custom_piece_id on the sent notes that survive; piece_label —
-        // the only thing a student screen renders — is untouched.
+        // custom_piece_id is ON DELETE SET NULL on surviving notes — piece_label (what students see) is a separate column, untouched.
         await deleteCustomPiecesOf(tx, me.id);
 
         await tx.delete(devices).where(eq(devices.userId, me.id));
         await tx.delete(entitlements).where(eq(entitlements.userId, me.id));
 
-        // Scrub PII, release the entra_oid, mark deleted. The oid moves in the same
-        // statement that releases it — the right-hand side reads the pre-update row, so
-        // there is no window in which the account is deleted and unrecognizable.
+        // entraOid must move to ciamOidAtDelete in this same statement — the RHS reads the pre-update row, closing the race window.
         const [tombstoned] = await tx
           .update(users)
           .set({
@@ -358,10 +298,7 @@ export function usersRouter(deps: Deps): Router {
       });
 
       await userAudit(deps, req, "account.delete", { type: "user", id: me.id });
-      // The delete sheet tells the person their audio and transcripts are destroyed, so a purge that
-      // fails may not vanish into a console line: each blob gets three attempts, and a survivor is
-      // reported as ONE structured event Ops can query and alert on. Transcripts matter most — the
-      // durable container has no lifecycle rule, so a missed one persists indefinitely.
+      // Purge failures must surface as an alertable structured event, never a swallowed error — the delete sheet promises this is destroyed.
       const purge = async (label: string, key: string, act: () => Promise<unknown>) => {
         for (let attempt = 1; attempt <= 3; attempt++) {
           try {
@@ -393,8 +330,7 @@ export function usersRouter(deps: Deps): Router {
           await purge("narration", noteId, () => deps.notesAssets!.deletePrefix(narrationPrefix(noteId)));
         }
       }
-      // identityDeleted is the sheet's authority for a sentence about the sign-in
-      // service. It is false whenever no Graph call answered — unconfigured included.
+      // identityDeleted drives the delete-sheet's sign-in-service sentence — false whenever Graph never answered, unconfigured included.
       const identityDeleted = await deleteCiamIdentity(deps, req, { userId: me.id, oid: ciamOid });
       res.json({ ok: true, identityDeleted });
     }),

@@ -39,11 +39,7 @@ export function GateDots({ job }: { job: StudioJob }) {
 
 type Stage = "all" | "draft" | "verifying" | "review" | "published" | "failed" | "canceled";
 
-// The board filter IS the pipeline: Draft → Verifying → Review → Published, with
-// Failed and Canceled as off-ramp chips. The buckets are a strict PARTITION (a
-// check-failed draft counts as Failed, not Draft) so counts never double-count.
-// All EXCLUDES discarded builds — they are dead ends, not work in progress;
-// the Canceled chip is the one place that shows them (Reopen lives there).
+// Buckets must stay a strict partition — a check-failed draft counts as Failed only, never Draft, so counts never double-count.
 function inStage(j: StudioJob, stage: Stage): boolean {
   switch (stage) {
     case "draft":

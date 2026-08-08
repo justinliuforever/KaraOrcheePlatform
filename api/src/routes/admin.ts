@@ -24,16 +24,13 @@ const workSchema = z.object({
   sortIndex: z.number().int().nullable().optional(),
 });
 
-// Work slug per the locked grammar: {composer-surname}_{catalogue} when catalogued,
-// else surname + title tokens.
 function workSlugFor(composer: string, title: string, catalogue: string | null | undefined): string {
   const surname = slugify(composer).split("_").pop() ?? "work";
   const tail = catalogue ? normalizeCatalogue(catalogue) : slugify(title).split("_").slice(0, 4).join("_");
   return `${surname}_${tail}`.slice(0, 64).replace(/_+$/, "");
 }
 
-// Registry-owned edits: display/catalog fields only. Anything baked into the bundle
-// (score files) must go through the studio as a new version — never patched here.
+// Registry-owned edits only — bundle content (score files) must go through the studio as a new version, never patched here.
 const pieceEditSchema = z
   .object({
     title: z.string().min(1).max(200).optional(),
@@ -45,29 +42,21 @@ const pieceEditSchema = z
     bookIndex: z.number().int().min(0).nullable().optional(),
     rights: z.enum(["public_domain", "licensed", "unknown", "blocked"]).optional(),
     rightsNote: z.string().max(2000).nullable().optional(),
-    // Work membership is catalog metadata (like book membership) — editable here,
-    // no re-upload needed. Content changes are what require a new version.
     workId: z.string().regex(/^[a-z0-9][a-z0-9_]{2,63}$/).nullable().optional(),
     workIndex: z.number().int().min(0).nullable().optional(),
-    // Same work + same movement + same instrument is usually a duplicate; the editor
-    // must explicitly confirm to override (arrangements legitimately share numbers).
     confirmMovementClash: z.boolean().optional(),
-    // Optimistic-concurrency token: the updated_at the editor loaded. A stale token
-    // means another admin changed the row since — reject instead of clobbering.
     expectedUpdatedAt: z.string().optional(),
   })
   .refine((v) => Object.values(v).some((x) => x !== undefined), { message: "no fields given" });
 
-// Post-creation edits: display/catalog fields only. The id is permanent — it names
-// the cover blobs and every piece reference; the cover has its own endpoint.
+// Post-creation edits: display/catalog fields only — id is permanent, it names the cover blobs and every piece reference.
 const bookEditSchema = z
   .object({
     title: z.string().min(1).max(200).optional(),
     author: z.string().max(120).nullable().optional(),
     publisher: z.string().max(120).nullable().optional(),
     edition: z.string().max(120).nullable().optional(),
-    // Authored total per the printed edition (98 for Czerny 599) — NOT the number
-    // of attached rows; the app's "No. n of M" denominator.
+    // Authored total per the printed edition (e.g. 98 for Czerny 599) — NOT attached-row count; feeds the app's "No. n of M".
     pieceCount: z.number().int().min(1).max(9999).nullable().optional(),
     description: z.string().max(4000).nullable().optional(),
     rights: z.enum(["public_domain", "licensed", "unknown", "blocked"]).optional(),
@@ -90,8 +79,6 @@ const numberingSchema = z.object({
 
 const mergeSchema = z.object({
   targetWorkId: z.string().min(1),
-  // Same escape hatch as the piece editor: colliding movement numbers are usually
-  // a duplicate, but arrangements legitimately share them.
   confirmMovementClash: z.boolean().optional(),
 });
 
@@ -100,8 +87,6 @@ const coverUpload = multer({
   limits: { fileSize: 15 * 1024 * 1024, files: 1 },
 });
 
-// Only explicit role flags are patchable here; identity/status changes get their
-// own endpoints when account-deletion lands in Phase B.
 const rolesSchema = z
   .object({
     isAdmin: z.boolean().optional(),
@@ -116,8 +101,7 @@ const rolesSchema = z
     message: "no role fields given",
   });
 
-// id is server-derived from the title; covers are mandatory at creation (the app's
-// bookshelf has no empty-cover state).
+// id is server-derived from the title; cover is mandatory at creation — the app bookshelf has no empty-cover state.
 const bookSchema = z.object({
   title: z.string().min(1).max(200),
   author: z.string().max(120).optional(),
@@ -132,8 +116,6 @@ export function adminRouter(deps: Deps): Router {
   const router = Router();
   router.use("/admin", requireAuth(deps.auth), requireAdmin(deps));
 
-  // Every audit list ships the actor's email — "what happened" without "who did
-  // it" is half an audit trail.
   const auditWithActor = (db: NonNullable<Deps["db"]>["orm"]) =>
     db
       .select({
@@ -165,9 +147,7 @@ export function adminRouter(deps: Deps): Router {
       const search = q
         ? or(ilike(users.email, `%${q}%`), ilike(users.displayName, `%${q}%`), ilike(users.organization, `%${q}%`))
         : undefined;
-      // needs_setup = the bricked state: active, no admin console, and neither
-      // capability. The count must be watched for INCREASE — it is never zero
-      // (admin@karaorchee.com is deliberately role-less).
+      // needs_setup is never zero — admin@karaorchee.com is deliberately role-less; watch this count for INCREASE, not for zero.
       const needsSetup = req.query.role === "needs_setup"
         ? and(
             eq(users.status, "active"),
@@ -242,7 +222,7 @@ export function adminRouter(deps: Deps): Router {
         res.status(404).json({ error: "not_found" });
         return;
       }
-      // Admin actions ABOUT this user (role changes, future comps/disables) — not actions BY them.
+      // Admin actions ABOUT this user (role changes) — not actions BY them.
       const recentAudit = await auditWithActor(db)
         .where(and(eq(auditEvents.subjectType, "user"), eq(auditEvents.subjectId, id)))
         .orderBy(desc(auditEvents.createdAt))
@@ -271,9 +251,7 @@ export function adminRouter(deps: Deps): Router {
         res.status(409).json({ error: "cannot_demote_self" });
         return;
       }
-      // Transcript access guards minors' lesson content: only an existing holder
-      // may change it, and never on their own row (no self-grant path — the UI is
-      // curl-bypassable, so this lives server-side).
+      // Transcript access is never self-granted and requires an existing holder — enforced server-side because the UI is curl-bypassable.
       if (parsed.data.canViewTranscripts !== undefined &&
           parsed.data.canViewTranscripts !== target.canViewTranscripts) {
         if (!req.adminUser!.canViewTranscripts) {
@@ -285,8 +263,6 @@ export function adminRouter(deps: Deps): Router {
           return;
         }
       }
-      // Two of the three bricked accounts in dev were made here: both switches off
-      // leaves an account that renders a healthy home where every write 403s.
       const { force, ...changes } = parsed.data;
       const nextTeacher = changes.isTeacher ?? target.isTeacher;
       const nextStudent = changes.isStudent ?? target.isStudent;
@@ -300,8 +276,7 @@ export function adminRouter(deps: Deps): Router {
         });
         return;
       }
-      // An admin-granted student role starts the trial clock; a null clock
-      // re-anchors to now() on every read, which is an infinite trial.
+      // Granting isStudent must set trialStartedAt — a null clock re-anchors to now() on every read, i.e. an infinite trial.
       const trialPatch = changes.isStudent === true && !target.trialStartedAt
         ? { trialStartedAt: sql`now()` }
         : {};
@@ -366,8 +341,7 @@ export function adminRouter(deps: Deps): Router {
       const db = deps.db!.orm;
       const w = parsed.data;
       w.composer = await canonicalComposer(db, w.composer);
-      // Dup check: normalized catalogue within composer — the check that stops a bulk
-      // upload fragmenting one sonata into three works.
+      // Dup check: normalized catalogue within composer — stops a bulk upload from fragmenting one sonata into three works.
       if (w.catalogue) {
         const norm = normalizeCatalogue(w.catalogue);
         const siblings = await db
@@ -485,9 +459,6 @@ export function adminRouter(deps: Deps): Router {
     }),
   );
 
-  // Absorb a duplicate work into the canonical one: every piece moves over with its
-  // movement number unchanged, then the emptied duplicate is deleted — one atomic
-  // operation instead of N per-piece re-attaches plus a manual delete.
   router.post(
     "/admin/works/:id/merge",
     wrap(async (req, res) => {
@@ -595,8 +566,7 @@ export function adminRouter(deps: Deps): Router {
         res.status(404).json({ error: "not_found" });
         return;
       }
-      // The book's table of contents, ordered the way the app's bookshelf renders
-      // it (numbered first, unnumbered trailing).
+      // Ordered to match the app bookshelf: numbered pieces first, unnumbered trailing.
       const items = await db
         .select({
           id: pieces.id,
@@ -678,8 +648,7 @@ export function adminRouter(deps: Deps): Router {
     }),
   );
 
-  // Bulk renumber: the FINAL state of the whole book is validated before anything
-  // is written, so swaps (3↔7) can't trip a per-piece clash guard halfway through.
+  // Numbering is validated as the book's FINAL state before any write, so a 3↔7 swap can't trip a per-piece clash guard mid-way.
   router.put(
     "/admin/books/:id/numbering",
     wrap(async (req, res) => {
@@ -843,9 +812,7 @@ export function adminRouter(deps: Deps): Router {
         .set({ coverPath, updatedAt: sql`now()` })
         .where(eq(books.id, id))
         .returning();
-      // A previously coverless book (created implicitly at publish) just became
-      // presentable — its catalog entry gains cover_url. Same-path replacements
-      // need no rebuild: the emitted URL is unchanged and signed per request.
+      // Rebuild only if the book had no cover before — same-path replacement needs none (URL is unchanged, signed per request).
       if (!book.coverPath && deps.studio) await rebuildCatalog(db, deps.studio);
       await audit(deps, req, "book.set_cover", { type: "book", id });
       res.json({ ...row, ...signCover(coverPath) });
@@ -884,8 +851,7 @@ export function adminRouter(deps: Deps): Router {
       }
       const finalRights = p.rights ?? piece.rights;
       const finalNote = p.rightsNote === undefined ? piece.rightsNote : p.rightsNote;
-      // Takedown goes through Archive (fast, explicit) — a published piece can't
-      // quietly hold non-publishable rights.
+      // A published piece can't hold unknown/blocked rights — takedown must go through Archive first.
       if (piece.status === "published" && (finalRights === "unknown" || finalRights === "blocked")) {
         res.status(409).json({
           error: "archive_first",
@@ -900,8 +866,7 @@ export function adminRouter(deps: Deps): Router {
         });
         return;
       }
-      // Work membership: clearing the work clears the movement number with it; a
-      // movement number without a work is meaningless.
+      // Clearing the work clears its movement number too — a movement number without a work is meaningless.
       const finalWorkId = p.workId === undefined ? piece.workId : p.workId;
       const finalWorkIndex =
         finalWorkId == null ? null : p.workIndex === undefined ? piece.workIndex : p.workIndex;
@@ -939,8 +904,7 @@ export function adminRouter(deps: Deps): Router {
         }
       }
 
-      // Same rule as works: detaching the book clears its number — otherwise the
-      // stale number silently re-applies on the next attach.
+      // Detaching the book clears its number too — otherwise a stale number silently reapplies on the next attach.
       const finalBookId = p.bookId === undefined ? piece.bookId : p.bookId;
       const finalIndex =
         finalBookId == null ? null : p.bookIndex === undefined ? piece.bookIndex : p.bookIndex;
@@ -1002,8 +966,6 @@ export function adminRouter(deps: Deps): Router {
     }),
   );
 
-  // Plain archive, or a one-step TAKEDOWN when a rights concern is given: removed
-  // from the app catalog + rights flagged + reason recorded, atomically.
   router.post(
     "/admin/pieces/:id/archive",
     wrap(async (req, res) => {
@@ -1116,9 +1078,6 @@ export function adminRouter(deps: Deps): Router {
         ? { ...book, ...signCover(book.coverPath) }
         : null;
 
-      // Work membership context: the work row plus every sibling in the same work,
-      // so the reviewer sees the whole composition at a glance (missing movements,
-      // other-instrument arrangements) without leaving the panel.
       const work = piece.workId
         ? (await db.select().from(works).where(eq(works.id, piece.workId)).limit(1))[0] ?? null
         : null;
@@ -1138,7 +1097,6 @@ export function adminRouter(deps: Deps): Router {
             .orderBy(asc(pieces.workIndex), asc(pieces.id))
         : [];
 
-      // Build history for this piece id (any outcome) — newest first.
       const jobs = await db
         .select({
           id: studioJobs.id,
@@ -1154,9 +1112,7 @@ export function adminRouter(deps: Deps): Router {
         .orderBy(desc(studioJobs.createdAt))
         .limit(20);
 
-      // Original sources, both generations: studio uploads live at
-      // staging/<jobId>/ (tracked on the job row, with original filenames); the
-      // pre-studio launch pieces were archived at <pieceId>/ in piece-sources.
+      // Two source locations: studio uploads under staging/<jobId>/ (job row); pre-studio pieces archived under <pieceId>/ in piece-sources.
       const sources: { path: string; bytes: number; url: string | null; kind?: string; originalName?: string; origin: string }[] = [];
       if (deps.studio) {
         const latestWithSources = (
@@ -1198,9 +1154,7 @@ export function adminRouter(deps: Deps): Router {
         .orderBy(desc(auditEvents.createdAt))
         .limit(20);
 
-      // Preview audio never ships in published bundles (the app synthesizes locally
-      // from the same score data) — but the latest build's staged render is the exact
-      // sound reviewers approved, so surface it for spot-checks while it exists.
+      // Preview audio isn't in published bundles (app synthesizes locally) — surfaced here only so reviewers can spot-check the exact build they approved.
       let previewAudio: { url: string; jobId: string; renderedAt: string } | null = null;
       if (deps.studio) {
         const recentJobs = await db

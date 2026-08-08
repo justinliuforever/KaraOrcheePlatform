@@ -37,8 +37,7 @@ import {
 export default function OpsPage() {
   const [params, setParams] = useSearchParams();
   const state = useMemo(() => parseOpsState(params), [params]);
-  // notes-jobs is a self-contained lane, not an OpsState view — read it off the raw
-  // param so the OpsState machine stays untouched (it has no time-range/severity here).
+  // notes-jobs is a self-contained lane, not an OpsState view — read straight off params.
   const isNotesJobs = params.get("view") === "notes-jobs";
   const activeTab = isNotesJobs ? "notes-jobs" : state.view;
 
@@ -93,8 +92,7 @@ function LogsView({
 
   const selRaw = params.get("sel");
   const sel = selRaw != null && /^\d+$/.test(selRaw) ? Number(selRaw) : null;
-  // Timeline overlay: tl=1 rides on the reqId filter param, so the deep link
-  // carries reqId= and the table underneath shows that request's raw rows.
+  // Timeline overlay: tl=1 rides on the reqId filter param — the two travel together.
   const timelineReqId = params.get("tl") === "1" ? state.filters.reqId ?? null : null;
   const drawerOpen = sel != null || timelineReqId != null;
 
@@ -103,8 +101,7 @@ function LogsView({
 
   const logsQ = useQuery<OpsLogsResponse, Error>({
     queryKey: ["ops-logs", qs],
-    // toApiFilters resolves a live range's from/to at fetch time, so every
-    // refetch of the same key slides the window to "now".
+    // toApiFilters resolves a live range's from/to at fetch time, sliding the window to "now".
     queryFn: ({ signal }) => getOpsLogs(toApiFilters(state), { signal }),
     staleTime: 0,
     retry: false,
@@ -141,18 +138,16 @@ function LogsView({
     (key: FilterKey, value: string | null) =>
       update((p) => {
         if (value) p.set(key, value);
-        // Clearing severity on the Errors tab must beat the tab's seed default,
-        // so it becomes an explicit empty param instead of disappearing.
+        // Must beat the Errors tab's seed default — set explicit empty rather than delete.
         else if (key === "severity" && state.view === "errors") p.set(key, "");
         else p.delete(key);
         if (key === "reqId" && !value) p.delete("tl");
-        p.delete("sel"); // row indexes shift under a new filter
+        p.delete("sel");  // row indexes shift under a new filter
       }),
     [update, state.view],
   );
 
-  // Push the raw value: trimming here would fight the input's echo-sync while
-  // the operator is mid-word ("bach " would snap back before "bach x").
+  // Push the raw value — trimming here fights the input's echo-sync mid-word.
   const onText = useCallback(
     (text: string) =>
       update((p) => {
@@ -204,7 +199,6 @@ function LogsView({
     void facetsQ.refetch();
   };
 
-  // Slow-query affordance: after 5s of fetching, show elapsed time + Cancel.
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     if (!logsQ.isFetching) {
@@ -356,8 +350,7 @@ function OpsQueryError({ error, onHalve }: { error: Error; onHalve: () => void }
   return <ErrorNote message={error.message} />;
 }
 
-// First-load placeholder only; refetches dim the existing table instead so
-// rows never blank out mid-investigation.
+// First-load placeholder only — refetches dim the existing table instead of using this.
 function SkeletonTable() {
   return (
     <Card className="min-w-0 flex-1 gap-0 overflow-hidden p-0">

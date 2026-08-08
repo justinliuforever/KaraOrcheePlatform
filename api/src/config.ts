@@ -10,9 +10,7 @@ export interface Config {
   apns: ApnsConfig | null;
   adminOrigins: string[];
   logAnalyticsWorkspaceId: string | null;
-  // Repeat-structure pieces build and review fine, but the shipped app still assumes
-  // one measure = one playback time; publishing them stays blocked until the app-side
-  // repeat capability lands and this flag flips.
+  // Blocks publishing repeat-structure pieces until the app-side repeat capability lands.
   appSupportsRepeats: boolean;
 }
 
@@ -34,9 +32,7 @@ const envSchema = z.object({
   APNS_ENVIRONMENT: z.enum(["sandbox", "production"]).default("production"),
 });
 
-// The .p8 arrives through a shell, a JSON ARM payload and a container env var, and each
-// of those hops mangles a different thing about a multi-line PEM. Base64 is the shape
-// that survives all three; the literal forms are accepted so a hand-set value still works.
+// Base64 survives the shell/ARM/env-var hops that each mangle a literal multi-line PEM.
 export function normalizePrivateKey(raw: string): string {
   const trimmed = raw.trim();
   if (trimmed.includes("BEGIN PRIVATE KEY")) return trimmed.replace(/\\n/g, "\n");
@@ -79,8 +75,7 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env):
     };
   }
 
-  // Same all-or-nothing rule as auth: a half-set APNs group is a deployment mistake and
-  // says so at boot. Wholly unset is a supported state — no key, no pushes, sends unaffected.
+  // Same all-or-nothing rule as auth, but wholly unset is a supported no-pushes state.
   const apnsVars = {
     APNS_KEY_ID: e.APNS_KEY_ID,
     APNS_TEAM_ID: e.APNS_TEAM_ID,

@@ -18,16 +18,13 @@ import {
 } from "../db/schema";
 import type { Db } from "../db/client";
 
-// No ambiguous chars (Crockford base32 minus vowel-lookalikes) — codes get read
-// aloud across a piano.
+// No ambiguous chars (Crockford base32 minus vowel-lookalikes) — codes get read aloud across a piano.
 const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CODE_LENGTH = 6;
 const INVITE_DAYS = 7;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Containment is per ACCOUNT, not per IP: rotating IPs is free, rotating CIAM
-// accounts is not. Only unknown-code failures count toward the lock — own-code and
-// wrong-direction attempts are users who did nothing wrong.
+// Per-account, not per-IP (IP rotation is free); only invalid-code failures count toward the lock.
 const REDEEM_FAIL_THRESHOLD = 5;
 const REDEEM_WINDOW_MIN = 10;
 const REDEEM_WINDOW_MAX_MIN = 60;
@@ -35,19 +32,14 @@ const REDEEM_WINDOW_MAX_MIN = 60;
 const DIRECTIONS = ["teacher_to_student", "student_to_teacher"] as const;
 type Direction = (typeof DIRECTIONS)[number];
 
-// A teacher onboarding a studio holds several codes at once, one per named seat.
-// The ceiling is what keeps the roster's seats section from outgrowing the roster.
+// Ceiling keeps the roster's seats section from outgrowing the roster — one code per named seat.
 const MAX_LIVE_CODES = 10;
 const MAX_LABEL_LENGTH = 40;
 
-// A code that predates the departure is a DIFFERENT refusal from an unknown code:
-// the characters are right and re-typing them can never work. It gets its own code
-// and sentence, and (like own-code/consent failures) never counts toward the lock.
+// Separate refusal from invalid_code — re-typing the right characters can never work, and it must never count toward the lock.
 const STALE_CODE_MESSAGE = "That code was made before your connection ended. Ask for a new one.";
 
-// Thrown, never returned: drizzle COMMITs a transaction whose callback returns
-// normally, so a refusal returned from inside redeem would keep the use-count claim
-// and burn a single-use code. Only a throw rolls the claim back.
+// Must be thrown, never returned — drizzle commits a callback that returns normally, burning the code's use-count claim.
 class RedeemRefusal extends Error {
   constructor(readonly kind: "invalid" | "stale" | "already") {
     super(kind);
@@ -71,10 +63,7 @@ function isUuid(v: unknown): v is string {
   return typeof v === "string" && UUID_RE.test(v);
 }
 
-// Seconds left on this account's redeem lock, or null when it is not locked.
-// 5 unknown codes inside the window locks it; every further block of five doubles
-// the window. Derived from the audit trail alone, so it survives a restart, holds
-// across replicas, and needs no state of its own.
+// Derived entirely from the audit trail, with no counter of its own — must survive restarts and hold across replicas.
 async function redeemLockSeconds(orm: Db["orm"], userId: string): Promise<number | null> {
   const rows = await orm
     .select({ createdAt: auditEvents.createdAt })
@@ -96,8 +85,7 @@ async function redeemLockSeconds(orm: Db["orm"], userId: string): Promise<number
   return left > 0 ? Math.ceil(left / 1000) : null;
 }
 
-// Deliberately NO user lookup/search endpoint exists: linking is invite-code
-// only (students are often minors — a searchable directory is the abuse surface).
+// Deliberately NO user lookup/search endpoint — a searchable directory of (often-minor) students is the abuse surface.
 export function linksRouter(deps: Deps): Router {
   const router = Router();
   const guards = [requireAuth(deps.auth), requireUser(deps)];
@@ -115,9 +103,7 @@ export function linksRouter(deps: Deps): Router {
         return;
       }
       const db = deps.db!.orm;
-      // Direction is STATED by the client and authorized here; the old derivation
-      // survives only as back-compat for clients that send nothing (it can never
-      // express a dual-role account's reverse mint).
+      // Fallback derivation is back-compat only, for clients sending no direction — it can't express a dual-role account's reverse mint.
       const stated = req.body?.direction;
       let direction: Direction;
       if (stated === undefined || stated === null) {
@@ -139,18 +125,12 @@ export function linksRouter(deps: Deps): Router {
         res.status(403).json({ error: "student_only", message: "This account isn't set up as a student." });
         return;
       }
-      // A reverse code is the solo student inviting THEIR teacher: the student's
-      // recording consent is captured here at mint (createdAt = consent timestamp)
-      // because the redeemer is the teacher, who only acknowledges.
+      // Reverse invite: invite.createdAt IS the student's consent timestamp, captured at mint — the redeeming teacher only acknowledges.
       if (direction === "student_to_teacher" && req.body?.consent !== true) {
         res.status(400).json({ error: "consent_required", message: "Please accept the recording notice to invite your teacher." });
         return;
       }
-      // Who this code is for, so an outstanding code is a named seat instead of six
-      // characters the issuer can no longer place. A label buys a slot of its own —
-      // holding several at once is the whole point — so it is teacher-side only: a
-      // student invites one teacher, and giving them slots would silently lift the
-      // one-live-code rule the reverse flow is built on.
+      // Labels are teacher-side only — giving students labels would silently lift the one-live-code rule the reverse flow depends on.
       const rawLabel: unknown = req.body?.intendedLabel;
       let intendedLabel: string | null = null;
       if (rawLabel !== undefined && rawLabel !== null) {
@@ -169,10 +149,7 @@ export function linksRouter(deps: Deps): Router {
         res.status(400).json({ error: "invalid_label", message: "A code for your teacher can't be named." });
         return;
       }
-      // Re-inviting someone the caller was linked to before. The body only NAMES the
-      // counterpart; the freshness floor is read from the link row, so the client
-      // cannot move it. Without this, the idempotent branch below hands back a code
-      // minted before the departure — which redeem is guaranteed to refuse as stale.
+      // Freshness floor is read from the link row, never the client — a client-supplied floor could dodge the stale-code refusal.
       const rejoinUserId: unknown = req.body?.rejoinUserId;
       if (rejoinUserId !== undefined && rejoinUserId !== null && !isUuid(rejoinUserId)) {
         res.status(400).json({ error: "invalid_rejoin", message: "That person isn't on your past list." });
@@ -192,14 +169,7 @@ export function linksRouter(deps: Deps): Router {
           .limit(1);
         rejoinFloor = past?.removedAt ?? null;
       }
-      // ONE LIVE CODE PER ISSUER PER DIRECTION PER LABEL. Spent, revoked and expired
-      // codes are not live, so serial onboarding is unaffected; a second mint for the
-      // same seat is idempotent. Unlabelled is its own slot, which is exactly the old
-      // rule — a client that never sends a label sees no change at all.
-      //
-      // Enforced here rather than by a unique index on purpose: liveness includes
-      // expires_at > now(), which is not immutable and so cannot sit in an index
-      // predicate, and a spent code must never block reusing its label.
+      // Enforced here, not a unique index — liveness includes expires_at > now(), which can't sit in an index predicate.
       const liveForIssuer = and(
         eq(invites.teacherId, me.id),
         eq(invites.direction, direction),
@@ -210,8 +180,7 @@ export function linksRouter(deps: Deps): Router {
       let minted: { row: typeof invites.$inferSelect; created: boolean; retiredStaleId?: string };
       try {
         minted = await db.transaction(async (tx) => {
-        // "No live code" is a gap condition, so only a lock on the issuer serializes
-        // a double tap — a predicate on invites has nothing to lock.
+        // Locks the issuer row, not invites — "no live code" is a gap condition with nothing to row-lock.
         await tx.select({ id: users.id }).from(users).where(eq(users.id, me.id)).for("update");
         let [live] = await tx
           .select()
@@ -224,8 +193,7 @@ export function linksRouter(deps: Deps): Router {
           ))
           .orderBy(desc(invites.createdAt))
           .limit(1);
-        // Retiring it (rather than minting alongside) is what keeps the one-per-slot
-        // cap true; the CAS on revoked_at means a concurrent revoke cannot double-count.
+        // CAS on revoked_at (not just id) — a concurrent revoke of this same code must not double-count.
         let retiredStaleId: string | undefined;
         if (live && rejoinFloor && live.createdAt < rejoinFloor) {
           const [retired] = await tx
@@ -237,8 +205,7 @@ export function linksRouter(deps: Deps): Router {
           live = undefined;
         }
         if (live) return { row: live, created: false, retiredStaleId };
-        // Only a brand-new slot grows the live set; replacing a stale one is net zero.
-        // Checked before any write so a refusal leaves nothing behind.
+        // Checked before any write, and only when not replacing a stale slot, so a refusal leaves nothing behind.
         if (!retiredStaleId) {
           const [tally] = await tx
             .select({ n: sql<number>`count(*)::int` })
@@ -282,10 +249,7 @@ export function linksRouter(deps: Deps): Router {
     }),
   );
 
-  // Default = live codes only (B1 shape, untouched). include=history returns every
-  // code the caller ever minted with a derived state + resolved redeemers ("Code
-  // history: who redeemed what"). redeemedBy is a legacy array of user ids — no
-  // per-redemption timestamp exists, so redeemers carry identity only.
+  // redeemedBy is a legacy array of user ids only — no per-redemption timestamp exists.
   router.get(
     "/v1/invites",
     ...guards,
@@ -302,19 +266,14 @@ export function linksRouter(deps: Deps): Router {
           : and(eq(invites.teacherId, me.id), sql`${invites.revokedAt} IS NULL`))
         .orderBy(desc(invites.createdAt));
       const now = new Date();
-      // Seats are the codes still standing for somebody: unredeemed and not waved
-      // away, expired or not. A redeemed code stops being a seat because the person
-      // it named is now a student row.
+      // Seats include expired codes — expiry doesn't retire a named seat, only redemption or dismissal does.
       if (seats) {
         res.json(rows
           .filter((r) => !r.dismissedAt && r.usedCount < r.maxUses)
           .map((r) => ({ ...r, state: r.expiresAt > now ? "active" : "expired" })));
         return;
       }
-      // The legacy shape, unchanged down to its keys. It must ALSO stay unaware of
-      // labelled seats: a shipped v0.8 client renders "the" live code with a Replace
-      // button, and would happily revoke a named seat a newer device is holding for
-      // somebody. Label-aware clients ask for include=seats.
+      // Must exclude labelled codes — an old client renders "the" live code with Replace and would revoke a named seat that isn't its own.
       if (!history) {
         res.json(rows
           .filter((r) => r.expiresAt > now && r.usedCount < r.maxUses && !r.intendedLabel)
@@ -361,22 +320,18 @@ export function linksRouter(deps: Deps): Router {
         res.status(404).json({ error: "not_found", message: "That code no longer exists." });
         return;
       }
-      // The label goes with the code: it is usually a child's first name, and a dead
-      // code has no seat left to name.
+      // Clears intendedLabel on revoke — it's usually a child's name, and a dead code has no seat left to hold it.
       const [row] = await db
         .update(invites)
         .set({ revokedAt: sql`now()`, intendedLabel: null })
         .where(and(eq(invites.id, id), eq(invites.teacherId, me.id), isNull(invites.revokedAt)))
         .returning();
       if (row) {
-        // Revocation is the security-relevant half of the lifecycle and the user's
-        // only kill switch — it audits like every other write, once per transition.
         await userAudit(deps, req, "invite.revoke", { type: "invite", id: row.id }, { direction: row.direction });
         res.json({ ok: true });
         return;
       }
-      // Already revoked is the outcome the caller asked for: replace-then-mint must
-      // not dead-end on a stale screen.
+      // Already-revoked still returns ok — replace-then-mint must not dead-end on a stale screen.
       const [owned] = await db
         .select({ id: invites.id })
         .from(invites)
@@ -390,10 +345,7 @@ export function linksRouter(deps: Deps): Router {
     }),
   );
 
-  // Waving away a seat nobody took. Deliberately NOT a revoke: code history has to
-  // keep reading "Expired — nobody used it", and rewriting that into "Revoked" would
-  // put words in the issuer's mouth. A live code cannot be dismissed — hiding a code
-  // that still works is the one outcome the issuer cannot see coming.
+  // Dismiss ≠ revoke — history must keep reading "Expired", and a still-live code must never be silently hidden.
   router.post(
     "/v1/invites/:id/dismiss",
     ...guards,
@@ -434,11 +386,7 @@ export function linksRouter(deps: Deps): Router {
     }),
   );
 
-  // Redeeming IS the acceptance. Forward codes: the app's confirmation card shows
-  // the teacher's name plus the recording-consent checkbox before this fires.
-  // Reverse codes: the issuing student consented at mint; the redeeming teacher
-  // must explicitly confirm becoming this student's teacher (a mis-redeem grants
-  // isTeacher — a deliberate action, never a default).
+  // Reverse redeem requires explicit acceptTeacherRole — a mis-redeem would otherwise silently grant isTeacher.
   router.post(
     "/v1/invites/redeem",
     ...guards,
@@ -490,7 +438,6 @@ export function linksRouter(deps: Deps): Router {
         return;
       }
 
-      // The link pair, keyed by who ends up on which side of it.
       const linkTeacherId = reverse ? me.id : invite.teacherId;
       const linkStudentId = reverse ? invite.teacherId : me.id;
       const [issuer] = await db.select().from(users).where(eq(users.id, invite.teacherId)).limit(1);
@@ -513,8 +460,7 @@ export function linksRouter(deps: Deps): Router {
         alreadyLinked();
         return;
       }
-      // Consent never travels backwards: a code minted BEFORE the pair was ended
-      // cannot re-form it. Rejoining takes a code minted after the departure.
+      // Consent never travels backwards — a code minted before the pair ended cannot re-form it.
       if (existing && existing.removedAt && invite.createdAt < existing.removedAt) {
         await fail("stale_code");
         res.status(404).json({ error: "stale_code", message: STALE_CODE_MESSAGE });
@@ -524,10 +470,7 @@ export function linksRouter(deps: Deps): Router {
       let outcomeLink: typeof teacherStudentLinks.$inferSelect;
       try {
         outcomeLink = await db.transaction(async (tx) => {
-        // Claim a use-count slot atomically BEFORE creating the link — two redeemers
-        // racing a single-use code must not both succeed. Every refusal below THROWS:
-        // drizzle commits a callback that returns, which would keep the claim and burn
-        // the code. The label dies here too — its whole job was naming an empty seat.
+        // Claimed atomically before creating the link — two redeemers racing a single-use code must not both succeed.
         const [claimed] = await tx
           .update(invites)
           .set({
@@ -543,9 +486,7 @@ export function linksRouter(deps: Deps): Router {
           ))
           .returning();
         if (!claimed) throw new RedeemRefusal("invalid");
-        // Reverse consent lives at mint: the invite's createdAt is the student's
-        // recorded consent timestamp. A REACTIVATION always re-consents at now() —
-        // a resumed relationship never inherits the old one's timestamp.
+        // A reactivation always re-consents at now() — must never inherit the invite's original consent timestamp.
         const [link] = await tx
           .insert(teacherStudentLinks)
           .values({
@@ -556,16 +497,13 @@ export function linksRouter(deps: Deps): Router {
           })
           .onConflictDoUpdate({
             target: [teacherStudentLinks.teacherId, teacherStudentLinks.studentId],
-            // rejoined_at is what keeps the join date honest: this UPDATE overwrites the
-            // row, so created_at stops describing the relationship the teacher is in.
+            // rejoinedAt exists because this UPDATE overwrites the row — createdAt alone can't describe a resumed relationship.
             set: {
               status: "active",
               consentAt: sql`now()`,
               removedAt: null,
               rejoinedAt: sql`now()`,
-              // The date and the mechanism have to describe the SAME event: a pair
-              // that first formed on the teacher's code and re-formed on the student's
-              // must not still read "joined with your invite code".
+              // createdVia must be re-set here — it has to name the mechanism that (re)formed THIS pair, not the original one.
               createdVia: reverse ? "student_invite" : "invite_code",
               updatedAt: sql`now()`,
             },
@@ -582,20 +520,18 @@ export function linksRouter(deps: Deps): Router {
             ))
             .limit(1);
           if (row?.status === "active") throw new RedeemRefusal("already");
-          // The pair ended between the pre-check and this insert: the same stale
-          // refusal, and it must not be charged to the redeem lock as a bad guess.
+          // Same stale refusal as the pre-check (race window) — must stay "stale", never "invalid", so it isn't charged to the lock.
           if (row?.removedAt && invite.createdAt < row.removedAt) throw new RedeemRefusal("stale");
           throw new RedeemRefusal("invalid");
         }
         if (reverse) {
-          // Accepting makes you a teacher (grow-only). NO trial clock: teachers are
-          // free-side and must never start a subscription countdown by accepting.
+          // Grow-only isTeacher grant — no trial clock; teachers are free-side and must never start a subscription countdown.
           await tx
             .update(users)
             .set({ isTeacher: true, updatedAt: sql`now()` })
             .where(and(eq(users.id, me.id), eq(users.isTeacher, false)));
         } else {
-          // Redeeming makes you a student; the trial clock starts at first student grant.
+          // trialStartedAt uses coalesce — the clock starts only on the FIRST grant and must never reset on a later redeem.
           await tx
             .update(users)
             .set({
@@ -629,9 +565,7 @@ export function linksRouter(deps: Deps): Router {
     }),
   );
 
-  // include=removed adds ended links (Past students): status/removedAt flow, and
-  // counterpartDeleted marks a scrubbed account so the UI shows a placeholder
-  // instead of a null-name row. Email stays OFF the list (founder: detail only).
+  // Email is deliberately excluded from this list — detail view only (founder-gated).
   router.get(
     "/v1/me/students",
     ...guards,
@@ -657,14 +591,7 @@ export function linksRouter(deps: Deps): Router {
       const studentRows = studentIds.length
         ? await db.select().from(users).where(inArray(users.id, studentIds))
         : [];
-      // INVARIANT: every timestamp on the wire is ISO-8601. A bare `sql` expression
-      // carries no column decoder, so the driver's own text ("2026-07-25 13:38:26+00")
-      // would reach the client — which parses dates with ISO8601DateFormatter and
-      // fails the whole response. mapWith borrows the column's decoder.
-      //
-      // One pass over this teacher's sent notes carries three things at once: the
-      // lifetime practice pair (legacy), the last note, and lastTouchAt — the newest
-      // moment the STUDENT did something, which is half the roster's sort key.
+      // INVARIANT: mapWith borrows the column's decoder — a bare sql date reaches the client as driver text and breaks ISO8601DateFormatter.
       const noteAgg = studentIds.length
         ? await db
             .select({
@@ -685,9 +612,7 @@ export function linksRouter(deps: Deps): Router {
             .groupBy(notes.studentId)
         : [];
       const noteAggByStudent = new Map(noteAgg.map((r) => [r.studentId, r]));
-      // The caption's subject: the newest note that still stands, and only if none
-      // does, the newest retracted one. DISTINCT ON needs the ordering to lead with
-      // the key, so the sent-first preference rides in second.
+      // DISTINCT ON requires the ordering to lead with the key (studentId) — the sent-first preference must ride second, not first.
       const latestNotes = studentIds.length
         ? await db
             .selectDistinctOn([notes.studentId], {
@@ -739,8 +664,7 @@ export function linksRouter(deps: Deps): Router {
             .groupBy(lessonSessions.studentId)
         : [];
       const lessonByStudent = new Map(lastLessons.map((r) => [r.studentId, r.lastAt]));
-      // Delivery capability, deliberately NOT billing wording — the teacher never
-      // sees a family's payment state. Resolved for the whole roster in one pass.
+      // canReceiveNotes must stay a capability boolean — the teacher must never see the student's billing/payment state.
       const accessByStudent = await notesAccessMany(
         deps,
         studentRows.filter((u) => u.status !== "deleted"),
@@ -754,9 +678,7 @@ export function linksRouter(deps: Deps): Router {
           ? accessByStudent.get(student.id) ?? null
           : null;
         const lastLessonAt = lessonByStudent.get(l.studentId) ?? null;
-        // The roster is ordered by this one field so the client never has to know
-        // which of four moments counts as activity. rejoined_at is in the set: a
-        // resumed relationship belongs at the top on the day it resumes.
+        // rejoinedAt must be in this set — a resumed relationship needs to sort as fresh activity, not by its original createdAt.
         const lastActivityAt = [
           agg?.lastSentAt ?? null,
           agg?.lastTouchAt ?? null,
@@ -777,8 +699,7 @@ export function linksRouter(deps: Deps): Router {
           lastNoteAt: agg?.lastSentAt ?? null,
           lastLessonAt,
           lastActivityAt,
-          // v2. The piece title is resolved HERE because a catalog note carries a
-          // null piece_label — the client has no way to name it.
+          // Piece title resolved here — a catalog note's pieceLabel is null, so the pieces join (catalogTitle) is the only way to name it.
           latestNote: latest
             ? {
                 id: latest.id,
@@ -791,7 +712,6 @@ export function linksRouter(deps: Deps): Router {
                 doneCount: steps?.done ?? 0,
               }
             : null,
-          // LEGACY, one release: the lifetime pair no screen renders after v0.9.
           practicedTotal: agg?.total ?? 0,
           practicedDone: agg?.done ?? 0,
           canReceiveNotes: access ? access.status !== "lapsed" : false,
@@ -801,9 +721,7 @@ export function linksRouter(deps: Deps): Router {
     }),
   );
 
-  // Serves removed links too (Past-student detail: history stays readable, Invite
-  // again lives here). Email surfaces ONLY on this detail view (founder-gated) and
-  // ONLY while the link is active — a student who leaves withdraws their address.
+  // Email surfaces only while the link is active — a departed student withdraws their address, even on this founder-gated detail view.
   router.get(
     "/v1/me/students/:id",
     ...guards,
@@ -866,13 +784,7 @@ export function linksRouter(deps: Deps): Router {
             .groupBy(noteAnnotations.noteId)
         : [];
       const stepsByNote = new Map(steps.map((r) => [r.noteId, r]));
-      // History interleaves lessons with notes: a lesson whose note was discarded
-      // still happened, and a history that quietly omitted it would not be history.
-      // startedAt ships RAW: a lesson row is born when the upload starts, so its
-      // created_at is when we heard about it, not when the lesson began — a history
-      // that printed one as the other would be asserting a time nobody recorded.
-      // The ordering may still fall back to created_at, since a place in the list is
-      // not a claim about the clock.
+      // startedAt ships RAW (possibly null) though ordering falls back to coalesce(startedAt, created_at) — never coalesce the displayed value.
       const lessons = await db
         .select({
           id: lessonSessions.id,
@@ -895,8 +807,7 @@ export function linksRouter(deps: Deps): Router {
         studentId: student!.id,
         displayName: student!.displayName,
         email: counterpartDeleted || link.status === "removed" ? null : student!.email,
-        // linkedAt describes the relationship the teacher is in now; firstLinkedAt is
-        // non-null only when there was an earlier spell, and says so by being there.
+        // firstLinkedAt is null unless this is a resumed relationship (rejoinedAt set) — its presence alone signals an earlier spell.
         linkedAt: link.rejoinedAt ?? link.createdAt,
         firstLinkedAt: link.rejoinedAt ? link.createdAt : null,
         consentAt: link.consentAt,
@@ -931,8 +842,7 @@ export function linksRouter(deps: Deps): Router {
     }),
   );
 
-  // Either side may end the link; sent notes stay with the student (their record).
-  // Ending retires only the codes that could re-form THIS pair — see endLink.
+  // Ending a link does not touch notes — they stay with the student as their own record.
   router.delete(
     "/v1/me/students/:id",
     ...guards,
@@ -957,8 +867,7 @@ export function linksRouter(deps: Deps): Router {
     }),
   );
 
-  // include=removed adds ended links (Past teachers). NO organization and NO email
-  // here — the sign-up copy promises "Not shown publicly" (founder-gated).
+  // No organization/email here — the sign-up copy promises "Not shown publicly" (founder-gated).
   router.get(
     "/v1/me/teachers",
     ...guards,
@@ -1041,11 +950,7 @@ export function linksRouter(deps: Deps): Router {
   return router;
 }
 
-// One batch: end THIS pair, and retire only the codes that could re-form it — the
-// remover's, in the direction that made this pair, already redeemed by this
-// counterpart (a multi-use code). A live code the remover has out for someone else
-// is a different invitation and survives. Codes minted before the departure need no
-// revoke: redeem refuses them as stale on its own.
+// Revokes only the remover's own codes already redeemed by THIS counterpart — a live code held for someone else must survive.
 async function endLink(
   deps: Deps,
   removerId: string,

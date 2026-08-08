@@ -8,8 +8,7 @@ import { requireAdmin, audit } from "../admin";
 import { auditEvents, studioJobs, users } from "../db/schema";
 import { OpsQueryError, type OpsFilters, type OpsLogRow } from "../opslogs";
 
-// Time-range guardrails: the server, not the client, owns how expensive a
-// query may get. 30d matches the workspace's interactive retention.
+// MAX_RANGE_MS (30d) matches the Log Analytics workspace's interactive retention — keep them in sync.
 const MAX_RANGE_MS = 30 * 24 * 3600 * 1000;
 const DEFAULT_RANGE_MS = 24 * 3600 * 1000;
 
@@ -115,7 +114,6 @@ export function opsRouter(deps: Deps): Router {
       const { from, to } = parseWindow(parsed.data);
       try {
         const facets = await deps.opsLogs!.queryFacets(toFilters(parsed.data), from, to);
-        // The admin facet shows operator emails, not opaque user ids.
         if (facets.admin?.length && deps.db) {
           const rows = await deps.db.orm.select({ id: users.id, email: users.email }).from(users);
           const byId = new Map(rows.map((r) => [r.id, r.email]));
@@ -128,9 +126,6 @@ export function opsRouter(deps: Deps): Router {
     }),
   );
 
-  // The reqId pivot: one merged chronological timeline across the API request
-  // logs, the worker's job logs, and the business audit trail — the three
-  // surfaces already share the id, this endpoint just joins them.
   router.get(
     "/admin/ops/request/:reqId",
     wrap(async (req, res) => {
@@ -204,9 +199,7 @@ export function opsRouter(deps: Deps): Router {
     }),
   );
 
-  // Staging sweeper, safest slice: blobs of canceled/failed jobs older than 7 days
-  // that never became a real piece (draft_* ids). Published pieces' staged sources
-  // double as their source archive and are never touched. Dry-run by default.
+  // Only canceled/failed draft_* jobs are GC'd — published pieces' staged sources are their permanent archive; never widen this filter.
   router.post(
     "/admin/ops/gc",
     wrap(async (req, res) => {

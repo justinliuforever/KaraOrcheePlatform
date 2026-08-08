@@ -1,15 +1,11 @@
 import { ServiceBusClient } from "@azure/service-bus";
 
 export interface JobQueue {
-  send(body: Record<string, unknown>): Promise<void>; // full 4-gate run
-  sendPreflight(body: Record<string, unknown>): Promise<void>; // fast 3-gate wizard lane
+  send(body: Record<string, unknown>): Promise<void>;  // full 4-gate run
+  sendPreflight(body: Record<string, unknown>): Promise<void>;  // fast 3-gate wizard lane
 }
 
-// Two lanes, mirroring JobQueue. send() is notes-jobs — body {jobId, reqId} only, the
-// note_jobs row is the source of truth (idempotent redelivery). sendNarration() is the
-// dedicated notes-narration lane: a synthesis run is minutes long and must neither wait
-// behind an ASR job nor hold one's lock. Body {noteId, voices[], reqId}, pinned in
-// worker/notes/narration_parity.json.
+// sendNarration is a separate lane — synthesis runs minutes long and must not block or hold the ASR job's lock; body {noteId, voices[], reqId} per worker/notes/narration_parity.json.
 export interface NotesQueue {
   send(body: Record<string, unknown>): Promise<void>;
   sendNarration(body: Record<string, unknown>): Promise<void>;

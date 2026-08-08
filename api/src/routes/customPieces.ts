@@ -9,18 +9,12 @@ import { customPieces, pieces } from "../db/schema";
 type Orm = NonNullable<Deps["db"]>["orm"];
 type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
 
-// Identity key. NFC composes the two spellings of one visible label into one row;
-// DIACRITICS SURVIVE, so Für Elise and Fur Elise stay two entities that may suggest
-// each other and can only ever be joined by the teacher (FG-20). Composition is not
-// folding: folding belongs to matching, not identity.
+// NFC only — do not fold diacritics here; Für/Fur must stay distinct identities (folding belongs to piece_suggestion's fold()).
 export function normalizeLabel(label: string): string {
   return label.normalize("NFC").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-// One entity per (teacher, normalized label). A unique-index conflict is the SUCCESS
-// path — the teacher typed the same piece again — and the row's display_label follows
-// the latest casing they used. Runs inside the caller's transaction so a lesson and
-// its entity commit together or not at all.
+// onConflictDoUpdate is intentional — a duplicate label is success, and display_label must follow the latest casing typed.
 export async function upsertCustomPiece(
   tx: Tx,
   teacherId: string,
@@ -39,8 +33,7 @@ export async function upsertCustomPiece(
   return row?.id ?? null;
 }
 
-// The entity dies with its owner. `custom_piece_id` is ON DELETE SET NULL everywhere,
-// so a sent note that outlives the teacher keeps the piece_label a student reads.
+// Relies on custom_piece_id ON DELETE SET NULL (schema) — deleting here must not orphan notes that reference it.
 export async function deleteCustomPiecesOf(tx: Tx, teacherId: string): Promise<void> {
   await tx.delete(customPieces).where(eq(customPieces.teacherId, teacherId));
 }
@@ -49,9 +42,6 @@ export function customPiecesRouter(deps: Deps): Router {
   const router = Router();
   const guards = [requireAuth(deps.auth), requireUser(deps)];
 
-  // The teacher's own decision that a typed name IS a catalog piece. There is no list
-  // endpoint and no unlink UI: nothing this release would consume them, and an idle
-  // endpoint is a surface with no reader.
   router.post(
     "/v1/custom-pieces/:id/link",
     ...guards,
@@ -64,7 +54,7 @@ export function customPiecesRouter(deps: Deps): Router {
         return;
       }
       const pieceId = typeof body.pieceId === "string" ? body.pieceId : null;
-      // Scope is in the predicate: someone else's entity is not found, never forbidden.
+      // Scope is in the predicate — don't split id/teacherId checks, or a 404 would become a 403 that leaks existence.
       const [entity] = await db
         .select()
         .from(customPieces)

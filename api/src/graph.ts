@@ -1,18 +1,11 @@
-// Microsoft Graph, app-only, for exactly one operation: removing a deleted account's
-// sign-in identity from the Auth tenant.
-//
-// HONESTY RULE, BINDING: this module reports success only when a Graph call actually
-// answered that the user is gone. Unconfigured, unreachable, unauthorized and
-// rate-limited all report failure, because the delete sheet turns this answer into a
-// sentence a person reads. "We could not tell" is never "we removed it".
+// ok:true only when Graph confirms the user is gone — unreachable/unauthorized/rate-limited must report ok:false, never an ambiguous success.
 
 export type GraphDeleteResult =
   | { ok: true; status: number }
   | { ok: false; reason: string };
 
 export interface GraphIdentityClient {
-  /// Removes a directory user by object id. Never throws: every failure is a reason
-  /// string the caller logs and reports as identityDeleted:false.
+  /// Never throws — every failure returns a reason string; callers report it as identityDeleted:false.
   deleteUser(oid: string): Promise<GraphDeleteResult>;
 }
 
@@ -25,8 +18,7 @@ export interface GraphConfig {
 const AUTHORITY_HOST = "https://login.microsoftonline.com";
 const GRAPH_HOST = "https://graph.microsoft.com";
 const SCOPE = "https://graph.microsoft.com/.default";
-// A person is waiting on the delete response; three tries with a short backoff is the
-// most that fits under that, and the tombstone carries whatever this does not finish.
+// ATTEMPTS is capped by a synchronous caller's wait budget — unfinished deletes fall to the tombstone, not more retries.
 const ATTEMPTS = 3;
 const TIMEOUT_MS = 5000;
 
@@ -37,8 +29,7 @@ export interface GraphClientOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-// The trio is all-or-nothing, matching the APNs/auth groups: a half-set group is a
-// deployment mistake and must not read as "deliberately off".
+// All three GRAPH_* vars must be set together (matches APNs/auth groups) — a half-set trio is an error, not "deliberately off".
 export function graphConfigFrom(env: NodeJS.ProcessEnv):
   | { ok: true; config: GraphConfig | null }
   | { ok: false; missing: string[] } {
@@ -71,8 +62,7 @@ export function createGraphClient(
   const graphHost = opts.graphHost ?? GRAPH_HOST;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
-  // Deliberately uncached: an account deletion is rare, and a token cached across one
-  // is a credential held for no reason.
+  // Deliberately uncached — deletions are rare; a cached token would be a credential held for no reason.
   async function accessToken(): Promise<{ ok: true; token: string } | { ok: false; reason: string }> {
     const body = new URLSearchParams({
       client_id: config.clientId,
@@ -136,8 +126,7 @@ export function createGraphClient(
   };
 }
 
-// No client, and WHY: a trio nobody set is a decision, a trio half-set is a deployment
-// mistake. The caller prints those two differently, so it may not be handed the same null.
+// incomplete distinguishes "no client, decided" from "no client, misconfigured" — callers must not collapse them into the same null.
 export interface GraphResolution {
   client: GraphIdentityClient | null;
   incomplete: boolean;
@@ -154,17 +143,14 @@ function resolve(env: NodeJS.ProcessEnv): GraphResolution {
 
 let envResolution: GraphResolution | undefined;
 
-// Resolved once per process, so a misconfiguration is logged once rather than per request.
-// An explicitly passed env is always read fresh — the memo is about the container's own
-// environment, and a caller naming another one is asking about that one.
+// Memoized only for process.env (so misconfig logs once) — an explicitly passed env always resolves fresh.
 export function graphFromEnv(env?: NodeJS.ProcessEnv): GraphResolution {
   if (env) return resolve(env);
   if (envResolution === undefined) envResolution = resolve(process.env);
   return envResolution;
 }
 
-// A half-set trio is unfinished work: it must reach the alert, and it must not carry the
-// reason string the runbook teaches operators to ignore.
+// incomplete must map to "graph_config_incomplete" (alerts) — never reuse "graph_not_configured", which the runbook teaches operators to ignore.
 export function unresolvedGraphLog(resolution: GraphResolution): { kind: string; reason: string } {
   return resolution.incomplete
     ? { kind: "ciam_delete_pending", reason: "graph_config_incomplete" }

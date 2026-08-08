@@ -23,12 +23,12 @@ import { timeAgo } from "../studio/gateInfo";
 type SortKey = "title" | "composer" | "difficulty" | "publishedVersion" | "updatedAt";
 
 interface Filters {
-  status: string; // "" | published | archived | draft
-  shelf: string; // "" | validated | experimental
-  rights: string; // "" | public_domain | licensed | unknown | blocked
-  book: string; // "" | none | <bookId>
-  work: string; // "" | none | <workId>
-  instrument: string; // "" | piano | violin | guitar
+  status: string;  // "" | published | archived | draft
+  shelf: string;  // "" | validated | experimental
+  rights: string;  // "" | public_domain | licensed | unknown | blocked
+  book: string;  // "" | none | <bookId>
+  work: string;  // "" | none | <workId>
+  instrument: string;  // "" | piano | violin | guitar
 }
 
 const NO_FILTERS: Filters = { status: "", shelf: "", rights: "", book: "", work: "", instrument: "" };

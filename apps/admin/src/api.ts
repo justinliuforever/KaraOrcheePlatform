@@ -24,7 +24,6 @@ async function token(): Promise<string> {
 }
 
 export class ApiError extends Error {
-  // message = the server's human explanation when it sent one, else the code.
   constructor(public status: number, public code: string, detail?: string) {
     super(detail ?? code);
   }
@@ -51,14 +50,12 @@ export interface AdminUser {
   entraOid: string | null;
   email: string | null;
   displayName: string | null;
-  // Optional self-reported studio/school from teacher sign-up. Admin-only context —
-  // never student-facing.
+  // Admin-only context — never student-facing.
   organization: string | null;
   isTeacher: boolean;
   isStudent: boolean;
   isAdmin: boolean;
-  // Break-glass capability: view lesson transcripts (minors' data). Grantable only
-  // by an existing holder; never changeable on your own row (server-enforced).
+  // Grantable only by an existing holder; never changeable on your own row (server-enforced).
   canViewTranscripts: boolean;
   status: string;
   referredBy: string | null;
@@ -79,8 +76,7 @@ export interface AdminUserDetail {
   recentAudit: AuditEntry[];
 }
 
-// force acknowledges "this account will have no teaching or learning role" — the
-// state that silently bricked two dev accounts.
+// force acknowledges "this account will have no teaching or learning role".
 export type RolePatch = Partial<
   Pick<AdminUser, "isAdmin" | "isTeacher" | "isStudent" | "canViewTranscripts">
 > & { force?: boolean };
@@ -251,7 +247,7 @@ export interface AdminWork {
   catalogue: string | null;
   workType: string;
   parentWorkId: string | null;
-  movementCount: number | null; // authored total movements, never a row count
+  movementCount: number | null;  // authored total movements, never a row count
   sortIndex: number | null;
   display: Record<string, unknown>;
   createdAt: string;
@@ -275,8 +271,7 @@ export interface StudioJob {
   updatedAt: string;
   createdByEmail?: string | null;
   previews?: { role: string; variant?: string; url: string }[];
-  // Live-registry cross-check (detail endpoint only): what this piece id currently
-  // looks like in the catalog — null when never published.
+  // Detail endpoint only; null when this piece was never published to the catalog.
   piece?: { status: string; publishedVersion: number | null } | null;
 }
 
@@ -301,15 +296,13 @@ export interface AdminBook {
   display: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
-  // In LIST responses this is the number of ATTACHED rows (server rollup); the
-  // authored printed total travels on the detail response instead.
+  // LIST: attached-rows rollup; the authored printed total is on the detail response instead.
   pieceCount: number;
   coverUrl: string | null;
   coverThumbUrl: string | null;
 }
 
-// Multipart calls bypass api(): it forces a JSON content-type on any body, which
-// would destroy the FormData boundary.
+// Bypasses api(): its forced JSON content-type would destroy the FormData boundary.
 export async function apiForm<T>(path: string, form: FormData, method = "POST"): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method,
@@ -355,8 +348,7 @@ export interface WorkPieceRow extends Omit<BookPieceRow, "bookIndex"> {
   workIndex: number | null;
 }
 
-// Detail responses carry the member pieces instead of the attached-rows rollup;
-// here pieceCount is the AUTHORED printed total (e.g. 98 for Czerny 599).
+// pieceCount here is the AUTHORED printed total, not the attached-rows rollup.
 export interface AdminBookDetail extends Omit<AdminBook, "pieceCount"> {
   pieceCount: number | null;
   pieces: BookPieceRow[];
@@ -453,8 +445,6 @@ export function mergeWork(
   });
 }
 
-// ---- Composers registry (lean: joins pieces/works by name/alias string) ----
-
 export interface AdminComposer {
   id: string;
   name: string;
@@ -469,10 +459,9 @@ export interface AdminComposer {
   createdAt: string;
   updatedAt: string;
   portraitUrl: string | null;
-  usageCount: number; // pieces whose composer string matches name OR any alias
+  usageCount: number;  // pieces whose composer string matches name OR any alias
 }
 
-/** One distinct composer string as it appears on pieces/works rows. */
 export interface ComposerString {
   value: string;
   pieceCount: number;
@@ -520,8 +509,6 @@ export function putComposerPortrait(id: string, portrait: File): Promise<AdminCo
   form.set("portrait", portrait);
   return apiForm(`/admin/composers/${id}/portrait`, form, "PUT");
 }
-
-// ---- Ops (logs / request timeline / queue) ----
 
 export type OpsSeverity = "error" | "warn" | "info";
 
@@ -642,7 +629,6 @@ export interface OpsQueueResponse {
   recentJobs: OpsRecentJob[];
 }
 
-/** Shared serializer for the three filtered ops GETs — skips empty values. */
 export function opsQueryString(
   filters: OpsFilters,
   extra?: Record<string, string | number>,
@@ -677,8 +663,6 @@ export function getOpsRequest(reqId: string, signal?: AbortSignal): Promise<OpsR
 export function getOpsQueue(signal?: AbortSignal): Promise<OpsQueueResponse> {
   return api("/admin/ops/queue", { signal });
 }
-
-// ---- Notes admin (pairings / subscriptions / note-jobs / activity) ----
 
 export type LinkStatus = "active" | "removed";
 
@@ -780,7 +764,7 @@ export interface NoteJobRow {
   metrics: NoteJobMetrics;
   transcriptPath: string | null;
   modelOutputPath: string | null;
-  // Worker-written cause of a failure; null on a healthy job or a pre-0016 row.
+  // Worker-written; null on a healthy job or on a row from before this field existed.
   failureCode: string | null;
   discardedAt: string | null;
   // Stamped at submit and on every requeue — the anchor for time-to-note.
@@ -811,8 +795,7 @@ export interface NoteJobsResponse {
 }
 
 export interface NoteJobDetail {
-  // Whether the RECORDER's own Retry is still available — the admin requeue is uncapped
-  // and says nothing about what the person who reported the failure can do.
+  // The RECORDER's own retry availability — unrelated to the admin requeue, which is uncapped.
   retry: { allowed: boolean; reason: string | null; attempts: number; cap: number };
   job: {
     id: string;
@@ -864,8 +847,7 @@ export interface NoteTranscriptResponse {
   transcript: NoteTranscript;
 }
 
-// One LLM call and its verdict. `text` is the model's raw output, `error` the validator
-// message that rejected it (null when a content gate, not the parser, did the rejecting).
+// error is null both on success and when a content gate (not the parser) rejected the call.
 export interface ModelOutputAttempt {
   n: number;
   model?: string;
@@ -950,8 +932,7 @@ export interface NotesActivity {
     recordedAsSelf: number;
     recentPieceLabels: string[];
   };
-  // sent/received are unsplit totals (self notes count in both, since a self note
-  // has teacherId = studentId = owner); the annotations disambiguate.
+  // sent/received are unsplit totals — self notes count in both; sentAsTeacher/selfNotes disambiguate.
   notes: { sent: number; received: number; sentAsTeacher: number; selfNotes: number };
   access: NotesAccess;
 }
@@ -963,7 +944,6 @@ function notesQs(params: Record<string, string | undefined>): string {
   return s ? `?${s}` : "";
 }
 
-// Pairings — links
 export function listNoteLinks(q: string, status: string): Promise<{ items: NoteLink[] }> {
   return api(`/admin/notes/links${notesQs({ q, status })}`);
 }
@@ -974,7 +954,6 @@ export function removeNoteLink(id: string): Promise<{ ok: boolean; link: NoteLin
   return api(`/admin/notes/links/${id}`, { method: "DELETE" });
 }
 
-// Pairings — invites
 export function listNoteInvites(q: string, state: string): Promise<{ items: NoteInvite[] }> {
   return api(`/admin/notes/invites${notesQs({ q, state })}`);
 }
@@ -982,8 +961,7 @@ export function revokeNoteInvite(id: string): Promise<{ ok: boolean; invite: Not
   return api(`/admin/notes/invites/${id}/revoke`, { method: "POST" });
 }
 
-// Pairings — teacher-trust watch. Read-only in B1.5: outreach is a human emailing
-// manually, so no mutation fetchers exist for this surface.
+// Read-only: trust-watch outreach is a human emailing manually, no mutation fetchers here.
 export interface TrustWatchItem {
   userId: string;
   email: string | null;
@@ -1001,7 +979,6 @@ export function getTrustWatch(): Promise<TrustWatchResponse> {
   return api("/admin/notes/trust/watch");
 }
 
-// Subscriptions — entitlements
 export function listEntitlements(q: string, source: string, status: string): Promise<{ items: NoteEntitlement[] }> {
   return api(`/admin/notes/entitlements${notesQs({ q, source, status })}`);
 }
@@ -1012,7 +989,6 @@ export function revokeEntitlement(id: string, reason: string): Promise<NoteEntit
   return api(`/admin/notes/entitlements/${id}/revoke`, { method: "POST", body: JSON.stringify({ reason }) });
 }
 
-// Subscriptions — monetization config
 export function getMonetization(): Promise<MonetizationConfig> {
   return api("/admin/notes/config/monetization");
 }
@@ -1020,7 +996,6 @@ export function putMonetization(value: string | null): Promise<MonetizationConfi
   return api("/admin/notes/config/monetization", { method: "PUT", body: JSON.stringify({ value }) });
 }
 
-// Note-jobs (Ops lane)
 export function listNoteJobs(params: { status?: string; stage?: string; ownerRole?: string; failureCode?: string; q?: string }): Promise<NoteJobsResponse> {
   return api(`/admin/note-jobs${notesQs(params)}`);
 }
@@ -1037,7 +1012,6 @@ export function getNoteModelOutput(id: string, reason: string): Promise<NoteMode
   return api(`/admin/note-jobs/${id}/model-output?reason=${encodeURIComponent(reason)}`);
 }
 
-// User activity aggregate
 export function getNotesActivity(userId: string): Promise<NotesActivity> {
   return api(`/admin/users/${userId}/notes-activity`);
 }

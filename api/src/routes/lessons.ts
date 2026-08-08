@@ -17,27 +17,18 @@ import {
   teacherStudentLinks,
 } from "../db/schema";
 
-// ~167 min of the 24kbps AAC remux, or ~2.5h of the CAF fallback. The client
-// refuses an over-cap file BEFORE transferring it; this is the backstop.
+// Backstop only — the client already refuses an over-cap file before transferring it.
 const MAX_AUDIO_BYTES = 320 * 1024 * 1024;
 
-// Every 400 the app can hit after a 45-minute recording. The client renders
-// `message` verbatim when it has no mapped copy, so each one names the repair
-// the app already ships rather than the rule that was broken. Create and PATCH
-// share the strings so the two write paths cannot drift.
+// Client renders `message` verbatim when unmapped, and create/PATCH share these strings so the two write paths cannot drift.
 const MSG_SOLO_NO_STUDENT = "A recording you made yourself is your own — there is no student to send it to.";
 const MSG_UNKNOWN_PIECE = "That piece isn't in the library. Choose another piece, or type its name instead.";
 const MSG_NOT_YOUR_STUDENT = "That student isn't on your roster anymore. Invite them again, then choose them.";
 
 // ── Discard / retry policy ────────────────────────────────────────────────────
-// Pure, exported, and called by BOTH the mutating route and the *Allowed flags on
-// the wire. The client renders what it is told and predicts nothing: the button a
-// user sees and the answer the server gives cannot drift apart if there is only
-// one function that knows the answer.
+// Pure and shared: the same function computes both the route's decision and the *Allowed flag on the wire, so they cannot drift apart.
 
-// A queued/processing job that has not moved in this long is wedged, and its
-// owner gets an escape hatch. ASR_POLL_MAX is 40 min (worker/notes/main.py), so
-// this is ~1.5x the worst honest case.
+// ~1.5x ASR_POLL_MAX (40 min, worker/notes/main.py) — the worst honest time before a job is wedged.
 export const STUCK_JOB_MS = 60 * 60 * 1000;
 
 export type DiscardDecision =
@@ -54,9 +45,7 @@ export interface DiscardInput {
 
 export function discardDecision(input: DiscardInput): DiscardDecision {
   const now = input.now ?? Date.now();
-  // Idempotency first: a retried discard must return 200, never flap the card
-  // with a 404/409. (A canceled lesson can never hold a sent note — the sent-note
-  // guard below is what would have stopped it being canceled at all.)
+  // Idempotency first — a retried discard must return 200, never flap with a 404/409.
   if (input.lessonStatus === "canceled") return { kind: "noop" };
   if (input.notes.some((n) => n.origin === "teacher" && (n.status === "sent" || n.status === "retracted"))) {
     return {
@@ -79,8 +68,6 @@ export function discardDecision(input: DiscardInput): DiscardDecision {
       };
     }
   }
-  // submitted with no job (submit crashed before the insert), a failed job, a
-  // ready_for_review job, or a wedged one past the hatch.
   return { kind: "allow", action: "lesson.discard" };
 }
 
@@ -88,10 +75,7 @@ export function discardAllowed(input: DiscardInput): boolean {
   return discardDecision(input).kind !== "deny";
 }
 
-// Each retry re-runs paid ASR from the top, so the cap is a cost guard keyed on
-// WHY it failed. A cap of 0 is CATEGORICAL — the re-run would be byte-identical,
-// so no bonus below can resurrect it. no_speech is raised before the LLM ever
-// runs, which is exactly that case (and what the app's own explainer says).
+// Cap 0 is CATEGORICAL — the `cap > 0` guard in retryDecision must stay, or a byte-identical re-run gets funded again.
 export const RETRY_CAPS: Record<string, number> = {
   no_speech: 0,
   thin_note: 2,
@@ -120,13 +104,7 @@ export function retryDecision(input: RetryInput): RetryDecision {
   const job = input.job;
   if (!job || job.status !== "failed") return { kind: "deny", status: 409, error: "not_retryable" };
   const cap = RETRY_CAPS[job.failureCode ?? ""] ?? DEFAULT_RETRY_CAP;
-  // "Something changed between attempts": the PIECE is the only lesson fact the
-  // prompt reads, so naming it after a failure buys exactly one more attempt —
-  // the one case where the LLM's inputs genuinely differ (the prompt gains the
-  // piece and its measure bound). A student assignment changes nothing the
-  // worker would do differently and must not fund a paid run. Each further
-  // piece change re-arms it, which is the contract, not a leak: every re-arm
-  // costs the user a real edit that really does change the prompt.
+  // Bonus is piece-change only — a student assignment must never fund it, and each further piece edit re-arms it by design.
   const bonus =
     cap > 0 && input.pieceUpdatedAt && job.updatedAt && input.pieceUpdatedAt.getTime() > job.updatedAt.getTime()
       ? 1
@@ -146,17 +124,13 @@ export function retryAllowed(input: RetryInput): boolean {
   return retryDecision(input).kind === "allow";
 }
 
-// Hint stamped on an annotation whose auto-placed measure fell outside the piece
-// named after the fact. Wording mirrors the app's ungrounded copy: it must read
-// as "needs a location", never as an error.
+// Wording must mirror the app's ungrounded copy — reads as "needs a location", never an error.
 export const REGROUND_HINT = "This pointed past the end of the piece — place it on the score.";
 
 export const PIECE_SOURCES = ["catalog", "vendored", "typed"] as const;
 export type PieceSource = (typeof PIECE_SOURCES)[number];
 
-// Anything the client did not send as one of the three known words is NULL —
-// "unknown provenance", never a guess. The off-catalog rate is read off this
-// column, so a coerced junk value would be a fabricated data point.
+// Unmapped values must stay NULL, never coerced — the off-catalog rate metric reads this column directly.
 export function readPieceSource(raw: unknown): PieceSource | null {
   return typeof raw === "string" && (PIECE_SOURCES as readonly string[]).includes(raw)
     ? (raw as PieceSource)
@@ -165,15 +139,10 @@ export function readPieceSource(raw: unknown): PieceSource | null {
 
 type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
 
-// Thrown to unwind the discard CAS when the post-lock re-read revokes the
-// permission the pre-lock read granted. Returning would COMMIT the CAS.
+// Must throw, not return — returning here would COMMIT the CAS despite the revoked permission.
 class DiscardRaced extends Error {}
 
-// Demote every auto-placed anchor that points past the end of the newly named
-// piece. Teacher- and student-pinned locations are deliberate human placements
-// and are never touched. `raw` survives so the original words are still a clue;
-// the row is left in exactly the shape the worker writes for an unplaced
-// annotation (no measures, no pinnedBy), which is what re-opens it to a pin.
+// Result must match the worker's own unplaced-annotation shape (no measures, no pinnedBy) — that shape is what reopens it to a pin.
 async function reground(tx: Tx, noteId: string, measures: number): Promise<number> {
   const rows = await tx.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, noteId));
   let n = 0;
@@ -196,8 +165,7 @@ async function reground(tx: Tx, noteId: string, measures: number): Promise<numbe
   return n;
 }
 
-// Offline-first contract: recording is fully local; this row is created at SEND
-// time. Piece and student stay nullable — both are fixable at review.
+// pieceId/studentId are deliberately nullable — both stay fixable later at review.
 export function lessonsRouter(deps: Deps): Router {
   const router = Router();
   const guards = [requireAuth(deps.auth), requireUser(deps)];
@@ -220,9 +188,7 @@ export function lessonsRouter(deps: Deps): Router {
       }
       const db = deps.db!.orm;
       const body = req.body ?? {};
-      // Snapshot of who held the phone; teacher wins for dual-role accounts unless
-      // the client explicitly declares (below). Never re-derived later — a role
-      // granted after the fact must not rewrite history.
+      // Snapshot at record time — never re-derived later, even if the account gains a role afterward.
       let ownerRole = me.isTeacher ? "teacher" : "student";
       const pieceId = typeof body.pieceId === "string" ? body.pieceId : null;
       const pieceLabel = typeof body.pieceLabel === "string" && body.pieceLabel.trim()
@@ -232,9 +198,7 @@ export function lessonsRouter(deps: Deps): Router {
       const clientLessonId = typeof body.clientLessonId === "string" ? body.clientLessonId : null;
       const pieceSource = readPieceSource(body.pieceSource);
 
-      // Client-declared recorder role (B1.5 app sends the local snapshot). An
-      // explicit "student" beats the teacher-wins default — the beta view-as
-      // override records solo on a dual-role account. Absent = old derivation.
+      // Absent falls back to the teacher-wins default — must stay for pre-B1.5 clients that never send this field.
       const requested = body.ownerRole;
       if (requested === "teacher" || requested === "student") {
         if ((requested === "teacher" && !me.isTeacher) || (requested === "student" && !me.isStudent)) {
@@ -244,11 +208,7 @@ export function lessonsRouter(deps: Deps): Router {
         ownerRole = requested;
       }
 
-      // Idempotent create FIRST — before any gate: a retried outbox POST for a row
-      // that already exists must return it even if the trial lapsed in between
-      // (mirrors submit ordering 409-before-402), never paywall an existing row.
-      // Canceled rows never match (cancel releases the clientLessonId), so a
-      // discarded-then-rerecorded lesson gets a fresh row, not a dead one.
+      // Idempotency check must run before any gate — a retried POST for an existing row must return it even if the trial lapsed since.
       if (clientLessonId) {
         const [dup] = await db
           .select()
@@ -260,9 +220,7 @@ export function lessonsRouter(deps: Deps): Router {
           ))
           .limit(1);
         if (dup) {
-          // Crash-window repair: a row inserted before its audioPath update lost
-          // its path — mint it now so uploadUrl is never null (fielded decoder
-          // treats it as non-optional).
+          // audioPath must never be null in the response — the client's fielded decoder treats uploadUrl as non-optional.
           let audioPath = dup.audioPath;
           if (!audioPath) {
             audioPath = deps.lessons.blobPath(me.id, dup.id);
@@ -277,8 +235,7 @@ export function lessonsRouter(deps: Deps): Router {
       }
 
       if (ownerRole === "student") {
-        // Solo recordings are always the recorder's own; the paywall moment is
-        // create (UX) — submit re-checks as the cost guarantee. Dormant in beta.
+        // Create-time entitlement check is UX only; submit is the real cost guard (trial can lapse in between).
         if (studentId) {
           res.status(400).json({ error: "solo_lesson_no_student", message: MSG_SOLO_NO_STUDENT });
           return;
@@ -319,8 +276,7 @@ export function lessonsRouter(deps: Deps): Router {
 
       const startedAt = body.startedAt ? new Date(body.startedAt) : null;
       const endedAt = body.endedAt ? new Date(body.endedAt) : null;
-      // One transaction: a lesson whose entity failed to mint, or an entity with no
-      // lesson, are both worse than neither.
+      // One transaction — an entity that mints without its lesson (or vice versa) is worse than neither existing.
       const row = await db.transaction(async (tx) => {
         const customPieceId = pieceSource === "typed" && pieceLabel
           ? await upsertCustomPiece(tx, me.id, pieceLabel)
@@ -347,9 +303,7 @@ export function lessonsRouter(deps: Deps): Router {
       const path = deps.lessons.blobPath(me.id, row!.id);
       await db.update(lessonSessions).set({ audioPath: path }).where(eq(lessonSessions.id, row!.id));
       await userAudit(deps, req, "lesson.create", { type: "lesson", id: row!.id });
-      // The off-catalog rate is the number that decides whether score scanning is
-      // ever worth building; a counter that only ever fires for typed makes the
-      // numerator queryable without reading lesson labels.
+      // Logged only for typed pieces — this is how the off-catalog rate is measured without reading lesson labels directly.
       if (pieceSource === "typed") {
         console.log(JSON.stringify({
           kind: "piece_typed", op: "lesson.create", reqId: req.reqId ?? null,
@@ -363,8 +317,7 @@ export function lessonsRouter(deps: Deps): Router {
     }),
   );
 
-  // Fresh SAS for an existing un-submitted lesson: the ~2h link minted at create
-  // can expire before an offline outbox retry fires.
+  // Route exists because the ~2h SAS minted at create can expire before an offline outbox retry fires.
   router.post(
     "/v1/lessons/:id/upload-url",
     ...guards,
@@ -411,8 +364,7 @@ export function lessonsRouter(deps: Deps): Router {
         res.status(404).json({ error: "not_found" });
         return;
       }
-      // Canceled is TERMINAL, never "already submitted" — the app treats
-      // already_submitted as success, which would resurrect a discarded lesson.
+      // Canceled must stay its own error, never already_submitted — the app treats that code as success and would resurrect the discard.
       if (lesson.status === "canceled") {
         res.status(409).json({ error: "lesson_canceled" });
         return;
@@ -421,8 +373,7 @@ export function lessonsRouter(deps: Deps): Router {
         res.status(409).json({ error: "already_submitted" });
         return;
       }
-      // The ASR+LLM cost moment: solo submissions re-check entitlement even though
-      // create already did — the trial can lapse between recording and sending.
+      // Submit is the real cost gate — re-checks entitlement even though create already did, since the trial can lapse in between.
       if (lesson.ownerRole === "student") {
         const access = await notesAccess(deps, me);
         if (access.status === "lapsed") {
@@ -440,9 +391,7 @@ export function lessonsRouter(deps: Deps): Router {
         return;
       }
 
-      // CAS the lesson out of 'created' FIRST so only one racing submit (and never
-      // a submit that lost to cancel) proceeds to create a job. The status guard
-      // above is only a fast, friendly early-out.
+      // CAS out of 'created' first — only the winner of a race (submit vs cancel) may create a job; the check above is just a friendly early-out.
       const [claimed] = await db
         .update(lessonSessions)
         .set({ status: "submitted", audioBytes: props.bytes, updatedAt: sql`now()` })
@@ -460,7 +409,6 @@ export function lessonsRouter(deps: Deps): Router {
       try {
         await deps.notesQueue.send({ jobId: job!.id, reqId: req.reqId });
       } catch (err) {
-        // Roll the lesson back so a retry can re-claim it; drop the orphan job.
         await db.delete(noteJobs).where(eq(noteJobs.id, job!.id));
         await db
           .update(lessonSessions)
@@ -475,9 +423,7 @@ export function lessonsRouter(deps: Deps): Router {
     }),
   );
 
-  // Home poll (feeds the teacher home AND the student recordings shelf): lessons +
-  // their latest job + note ids, newest first. ownerRole filter keeps a dual-role
-  // account's solo recordings out of its teacher pipeline and vice versa.
+  // Feeds both the teacher home AND the student recordings shelf — ownerRole filter keeps a dual-role account's two pipelines apart.
   router.get(
     "/v1/lessons",
     ...guards,
@@ -499,10 +445,7 @@ export function lessonsRouter(deps: Deps): Router {
       const jobs = ids.length
         ? await db.select().from(noteJobs).where(inArray(noteJobs.lessonSessionId, ids)).orderBy(desc(noteJobs.createdAt))
         : [];
-      // origin travels so the client can tell a teacher draft from a solo self
-      // note; studentId is the NOTE's own — a non-cascading PATCH leaves a draft
-      // pointing at the old student and the draft row must name that one, not
-      // the lesson's new value.
+      // notes.studentId is selected separately — a non-cascading PATCH can leave a draft's value diverged from the lesson's.
       const noteRows = ids.length
         ? await db
             .select({
@@ -586,15 +529,7 @@ export function lessonsRouter(deps: Deps): Router {
     }),
   );
 
-  // Fix the FACT after the recording. The lesson row is the fact (this lesson was
-  // with X, on piece Y); the note row is the delivery. An assignment always writes
-  // the fact and is never blocked by note state; it cascades to the delivery only
-  // while the delivery is still ours to change (a teacher DRAFT, or a solo SELF
-  // note — the owner's own data end to end), and never clobbers a human choice.
-  //
-  // This cannot be a local-only client edit: LessonUploader skips create once a
-  // serverLessonId exists, and create's dedupe branch returns the existing row
-  // untouched — so every already-created lesson would diverge silently.
+  // Assignment always writes the lesson fact; it cascades to the delivery only while that's still ours to change (teacher DRAFT or solo SELF) — never a human's sent choice.
   router.patch(
     "/v1/lessons/:id",
     ...guards,
@@ -605,16 +540,13 @@ export function lessonsRouter(deps: Deps): Router {
       const hasStudent = "studentId" in body;
       const hasPieceId = "pieceId" in body;
       const hasPieceLabel = "pieceLabel" in body;
-      // Provenance rides a piece change; it is never a patch of its own. A lone
-      // pieceSource would rewrite how an existing choice is described without
-      // changing the choice.
+      // pieceSource is only accepted alongside a pieceId/pieceLabel change — never patchable alone.
       const pieceSource = hasPieceId || hasPieceLabel ? readPieceSource(body.pieceSource) : undefined;
       if (!hasStudent && !hasPieceId && !hasPieceLabel) {
         res.status(400).json({ error: "nothing_to_update" });
         return;
       }
-      // Scope is in the predicate, and a miss is 404 (never 403 — do not confirm
-      // that someone else's lesson exists).
+      // A miss is 404, never 403 — a 403 would confirm someone else's lesson exists.
       const [lesson] = await db
         .select()
         .from(lessonSessions)
@@ -699,19 +631,15 @@ export function lessonsRouter(deps: Deps): Router {
         if (pieceId !== undefined) patch.pieceId = pieceId;
         if (pieceLabel !== undefined) patch.pieceLabel = pieceLabel;
         if (pieceSource !== undefined) patch.pieceSource = pieceSource;
-        // A label absent from the patch is unchanged, and the entity follows the label
-        // the lesson will actually carry.
+        // customPieceId must follow the resolved label (patch or existing), not just what this patch sent.
         const effectiveLabel = pieceLabel !== undefined ? pieceLabel : locked.pieceLabel;
         if (pieceSource === "typed" && effectiveLabel) {
           patch.customPieceId = await upsertCustomPiece(tx, me.id, effectiveLabel);
         } else if (pieceSource !== undefined) {
-          // Any piece-touching patch that does not mint unfiles the lesson: an entity
-          // outliving its label lets the chip claim a name nobody typed.
+          // Must null customPieceId here — an entity outliving its label lets the chip claim a name nobody typed.
           patch.customPieceId = null;
         }
-        // The retry bonus reads this, so it must mean "the prompt would differ",
-        // not "someone touched the row": a re-send of the same value is not a
-        // change, and a student assignment is never one.
+        // The retry bonus reads pieceUpdatedAt — it must mean "the prompt would differ", never just "the row was touched".
         const pieceChanged =
           (pieceId !== undefined && pieceId !== before.pieceId) ||
           (pieceLabel !== undefined && pieceLabel !== before.pieceLabel);
@@ -722,10 +650,7 @@ export function lessonsRouter(deps: Deps): Router {
           .where(and(eq(lessonSessions.id, locked.id), eq(lessonSessions.teacherId, me.id)))
           .returning();
 
-        // Grounding was validated against the measure count that existed at write
-        // time — with no piece that is NULL, so every syntactically valid measure
-        // number was accepted unbounded. Naming the piece late is the act that
-        // would otherwise produce "measure 84" on a 32-bar Burgmüller.
+        // Reground fires because unpieced measures were accepted unbounded — naming the piece late is what can make a number go out of range.
         const shouldReground = pieceId !== undefined && pieceId !== null && pieceId !== before.pieceId && newPieceMeasures !== null;
 
         const rows = await tx.select().from(notes).where(eq(notes.lessonSessionId, locked.id));
@@ -736,17 +661,13 @@ export function lessonsRouter(deps: Deps): Router {
           const ours = (n.origin === "teacher" && n.status === "draft") || n.origin === "self";
           const np: Record<string, unknown> = {};
           if (ours) {
-            // The inherit test, exact and stateless: a note still carrying the
-            // lesson's pre-patch value merely inherited the fact and follows it;
-            // a different value was chosen by a human at review and is left alone.
-            // Never touch studentId on a self note — that IS the owner.
+            // Inherit test: a note whose value still equals the pre-patch lesson value follows the change; a human-chosen different value is left alone.
             if (studentId !== undefined && n.origin === "teacher" && n.studentId === before.studentId) {
               np.studentId = studentId;
             }
             if (pieceId !== undefined && n.pieceId === before.pieceId) np.pieceId = pieceId;
             if (pieceLabel !== undefined && n.pieceLabel === before.pieceLabel) np.pieceLabel = pieceLabel;
-            // A self note is born 'sent' at worker insert, so there is no later
-            // send event at which a version could ever be pinned.
+            // Self notes are born 'sent' at worker insert — there's no later send event to pin pieceVersion at, so it happens here.
             if ("pieceId" in np && n.origin === "self") np.pieceVersion = newPieceVersion;
           }
           if (!Object.keys(np).length) {
@@ -818,10 +739,7 @@ export function lessonsRouter(deps: Deps): Router {
             notes: out.notes,
           }),
         },
-        // The bonus this PATCH may just have granted is only visible through
-        // retryAllowed, and nothing else refetches after an apply — without the
-        // job here the sheet keeps saying "as many times as it usefully can"
-        // right after the server decided otherwise.
+        // job must be included here — nothing refetches after an apply, so without it the UI keeps showing the pre-bonus retry message.
         job: job
           ? {
               ...job,
@@ -880,12 +798,10 @@ export function lessonsRouter(deps: Deps): Router {
           status: "queued",
           stage: null,
           error: null,
-          // The code describes the last failure; a requeued job has none yet.
           failureCode: null,
           failureHints: [],
           attempts: sql`${noteJobs.attempts} + 1`,
-          // Re-anchor: the card's elapsed counter reads startedAt, so a retry must
-          // not present the first attempt's age as this attempt's.
+          // startedAt resets here because the client's elapsed-counter UI reads it — a retry must not show the first attempt's age.
           startedAt: sql`now()`,
           updatedAt: sql`now()`,
         })
@@ -894,9 +810,7 @@ export function lessonsRouter(deps: Deps): Router {
       try {
         await deps.notesQueue.send({ jobId: job!.id, reqId: req.reqId });
       } catch (err) {
-        // Full unwind, like the submit path: a half-restored row charges the user
-        // for an attempt that never ran, and re-stamping updated_at would silently
-        // consume the piece bonus that made this retry possible at all.
+        // Rollback must restore every prior field including updatedAt — re-stamping it would silently consume the piece bonus that authorized this retry.
         await db
           .update(noteJobs)
           .set({
@@ -923,12 +837,7 @@ export function lessonsRouter(deps: Deps): Router {
     }),
   );
 
-  // ONE route for both "cancel this before it was sent" and "delete this dead
-  // recording": the shelf's status comes from a poll, so a job can finish or fail
-  // in the gap between the poll and the tap. With two endpoints the app would
-  // pick from stale state and get a 409 it has to translate; with one, the server
-  // reads the current row and decides. discardDecision() is the whole policy and
-  // the same function computes `discardAllowed` on the wire.
+  // One route for cancel+delete: client state is from a poll and can go stale before the tap, so the server decides via discardDecision(), not the client.
   router.delete(
     "/v1/lessons/:id",
     ...guards,
@@ -956,9 +865,7 @@ export function lessonsRouter(deps: Deps): Router {
 
       const decision = discardDecision({ lessonStatus: lesson.status, job: jobs[0] ?? null, notes: noteRows });
       if (decision.kind === "noop") {
-        // Idempotent, but not inert: audio_path still set on a canceled lesson
-        // means the first delete FAILED (it is nulled below on success), so the
-        // user's natural remedy — tap Discard again — has to actually retry.
+        // audio_path still set on a canceled lesson means the earlier delete FAILED — a repeat Discard tap must retry it, not just no-op.
         if (lesson.audioPath && deps.lessons) {
           try {
             await deps.lessons.deleteAudio(lesson.audioPath);
@@ -966,8 +873,7 @@ export function lessonsRouter(deps: Deps): Router {
               .update(lessonSessions)
               .set({ audioPath: null })
               .where(and(eq(lessonSessions.id, lesson.id), eq(lessonSessions.teacherId, me.id)));
-            // The first discard's audit recorded audioDeleted:false; this is the
-            // only record that the deletion it promised finally happened.
+            // This second audit entry is the only record that the audio deletion the first discard promised actually happened.
             await userAudit(deps, req, "lesson.discard", { type: "lesson", id: lesson.id }, {
               retriedAudioDelete: true,
               audioDeleted: true,
@@ -985,12 +891,7 @@ export function lessonsRouter(deps: Deps): Router {
       }
 
       const claimed = await db.transaction(async (tx) => {
-        // CAS on the status we OBSERVED, not on 'created': a submit or a worker
-        // write that raced this discard must lose cleanly rather than be
-        // overwritten (which would strand a queued job pointing at deleted audio).
-        // Canceling also RELEASES the clientLessonId — the create dedupe skips
-        // canceled rows, so without this a re-record with the same local id would
-        // hit uq_lesson_client_id.
+        // Canceling releases clientLessonId — create's dedupe skips canceled rows, so keeping it set would collide with uq_lesson_client_id on a re-record.
         const [row] = await tx
           .update(lessonSessions)
           .set({ status: "canceled", clientLessonId: null, updatedAt: sql`now()` })
@@ -1002,13 +903,7 @@ export function lessonsRouter(deps: Deps): Router {
           .returning();
         if (!row) return null;
 
-        // EVERYTHING the discard acts on is re-read HERE, under the lock the CAS
-        // just took — never from the pre-lock snapshot. The worker takes the same
-        // lesson row FOR UPDATE before it inserts a note or stamps a transcript,
-        // so a note committed in that window would otherwise survive the discard
-        // and a transcript stamped in it would be orphaned for the 90 days its
-        // lifecycle rule takes to collect it, while the audit and the admin 410
-        // both say the owner deleted it.
+        // Must re-read jobs/notes under this lock, never the pre-lock snapshot — the worker takes the same row FOR UPDATE, so a race-window write would otherwise survive the discard.
         const lockedJobs = await tx
           .select()
           .from(noteJobs)
@@ -1018,15 +913,11 @@ export function lessonsRouter(deps: Deps): Router {
           .select({ id: notes.id, status: notes.status, origin: notes.origin })
           .from(notes)
           .where(eq(notes.lessonSessionId, lesson.id));
-        // Same policy function, post-lock rows: a note that became sendable in
-        // the window revokes the permission, and the CAS unwinds.
+        // Re-runs the same policy on post-lock rows — a note that became sendable in the race window revokes permission and unwinds the CAS.
         const recheck = discardDecision({ lessonStatus: lesson.status, job: lockedJobs[0] ?? null, notes: lockedNotes });
         if (recheck.kind !== "allow") throw new DiscardRaced();
 
-        // A draft is ours to destroy and a self note is the owner's own data end
-        // to end (users.ts already destroys drafts and keeps sent notes on account
-        // deletion, for exactly this reason). A sent teacher note is the shared
-        // record and never reaches here — the guard refused above.
+        // Mirrors users.ts's account-deletion cascade (destroy drafts, keep sent notes) — keep the two in sync.
         const cascadable = lockedNotes
           .filter((n) => (n.origin === "teacher" && n.status === "draft") || n.origin === "self")
           .map((n) => n.id);
@@ -1040,22 +931,15 @@ export function lessonsRouter(deps: Deps): Router {
             .set({
               discardedAt: sql`now()`,
               transcriptPath: null,
-              modelOutputPath: null, // quotes the lesson verbatim, like the transcript
-              // metrics.warnings carries up to 60 characters of the model's
-              // instruction per dropped annotation — verbatim lesson content about
-              // a named student. A discard that promises to delete the transcript
-              // must strip it; the counts D5 exists to protect all survive.
+              modelOutputPath: null,  // quotes the lesson verbatim, like the transcript
+              // metrics.warnings holds verbatim lesson content (up to 60 chars per annotation) and must be stripped; the other counts must survive intact.
               metrics: sql`${noteJobs.metrics} - 'warnings'::text`,
               // Verbatim lesson words, like everything else stripped here.
               pieceMentions: [],
               updatedAt: sql`now()`,
             })
             .where(eq(noteJobs.lessonSessionId, lesson.id));
-          // A queued job's Service Bus message outlives the discard, and the
-          // worker gates on THIS status — terminalizing it here is what stops the
-          // run. A job that already reached its own terminal state keeps the code
-          // that describes why: overwriting it would attribute a real ASR failure
-          // to the discard in the failure-code facet.
+          // Only overwrite queued/processing jobs — an already-terminal job keeps its real failure code, or the discard corrupts the failure-code analytics.
           await tx
             .update(noteJobs)
             .set({
@@ -1087,19 +971,7 @@ export function lessonsRouter(deps: Deps): Router {
         return;
       }
 
-      // Best-effort blob work outside the transaction: a failed delete must not
-      // roll back a discard the user was told succeeded. audio_path is the
-      // sentinel — nulled ONLY on a confirmed delete, so "canceled but audio
-      // still present" is a one-line reaper query and the repeat-discard path
-      // above knows there is something left to retry.
-      //
-      // The upload SAS minted at create (2h, account-key) cannot be revoked: only
-      // rotating the storage key or a container-wide stored access policy would
-      // do it, and both break every concurrent upload. Shortening the TTL was
-      // rejected — a 320 MB background upload on a slow link needs the headroom.
-      // Residual, accepted: a PUT that lands after a successful delete re-creates
-      // an orphan blob that no route can reach, collected by the lesson-audio
-      // 90-day lifecycle rule.
+      // The create-time SAS can't be revoked without breaking concurrent uploads — a stray post-delete PUT creating an orphan blob is accepted, cleaned up by the 90-day lifecycle rule.
       let audioDeleted = false;
       if (lesson.audioPath && deps.lessons) {
         try {

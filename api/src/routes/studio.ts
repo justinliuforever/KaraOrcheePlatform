@@ -17,21 +17,19 @@ const INSTRUMENTS = ["piano", "violin", "guitar"] as const;
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 80 * 1024 * 1024, files: 3 }, // audio can be tens of MB
+  limits: { fileSize: 80 * 1024 * 1024, files: 3 },
 });
 
-// Both files are mandatory in the wizard: professional notation software exports
-// MusicXML and MIDI from the same project, and the alignment gate cross-verifies
-// them. (The worker's XML-only route survives for CLI/edge use, not the wizard.)
+// Both files are mandatory — the alignment gate cross-verifies MusicXML against MIDI; don't make either optional.
 const metadataSchema = z
   .object({
     title: z.string().min(1).max(200),
     composer: z.string().trim().min(1).max(120),
     subtitle: z.string().max(200).default(""),
-    mode: z.literal("solo").default("solo"), // concerto needs stems; out of studio scope
+    mode: z.literal("solo").default("solo"),  // concerto needs stems; out of studio scope
     difficulty: z.number().int().min(1).max(5).nullable().default(null),
     tracking: z.enum(["validated", "experimental"]).default("experimental"),
-    rights: z.enum(["public_domain", "licensed", "unknown"]), // required — no default
+    rights: z.enum(["public_domain", "licensed", "unknown"]),
     rightsNote: z.string().max(2000).default(""),
     instrument: z.enum(INSTRUMENTS).default("piano"),
     soloPart: z.string().max(80).nullable().default(null),
@@ -71,8 +69,7 @@ const patchSchema = z.object({
   rights: z.enum(["public_domain", "licensed", "unknown"]).optional(),
   rightsNote: z.string().max(2000).optional(),
   instrument: z.enum(INSTRUMENTS).optional(),
-  // Solo part id from the XML part-list. Changing it invalidates every built artifact
-  // (display, timeline, preview) — the PATCH handler resets and re-preflights.
+  // Changing solo part invalidates every built artifact — the PATCH handler must reset and re-preflight.
   soloPart: z.string().max(80).nullable().optional(),
   work: z
     .object({
@@ -98,16 +95,16 @@ const checksSchema = z.object({
   instrument: z.string().optional(),
   work: z
     .object({
-      id: z.string().optional(), // existing work selected
-      catalogue: z.string().optional(), // creating a new work
+      id: z.string().optional(),
+      catalogue: z.string().optional(),
       index: z.number().int().min(0).nullable().optional(),
     })
     .nullable()
     .optional(),
   book: z
     .object({
-      id: z.string().optional(), // existing book selected
-      title: z.string().optional(), // creating a new book
+      id: z.string().optional(),
+      title: z.string().optional(),
       index: z.number().int().min(0).nullable().optional(),
     })
     .nullable()
@@ -172,10 +169,7 @@ export function studioRouter(deps: Deps): Router {
     return sources;
   }
 
-  // Step-1 entry point: files only. Metadata arrives later via PATCH while the
-  // preflight gates already run. ?piece=<id> PINS the draft to an existing piece
-  // ("upload new version"): identity is carried by the immutable id, never re-derived
-  // from title strings — renaming a piece can't break its version chain.
+  // ?piece=<id> pins the draft to an existing piece — identity stays the immutable id, never re-derived from title strings.
   router.post(
     "/admin/studio/drafts",
     upload.fields([
@@ -200,8 +194,7 @@ export function studioRouter(deps: Deps): Router {
           res.status(404).json({ error: "piece_not_found" });
           return;
         }
-        // One open build per piece: two parallel pinned drafts would race publishes and
-        // the last writer's metadata (incl. work membership) silently wins the row.
+        // One open build per piece — parallel pinned drafts would race publishes and the last writer silently wins the row.
         const [open] = await db
           .select({ id: studioJobs.id, status: studioJobs.status })
           .from(studioJobs)
@@ -217,9 +210,7 @@ export function studioRouter(deps: Deps): Router {
         const facts = piece.facts as { solo_part?: string } | null;
         metadata = {
           pinnedPieceId: piece.id,
-          // Registry concurrency token: publish rejects if the Library row changed
-          // after this snapshot was taken (409 stale_registry), so a draft can never
-          // silently revert committed Library edits. Refreshed on reopen.
+          // Concurrency token: publish 409s if the Library row changed since this snapshot — refreshed on reopen.
           pinnedPieceUpdatedAt: piece.updatedAt.toISOString(),
           title: piece.title,
           composer: piece.composer,
@@ -235,8 +226,7 @@ export function studioRouter(deps: Deps): Router {
         };
       }
 
-      // Instrument is chosen BEFORE upload so the very first preflight renders the
-      // preview with the right soundfont; pinned drafts inherit it from the piece.
+      // Instrument must be chosen before upload — the first preflight needs it to pick the preview soundfont.
       if (!pin) {
         const inst = req.body?.instrument as string | undefined;
         if (inst !== undefined && !(INSTRUMENTS as readonly string[]).includes(inst)) {
@@ -276,10 +266,7 @@ export function studioRouter(deps: Deps): Router {
     }),
   );
 
-  // Back to draft on the same row — one board row per piece, attempt history stays in
-  // audit_events. Covers the failed/canceled fix loop AND "edit details before publish"
-  // from review (sources are already staged; the wizard reopens prefilled, preflight
-  // re-runs, submit re-verifies everything).
+  // Reopen reuses the same row — one board row per piece; attempt history lives in audit_events, not extra rows.
   router.post(
     "/admin/studio/jobs/:id/reopen",
     wrap(async (req, res) => {
@@ -298,8 +285,7 @@ export function studioRouter(deps: Deps): Router {
         res.status(409).json({ error: "not_reopenable", status: job.status });
         return;
       }
-      // Reopening means the admin is deliberately revising — refresh the registry
-      // concurrency token so their next publish reflects awareness of current state.
+      // Reopening refreshes the registry concurrency token so the next publish reflects current Library state.
       const prevMeta = job.metadata as Record<string, unknown>;
       let metadata = prevMeta;
       if (prevMeta.pinnedPieceId) {
@@ -334,7 +320,6 @@ export function studioRouter(deps: Deps): Router {
     }),
   );
 
-  // Replace the uploaded files on a draft (bad export → fix → re-check).
   router.put(
     "/admin/studio/jobs/:id/files",
     upload.fields([
@@ -384,8 +369,7 @@ export function studioRouter(deps: Deps): Router {
     }),
   );
 
-  // Metadata lands section-by-section as the wizard progresses; the slug is derived
-  // server-side from composer/title/subtitle and is never client-writable.
+  // The pieceId/slug is always derived server-side from composer/title/subtitle — never accept it from the client.
   router.patch(
     "/admin/studio/jobs/:id/metadata",
     wrap(async (req, res) => {
@@ -420,9 +404,7 @@ export function studioRouter(deps: Deps): Router {
           ? pieceSlug(composer, title, subtitle)
           : job.pieceId;
 
-      // Solo part and instrument are metadata that CHANGE artifacts — flipping either
-      // invalidates the preflight (display, timeline, preview were built from the old
-      // choice; the preview soundfont follows the instrument).
+      // Solo part / instrument changes invalidate built artifacts (display, timeline, preview) — must re-run preflight.
       const soloChanged =
         parsed.data.soloPart !== undefined && parsed.data.soloPart !== (prev.soloPart ?? null);
       const instrumentChanged =
@@ -449,7 +431,6 @@ export function studioRouter(deps: Deps): Router {
     }),
   );
 
-  // Section-level duplicate checks the wizard calls before unlocking the next step.
   router.post(
     "/admin/studio/checks",
     wrap(async (req, res) => {
@@ -465,8 +446,7 @@ export function studioRouter(deps: Deps): Router {
       let slug: string | null = null;
 
       if (work?.catalogue && composer) {
-        // Creating a new work: the (composer + normalized catalogue) check that keeps a
-        // bulk upload from fragmenting one sonata into N works.
+        // Composer + normalized catalogue check — prevents a bulk upload from fragmenting one sonata into N works.
         const norm = normalizeCatalogue(work.catalogue);
         const siblings = await db
           .select()
@@ -564,8 +544,7 @@ export function studioRouter(deps: Deps): Router {
     }),
   );
 
-  // Final submit: metadata must be complete, preflight must have passed. The full
-  // run re-verifies the fast gates (deliberate redundancy) and adds the render gate.
+  // Deliberate redundancy: full run re-verifies the fast preflight gates, then adds the render gate.
   router.post(
     "/admin/studio/jobs/:id/submit",
     wrap(async (req, res) => {
@@ -605,8 +584,7 @@ export function studioRouter(deps: Deps): Router {
         });
         return;
       }
-      // Reviewed = published: the artifacts on this row must have been built from the
-      // CURRENT solo-part choice.
+      // Reviewed = published — artifacts on this row must be built from the CURRENT solo-part choice.
       const stamp = (job.gates as Record<string, { metrics?: { solo_part?: string } }>)?.sanity
         ?.metrics?.solo_part;
       if (meta.data.soloPart && stamp && meta.data.soloPart !== stamp) {
@@ -620,9 +598,7 @@ export function studioRouter(deps: Deps): Router {
       const pieceId = pinned
         ? String(pinned)
         : pieceSlug(meta.data.composer, meta.data.title, meta.data.subtitle);
-      // Slug collision guard (unpinned drafts only): same id must mean the same
-      // musical identity. A pinned draft IS an intentional version bump of its piece,
-      // whatever the display fields now say.
+      // Guard applies to unpinned drafts only — a pinned draft IS an intentional version bump regardless of display fields.
       if (!pinned) {
         const [existing] = await db.select().from(pieces).where(eq(pieces.id, pieceId)).limit(1);
         if (
@@ -638,8 +614,7 @@ export function studioRouter(deps: Deps): Router {
           return;
         }
       }
-      // One open build per PIECE, pinned or not — two parallel builds of the same
-      // identity would race publishes and the loser's metadata silently wins the row.
+      // One open build per piece, pinned or not — parallel builds would race publishes and the loser silently wins the row.
       const [openDup] = await db
         .select({ id: studioJobs.id, status: studioJobs.status })
         .from(studioJobs)
@@ -666,8 +641,7 @@ export function studioRouter(deps: Deps): Router {
       try {
         await deps.piecesQueue.send({ jobId: id, pieceId, reqId: req.reqId });
       } catch (err) {
-        // Never leave the row wedged in 'queued' with no message in flight — no
-        // route accepts 'queued', so roll back and let the admin retry.
+        // Roll back to draft on send failure — no route accepts resuming from 'queued', so a wedged row is unrecoverable.
         await db
           .update(studioJobs)
           .set({ status: "draft", updatedAt: sql`now()` })
@@ -735,8 +709,7 @@ export function studioRouter(deps: Deps): Router {
           url: deps.catalog!.signReadUrl(deps.studio!.bundleUrl(a.path)),
         }));
       }
-      // Registry cross-check: what this piece id looks like in the LIVE catalog right
-      // now — lets the UI say "you published v1, current live is v3 / piece archived".
+      // Registry cross-check against the LIVE catalog — the job itself only holds a metadata snapshot.
       let piece: { status: string; publishedVersion: number | null } | null = null;
       if (!job.pieceId.startsWith("draft_")) {
         const [p] = await db
@@ -750,7 +723,6 @@ export function studioRouter(deps: Deps): Router {
     }),
   );
 
-  // Re-run all gates: recovery from failed, or paranoia re-verification from review.
   router.post(
     "/admin/studio/jobs/:id/retry",
     wrap(async (req, res) => {
@@ -845,9 +817,7 @@ export function studioRouter(deps: Deps): Router {
         res.status(409).json({ error: "rights_blocked", rights: meta.rights });
         return;
       }
-      // The draft metadata is a SNAPSHOT — the live registry row is the truth for
-      // rights and for concurrent Library edits. Without these guards a stale draft
-      // could silently reverse a takedown or revert committed Library edits.
+      // Draft metadata is a snapshot — live registry rights/edits are the source of truth; without these guards a stale draft could reverse a takedown.
       const [livePiece] = await db.select().from(pieces).where(eq(pieces.id, job.pieceId)).limit(1);
       if (livePiece && !PUBLISHABLE_RIGHTS.has(livePiece.rights)) {
         res.status(409).json({
@@ -871,8 +841,7 @@ export function studioRouter(deps: Deps): Router {
         res.status(409).json({ error: "no_artifacts" });
         return;
       }
-      // Role allowlist: preview audio is a review aid — it must never enter the
-      // immutable bundle or the fielded catalog.
+      // Role allowlist — preview audio is a review aid and must never enter the published bundle/catalog.
       const artifacts = allArtifacts.filter((a) => PUBLISH_ROLES.has(a.role));
       // Reviewed = published, publish-side re-assertion.
       const publishStamp = (job.gates as Record<string, { metrics?: { solo_part?: string } }>)
@@ -884,10 +853,7 @@ export function studioRouter(deps: Deps): Router {
       const pieceId = job.pieceId;
 
       const gates = job.gates as Record<string, { metrics?: Record<string, unknown> }>;
-      // Hard server-side block BEFORE any side effect (blob copies included): repeat
-      // pieces build and review fine, but the shipped app assumes one measure = one
-      // playback time (its FOLLOW mode treats the exact repeat twins as tracker
-      // poison). Publishing waits for the app-side repeat capability.
+      // Hard block before any side effect — the app's FOLLOW mode treats repeat-twin measures as tracker poison until it supports repeat structures.
       const structureMetrics = gates?.structure?.metrics as
         | { kind?: string; written_measures?: number; played_measures?: number;
             max_passes?: number; n_spans?: number; expanded_duration_sec?: number;
@@ -910,8 +876,7 @@ export function studioRouter(deps: Deps): Router {
         .where(eq(pieceVersions.pieceId, pieceId));
       const version = (maxRow?.maxVersion ?? 0) + 1;
 
-      // Blob copies before the DB transaction: immutable v<N> layout, re-copy on a
-      // failed publish retry is harmless.
+      // Blob copies happen before the DB transaction — immutable v<N> paths make a re-copy on retry harmless.
       const versionFiles: BundleFile[] = [];
       for (const a of artifacts) {
         const filename = a.path.split("/").pop()!;
@@ -923,8 +888,6 @@ export function studioRouter(deps: Deps): Router {
       const rowIconFile = versionFiles.find((a) => a.role === "row_icon");
 
       const engineSha = (gates?.geometry?.metrics?.engine_sha as string | undefined) ?? null;
-      // Assemble facts from gate metrics: XML ground truth + computed duration + the
-      // part choice this bundle was built from.
       const xm = (gates?.sanity?.metrics?.xml_meta ?? {}) as Record<string, unknown>;
       const facts = {
         key: xm.key ?? null,
@@ -936,8 +899,7 @@ export function studioRouter(deps: Deps): Router {
         duration_sec: gates?.alignment?.metrics?.duration_sec ?? null,
         solo_part: gates?.sanity?.metrics?.solo_part ?? null,
         parts: ((xm.parts as { name?: string | null }[] | undefined) ?? []).map((p) => p.name).filter(Boolean),
-        // Structure facts only for repeat pieces — linear pieces keep their exact
-        // pre-repeat facts shape.
+        // Structure facts only for repeat pieces — linear pieces must keep their existing facts shape unchanged.
         ...(structureMetrics?.kind === "repeats"
           ? {
               structure: {
@@ -959,8 +921,7 @@ export function studioRouter(deps: Deps): Router {
           : [meta.instrument],
       };
 
-      // Work membership referenced at publish must exist (created earlier via the
-      // wizard's Work lane / POST /admin/works).
+      // Work must reference an existing work — created via the wizard's Work lane; never auto-created here.
       if (meta.work) {
         const [w] = await db.select().from(works).where(eq(works.id, meta.work.id)).limit(1);
         if (!w) {
@@ -969,9 +930,7 @@ export function studioRouter(deps: Deps): Router {
         }
       }
 
-      // Book membership must reference an EXISTING book (created via POST /admin/books,
-      // which enforces the mandatory cover). Auto-creating here minted silent coverless
-      // books titled with the raw id whenever a batch tool typo'd --book-id.
+      // Book must reference an existing book (POST /admin/books enforces the mandatory cover) — never auto-create here.
       if (meta.book) {
         const [bk] = await db.select().from(books).where(eq(books.id, meta.book.id)).limit(1);
         if (!bk) {
@@ -994,10 +953,7 @@ export function studioRouter(deps: Deps): Router {
           workIndex: meta.work?.index ?? null,
           instrumentation,
           facts,
-          // null (serialized as true) rather than omitted: a re-publish whose new
-          // build fixes the condition must clear a stale false on the existing row.
-          // tempo_source "default" = no numeric tempo in the XML — the synthetic
-          // timeline biases FOLLOW from t=0. Absent field (old bundles) passes through.
+          // null (not omitted) — a re-publish that fixes the condition must clear a stale false on the existing row.
           followReady:
             structureMetrics?.kind === "repeats" || xm.tempo_source === "default" ? false : null,
           // null, not omitted: a re-publish without the artifact clears a stale path.
@@ -1022,8 +978,7 @@ export function studioRouter(deps: Deps): Router {
           files: versionFiles,
           publishedBy: req.adminUser!.id,
         });
-        // Status predicate: if a concurrent cancel/reopen moved the job during the
-        // blob copies, abort the whole publish instead of overriding the admin.
+        // Status predicate guards a concurrent cancel/reopen during the blob copies — abort the whole publish rather than override the admin.
         const [flipped] = await tx
           .update(studioJobs)
           .set({ status: "published", publishedVersion: version, updatedAt: sql`now()` })
@@ -1039,9 +994,7 @@ export function studioRouter(deps: Deps): Router {
         return;
       }
 
-      // The piece is committed as published; a transient catalog failure must not
-      // read as a failed publish (re-publish would 409). Any later catalog-touching
-      // mutation heals it — surface the warning instead.
+      // Catalog rebuild failure must not fail the publish (re-publish would 409) — surface a warning; later catalog-touching mutations self-heal it.
       let catalogWarning: string | null = null;
       try {
         await rebuildCatalog(db, deps.studio);

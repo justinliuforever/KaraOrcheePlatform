@@ -39,9 +39,6 @@ import {
 
 type NoteRow = typeof notes.$inferSelect;
 
-// Eligibility, then computation. Every arm here is a REMOVAL: a sent note, an
-// explicit piece, a vendored pick (an explicit choice delivered as nil-id + label),
-// a dismissal, or two survivors all end in silence.
 async function suggestionFor(deps: Deps, note: NoteRow): Promise<Suggestion | null> {
   if (note.status !== "draft" || note.pieceId) return null;
   const db = deps.db!.orm;
@@ -84,9 +81,7 @@ async function suggestionFor(deps: Deps, note: NoteRow): Promise<Suggestion | nu
     .from(pieces)
     .where(eq(pieces.status, "published"));
 
-  // The teacher's OWN vocabulary joins the candidate set (FG-18) as things a mention
-  // could equally have meant. An unlinked one carries no piece to confirm, so when it
-  // wins the chip stays silent — a linked one is already its catalog piece here.
+  // ownPseudo ids are prefixed "custom:" — the final filter below relies on that prefix to keep unlinked hits silent.
   const ownPseudo: CandidatePiece[] = mine
     .filter((c) => c.id !== ownId && !c.linkedPieceId)
     .map((c) => ({ id: `custom:${c.id}`, title: c.displayLabel, subtitle: "", composer: "" }));
@@ -96,8 +91,6 @@ async function suggestionFor(deps: Deps, note: NoteRow): Promise<Suggestion | nu
     ...(own ? asStringArray(own.dismissedPieceIds) : []),
   ];
 
-  // The library arm claims the catalog holds THE NAME ON THE SCREEN. The entity
-  // outlives a rename, so the claim dies unless the two are still the same name.
   const shown = note.pieceLabel ?? lesson?.pieceLabel ?? null;
   const claimable = own && shown && normalizeLabel(own.displayLabel) === normalizeLabel(shown);
 
@@ -113,16 +106,12 @@ async function suggestionFor(deps: Deps, note: NoteRow): Promise<Suggestion | nu
 
 type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
 
-// Cleared at every resolution point (confirm, dismiss, send, discard): the chip is
-// draft-only, nothing reads these afterward, and they are the teacher's and a
-// minor's words quoted verbatim.
+// Must be called at every resolution point (confirm, dismiss, send, discard) — these quote a teacher's and a minor's words verbatim.
 export async function clearPieceMentions(tx: Tx, jobId: string | null): Promise<void> {
   if (!jobId) return;
   await tx.update(noteJobs).set({ pieceMentions: [], updatedAt: sql`now()` }).where(eq(noteJobs.id, jobId));
 }
 
-// Demote every auto-placed anchor that points past the end of the newly named piece.
-// Human pins are deliberate placements and are never touched.
 async function reground(tx: Tx, noteId: string, measures: number): Promise<void> {
   const rows = await tx.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, noteId));
   for (const a of rows) {
@@ -163,10 +152,7 @@ export function notesRouter(deps: Deps): Router {
   const guards = [requireAuth(deps.auth), requireUser(deps)];
 
   // ── Teacher side ──────────────────────────────────────────────────────────────
-  // Every teacher-side surface is HARD-scoped to origin='teacher' AND isTeacher:
-  // a dual-role account's solo self-notes (teacher_id = student_id = them) must
-  // never surface in review/retract/duplicate — they live exclusively behind
-  // /v1/me/notes — and a pure-student token gets 403, never an empty-but-real list.
+  // Every teacher-side query must also scope by origin='teacher' — omit it and a dual-role account's self-notes leak into review/retract/duplicate.
   const requireTeacher = (me: { isTeacher: boolean }, res: { status(n: number): { json(b: unknown): unknown } }): boolean => {
     if (me.isTeacher) return true;
     res.status(403).json({ error: "teacher_only", message: "This account isn't set up as a teacher." });
@@ -216,14 +202,11 @@ export function notesRouter(deps: Deps): Router {
         .from(noteAnnotations)
         .where(eq(noteAnnotations.noteId, note.id))
         .orderBy(asc(noteAnnotations.idx));
-      // Computed at READ time, never stored: a catalog that grew after processing
-      // still surfaces, and a dismissal applies the moment it is made.
+      // Must stay computed at READ time, never cached — a catalog that grows or a dismissal has to apply immediately.
       res.json({ note, annotations, pieceSuggestion: await suggestionFor(deps, note) });
     }),
   );
 
-  // Draft-only edits. Annotations are a full replacement; quotes are provenance,
-  // so rows keeping their id keep their stored quote regardless of the payload.
   router.patch(
     "/v1/notes/:id",
     ...guards,
@@ -280,11 +263,7 @@ export function notesRouter(deps: Deps): Router {
       if ("pieceLabel" in body) {
         patch.pieceLabel = typeof body.pieceLabel === "string" && body.pieceLabel.trim() ? body.pieceLabel.trim() : null;
       }
-      // One transaction, CAS on draft: a racing send must never lose an edit to a
-      // sent note, and a crash must never leave a note with content updated but its
-      // annotations half-rewritten. Annotations are worker-authored — the client
-      // may reorder, edit instruction/category/location, or DELETE (omit an id),
-      // but NEVER create a row or alter a quote (verbatim provenance lives server-side).
+      // One transaction, CAS on draft — a racing send must never lose an edit, and quote (verbatim provenance) is never alterable via this payload.
       let dropped: string[] = [];
       const updated = await db.transaction(async (tx) => {
         const [u] = await tx
@@ -305,7 +284,7 @@ export function notesRouter(deps: Deps): Router {
           for (const a of body.annotations as Record<string, unknown>[]) {
             const id = typeof a.id === "string" ? a.id : null;
             const row = id ? byId.get(id) : undefined;
-            if (!row) continue; // no id / unknown id: cannot mint an unsourced annotation
+            if (!row) continue;  // no id / unknown id: cannot mint an unsourced annotation
             keep.add(row.id);
             await tx
               .update(noteAnnotations)
@@ -328,8 +307,7 @@ export function notesRouter(deps: Deps): Router {
         res.status(409).json({ error: "not_editable", message: "Sent notes can't be edited — retract, fix, and resend." });
         return;
       }
-      // The manifest row cascades with the annotation; its audio does not. Nothing
-      // would ever address these blobs again — they are a pure storage leak.
+      // The manifest row cascades with the annotation; its blob doesn't — skip this and it's an unaddressable storage leak.
       if (dropped.length && deps.notesAssets) {
         try {
           for (const clipId of dropped) {
@@ -402,12 +380,7 @@ export function notesRouter(deps: Deps): Router {
           .limit(1);
         pieceVersion = piece?.publishedVersion ?? null;
       }
-      // Send is the third minting point and the commitment point: a name typed fresh
-      // into the review label field patches only the note, so without this the piece
-      // the teacher actually sent would never group. Precedence is label equality — a
-      // note label that DIFFERS from its lesson's was retyped by a human and is typed
-      // provenance whatever the lesson says; an equal one follows the lesson, which
-      // means an unknown or vendored source mints nothing.
+      // customPieceId follows the lesson only when labels match — a note label that DIFFERS from the lesson's was retyped by a human and must mint fresh provenance.
       const updated = await db.transaction(async (tx) => {
         let customPieceId = note.customPieceId;
         if (!note.pieceId && note.pieceLabel) {
@@ -443,12 +416,7 @@ export function notesRouter(deps: Deps): Router {
         res.status(409).json({ error: "status_changed" });
         return;
       }
-      // Narration made while this was a draft can speak text the teacher edited
-      // before sending. The worker re-synthesizes only the clips whose content hash
-      // moved, so this fires unconditionally. ONE message, every voice, on the
-      // dedicated narration lane — the shape pinned in narration_parity.json, which the
-      // worker refuses to guess at. Best-effort: a Service Bus outage must not withhold
-      // the note — narrationQueued:false is the trail for a manual requeue.
+      // Message shape (one message, every voice, dedicated lane) is pinned in narration_parity.json — the worker refuses to guess at anything looser.
       let narrationQueued = false;
       if (deps.notesQueue) {
         try {
@@ -462,9 +430,7 @@ export function notesRouter(deps: Deps): Router {
           console.error("note.send: narration enqueue failed", note.id, err);
         }
       }
-      // The out-of-app signal, and the only one: without it a note sent hours after the
-      // lesson is discovered by pulling to refresh. It runs after the row is committed and
-      // swallows everything, so a dead APNs costs the notification and nothing else.
+      // Must run after the note is committed and never throw — notifyNoteSent swallows its own failures so a dead APNs costs only the notification.
       const pushed = await notifyNoteSent(deps, { studentId, noteId: note.id });
       await userAudit(deps, req, "note.send", { type: "note", id: note.id }, {
         studentId,
@@ -475,8 +441,7 @@ export function notesRouter(deps: Deps): Router {
     }),
   );
 
-  // Confirm-only. Nothing here is ever reached by the worker, a job, or a read: the
-  // ONLY path from a suggestion to notes.piece_id is a teacher pressing a button.
+  // Confirm-only — must stay the ONLY path from a suggestion to notes.piece_id; no worker or job may set it.
   router.post(
     "/v1/notes/:id/piece-suggestion",
     ...guards,
@@ -507,8 +472,6 @@ export function notesRouter(deps: Deps): Router {
 
       const fresh = await suggestionFor(deps, note);
       if (action === "confirm" && fresh?.pieceId !== pieceId) {
-        // A catalog republish or a second device moved the ground under the button.
-        // The stale candidate is never applied.
         res.status(409).json({ error: "suggestion_changed", pieceSuggestion: fresh ?? null });
         return;
       }
@@ -518,9 +481,7 @@ export function notesRouter(deps: Deps): Router {
         : [];
 
       if (action === "dismiss") {
-        // Both dismissal stores are append-only, so an id that names no piece is
-        // permanent litter. Re-checking the id (rather than the live suggestion)
-        // keeps the specced silent retry idempotent after the first dismiss lands.
+        // Re-check the id itself here, not the live suggestion (unlike confirm) — that's what keeps a repeated dismiss idempotent.
         const [dismissable] = await db
           .select({ id: pieces.id })
           .from(pieces)
@@ -567,9 +528,7 @@ export function notesRouter(deps: Deps): Router {
       }
       const measures = (piece.facts as { measures?: unknown } | null)?.measures;
       const measureCount = typeof measures === "number" && Number.isInteger(measures) && measures > 0 ? measures : null;
-      // Undo has to be able to put back exactly what was there, including whether the
-      // teacher had picked a vendored piece — restoring a hardcoded "typed" would
-      // rewrite their provenance.
+      // prior.pieceSource must read the lesson's actual value, not a hardcoded "typed" — undo would otherwise rewrite provenance.
       const prior = {
         pieceId: lesson?.pieceId ?? null,
         pieceLabel: lesson?.pieceLabel ?? null,
@@ -594,8 +553,7 @@ export function notesRouter(deps: Deps): Router {
           .set({ pieceId, updatedAt: sql`now()` })
           .where(eq(notes.id, note.id));
         if (measureCount !== null) await reground(tx, note.id, measureCount);
-        // "The teacher said X" does not assert "X equals the typed label", so only the
-        // library arm — exact name equality — may record a link.
+        // Only fresh.source === "library" (exact name match) may set linkedPieceId — a mention-based match isn't proof enough.
         const customId = note.customPieceId ?? lesson?.customPieceId ?? null;
         if (fresh?.source === "library" && customId) {
           await tx
@@ -639,12 +597,7 @@ export function notesRouter(deps: Deps): Router {
     }),
   );
 
-  // A duplicate speaks the same words in the same order, so its clips are identical to
-  // the origin's — and content_hash, which carries no note id, is exactly what makes the
-  // worker skip a clip it already made. Copying the audio server-side inside the
-  // container is what makes a group send free instead of one full vendor run per
-  // recipient. Best-effort and per clip: the manifest row is written only once its blob
-  // is actually there, so this can never produce a signed URL that 404s.
+  // contentHash is copied verbatim — it excludes noteId, so the worker's cross-note dedup still recognizes it.
   async function copyNarration(
     fromNoteId: string,
     toNoteId: string,
@@ -686,8 +639,6 @@ export function notesRouter(deps: Deps): Router {
     }
   }
 
-  // Group send (copy the reviewed draft per student) and fix-after-retract both
-  // route through duplication; a retracted origin records its successor.
   router.post(
     "/v1/notes/:id/duplicate",
     ...guards,
@@ -709,8 +660,7 @@ export function notesRouter(deps: Deps): Router {
         .from(noteAnnotations)
         .where(eq(noteAnnotations.noteId, note.id))
         .orderBy(asc(noteAnnotations.idx));
-      // One transaction: a copy that exists without its annotations (or a retracted
-      // origin pointing at a half-built successor) is worse than no copy.
+      // Insert + annotations + supersededBy must stay one transaction — a copy without its annotations is worse than no copy.
       const { copy, clipIdByIdx } = await db.transaction(async (tx) => {
         const [c] = await tx
           .insert(notes)
@@ -760,16 +710,14 @@ export function notesRouter(deps: Deps): Router {
       const me = req.notesUser!;
       const db = deps.db!.orm;
       const access = await notesAccess(deps, me);
-      // Retracted notes appear (as a "withdrawn" stub) only if the student had
-      // already read them — unread retractions simply vanish.
+      // Unread retractions must vanish entirely — only previously-read ones show the "withdrawn" stub.
       const rows = await db
         .select()
         .from(notes)
         .where(and(eq(notes.studentId, me.id), inArray(notes.status, ["sent", "retracted"])))
         .orderBy(desc(notes.sentAt));
       const visible = rows.filter((n) => n.status === "sent" || n.readAt !== null);
-      // Self-notes never resolve a teacher identity: the author IS the student and
-      // the app renders "your recording", not a name.
+      // origin==="self" notes are excluded here — the app renders "your recording" for them, never a resolved name.
       const teacherIds = [...new Set(visible.filter((n) => n.origin !== "self").map((n) => n.teacherId))];
       const teacherRows = teacherIds.length
         ? await db.select().from(users).where(inArray(users.id, teacherIds))
@@ -823,8 +771,7 @@ export function notesRouter(deps: Deps): Router {
         .from(notes)
         .where(and(eq(notes.id, String(req.params.id)), eq(notes.studentId, me.id)))
         .limit(1);
-      // A never-opened note that was retracted must vanish (same rule as the list):
-      // only a note the student already read shows the "withdrawn" stub.
+      // Same rule as the notes list — a never-opened retracted note must vanish, not show the "withdrawn" stub.
       if (!note || note.status === "draft" || (note.status === "retracted" && note.readAt === null)) {
         res.status(404).json({ error: "not_found" });
         return;
@@ -843,16 +790,12 @@ export function notesRouter(deps: Deps): Router {
         .from(noteAnnotations)
         .where(eq(noteAnnotations.noteId, note.id))
         .orderBy(asc(noteAnnotations.idx));
-      // MC-6: a self-note's "teacher" is the student themselves — never byline it.
       const [teacher] = note.origin === "self"
         ? [null]
         : await db.select().from(users).where(eq(users.id, note.teacherId)).limit(1);
       res.json({
-        // Tombstoned notes (author deleted their account) carry null job/lesson
-        // refs — coalesce to "" because fielded B1 clients decode these as
-        // non-optional strings and a null (or absent) key bricks the note forever.
-        // The suggestion machinery is teacher-side entirely: the dismissal ledger and
-        // the entity id are not the student's business and never ride to them.
+        // Coalesce noteJobId/lessonSessionId to "" — already-shipped clients decode these as non-optional strings; null bricks the note.
+        // pieceSuggestionDismissed and customPieceId are teacher-side only — strippedForStudent must keep excluding them.
         note: {
           ...strippedForStudent(note),
           noteJobId: note.noteJobId ?? "",
@@ -864,8 +807,7 @@ export function notesRouter(deps: Deps): Router {
     }),
   );
 
-  // A solo note is the owner's own data end to end — deletable outright (no second
-  // party holds a copy). Teacher-sent notes are the shared record and stay.
+  // Only origin==="self" notes are deletable here — teacher-sent notes are the shared record between two parties and must survive.
   router.delete(
     "/v1/me/notes/:id",
     ...guards,
@@ -885,8 +827,7 @@ export function notesRouter(deps: Deps): Router {
         res.status(403).json({ error: "self_note_only", message: "Notes from your teacher can't be deleted." });
         return;
       }
-      // The model output records how THIS note was written, so it goes with the note.
-      // The transcript belongs to the lesson and waits for the lesson's own discard.
+      // Only modelOutputPath is cleared here — transcriptPath belongs to the lesson and waits for the lesson's own discard.
       const modelOutputPath = await db.transaction(async (tx) => {
         await tx.delete(noteAnnotations).where(eq(noteAnnotations.noteId, note.id));
         await tx.delete(notes).where(eq(notes.id, note.id));
@@ -995,8 +936,7 @@ export function notesRouter(deps: Deps): Router {
     }),
   );
 
-  // Student self-grounding of an unplaced annotation. Stored beside the teacher's
-  // location, never over it — the app renders studentPin only while ungrounded.
+  // studentPin is merged into location, never replacing it — the teacher's own placement fields must survive alongside it.
   router.post(
     "/v1/me/notes/:id/annotations/:aid/pin",
     ...guards,
@@ -1031,10 +971,7 @@ export function notesRouter(deps: Deps): Router {
   );
 
   // ── Narration ─────────────────────────────────────────────────────────────────
-  // Deliberately dual-role, unlike its /v1/notes siblings: the OR below IS the
-  // authorization, so this route must never gain the requireTeacher guard.
-  // Entitlement is the only check left after the fetch, mirroring GET /v1/me/notes/:id
-  // — narration speaks the whole note, so a lapsed student must not hear it either.
+  // This route must never gain the requireTeacher guard — the OR in the where clause below IS the authorization for both roles.
   router.get(
     "/v1/notes/:id/narration",
     ...guards,
@@ -1056,7 +993,6 @@ export function notesRouter(deps: Deps): Router {
         .where(and(
           eq(notes.id, String(req.params.id)),
           or(
-            // Student (and the solo author, who is their own student): delivered only.
             and(eq(notes.studentId, me.id), eq(notes.status, "sent")),
             // Author, at any status — draft narration is the review preview.
             ...(me.isTeacher ? [and(eq(notes.teacherId, me.id), eq(notes.origin, "teacher"))] : []),
@@ -1085,9 +1021,7 @@ export function notesRouter(deps: Deps): Router {
         .where(and(eq(noteNarrationClips.noteId, note.id), eq(noteNarrationClips.voice, requested)));
       const present = new Map(rows.map((r) => [r.clipId, r]));
 
-      // Driven by the note as it stands NOW, and the URL is derived from the note in
-      // the path — never from a stored blob_path — so a signed URL cannot address
-      // anything outside this note's prefix.
+      // URL is derived from the note id in the path, never a stored blob_path — keeps a signed URL from addressing outside this note's prefix.
       const expected = [NARRATION_OVERVIEW_CLIP, ...annotations.map((a) => a.id)];
       const clips: Record<string, unknown>[] = [];
       const pending: string[] = [];
@@ -1103,8 +1037,7 @@ export function notesRouter(deps: Deps): Router {
           kind: row.kind,
           url: deps.notesAssets.readUrl(narrationClipPath(note.id, requested, clipId)),
           bytes: row.bytes,
-          // The app re-derives this from its own read-aloud script and falls back to
-          // system speech when they disagree — the guard against hearing stale text.
+          // The app compares this against its own script and falls back to system speech on mismatch — must stay accurate.
           textHash: row.textHash,
           updatedAt: row.updatedAt,
         });
@@ -1135,7 +1068,6 @@ export function notesRouter(deps: Deps): Router {
         return;
       }
       const platform = typeof req.body?.platform === "string" ? req.body.platform : "ios";
-      // A device changing owners rebinds its token to the new user.
       const [row] = await db
         .insert(devices)
         .values({ userId: me.id, token, platform })

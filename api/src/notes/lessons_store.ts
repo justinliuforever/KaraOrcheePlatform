@@ -7,12 +7,10 @@ import {
   RestError,
 } from "@azure/storage-blob";
 
-const CONTAINER = "lesson-audio"; // bicep lifecycle: cool @30d, DELETE @90d
+const CONTAINER = "lesson-audio";  // bicep lifecycle: cool @30d, DELETE @90d
 const UPLOAD_SAS_HOURS = 2;
 
-// Direct-to-blob upload for 60-min lesson audio (the studio multer path caps at
-// 80 MB in memory and is unusable here). SAS is single-blob, write-only, and the
-// server chooses the path — the client never names blobs.
+// SAS is single-blob, write-only — the server always chooses the blob path, never the client.
 export interface LessonStore {
   uploadUrl(path: string): string;
   blobPath(teacherId: string, lessonId: string): string;

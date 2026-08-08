@@ -1,9 +1,7 @@
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui-kit/badge";
 
-// Tone → Badge rendering for NON-state badges (user roles, instrument, "current").
-// State tags (lifecycle / rights / shelf) render through StatusTag + the lib/tags
-// registry instead — do not add state values here.
+// Non-state badges only — state tags (lifecycle/rights/shelf) go through StatusTag + lib/tags instead; don't add state values here.
 const TONE_VARIANT: Record<
   string,
   { variant: "default" | "secondary" | "destructive" | "outline"; className?: string }

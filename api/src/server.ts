@@ -27,12 +27,10 @@ import multer from "multer";
 export function createServer(deps: Deps = {}): Express {
   const app = express();
   app.disable("x-powered-by");
-  // Exactly ONE trusted hop (Container Apps ingress). `true` would take the leftmost
-  // X-Forwarded-For value — client-controlled — letting callers spoof req.ip and
-  // rotate past the rate limiter.
+  // trust proxy must stay 1, not true — true reads the client-controlled X-Forwarded-For, letting callers spoof req.ip past the rate limiter.
   app.set("trust proxy", 1);
   app.use(requestLog());
-  app.use(compression()); // catalog payloads gzip ~10x
+  app.use(compression());
   app.use(express.json());
   app.use(cors(deps.corsOrigins ?? []));
   app.use(rateLimit());
@@ -57,7 +55,6 @@ export function createServer(deps: Deps = {}): Express {
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof multer.MulterError) {
-      // Upload-shape errors are user mistakes, not server faults — say what to fix.
       const message =
         err.code === "LIMIT_FILE_SIZE"
           ? "That file is too large (80 MB max for audio, 80 MB for scores) — export a smaller file and retry."

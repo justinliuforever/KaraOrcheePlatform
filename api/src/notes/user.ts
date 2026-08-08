@@ -12,10 +12,7 @@ declare global {
   }
 }
 
-// Layered behind requireAuth for end-user Notes routes. The row must already
-// exist (the app calls /v1/users/sync at sign-in) — fail closed otherwise.
-// Authorization NEVER trusts token claims or the client role toggle: every
-// route checks DB capability booleans and relationship rows.
+// Authorization never trusts token claims or the client role toggle — always checks DB rows.
 export function requireUser(deps: Deps): RequestHandler {
   return async (req, res, next) => {
     if (!deps.db) {

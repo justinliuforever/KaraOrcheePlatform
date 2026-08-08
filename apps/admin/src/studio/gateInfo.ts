@@ -1,7 +1,6 @@
 import type { StudioJob } from "../api";
 
-// Operator-facing copy for the pipeline gates. Internal keys (sanity/alignment/
-// geometry/render) never surface to the editor — human labels + remediation hints do.
+// Internal gate keys never surface to the editor — human labels + remediation hints do.
 export interface GateInfo {
   key: string;
   label: string;

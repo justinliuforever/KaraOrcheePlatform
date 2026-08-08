@@ -9,8 +9,7 @@ import { ErrorNote, Spinner } from "../components/ui";
 import { getOpsRequest, type OpsRequestResponse, type OpsTimelineEvent } from "../api";
 import { SEV_META, fmtClock } from "./opsState";
 
-// Lanes are told apart by shape + fill + text, never color alone: API is a square
-// outline, WORKER a pill outline, AUDIT the one filled badge so admin actions pop.
+// Lanes must differ by shape + fill, not color alone — API=square outline, WORKER=pill outline, AUDIT=filled (accessibility).
 const LANE_META: Record<OpsTimelineEvent["lane"], { label: string; cls: string }> = {
   api: { label: "API", cls: "rounded-sm border border-line bg-card text-ink-soft" },
   worker: { label: "WORKER", cls: "rounded-full border border-line bg-card text-ink-soft" },

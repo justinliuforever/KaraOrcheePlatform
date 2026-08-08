@@ -59,7 +59,6 @@ function WizardBody({ jobId }: { jobId: string }) {
 
   const composersQ = useComposerRegistry();
 
-  // Form state seeds once from the server draft, then autosaves on blur.
   const [meta, setMeta] = useState<StudioMetadata>({});
   const seeded = useRef(false);
   useEffect(() => {
@@ -69,8 +68,7 @@ function WizardBody({ jobId }: { jobId: string }) {
     }
   }, [jobQ.data]);
 
-  // XML suggestions prefill EMPTY fields once facts arrive (file values are suggestions,
-  // never authoritative — always editable).
+  // XML suggestions only prefill empty fields — never authoritative, always editable.
   const suggested = useRef(false);
   useEffect(() => {
     const xm = (jobQ.data?.gates?.sanity?.metrics as { xml_meta?: XmlMeta } | undefined)?.xml_meta;
@@ -81,7 +79,7 @@ function WizardBody({ jobId }: { jobId: string }) {
       if (!m.title && xm.suggested_title) patch.title = xm.suggested_title;
       if (!m.composer && xm.suggested_composer) patch.composer = xm.suggested_composer;
       if (!m.subtitle && xm.suggested_movement) patch.subtitle = xm.suggested_movement;
-      if (Object.keys(patch).length > 0) save.mutate(patch); // prefill must PERSIST
+      if (Object.keys(patch).length > 0) save.mutate(patch);  // prefill must PERSIST
       return { ...m, ...patch };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -96,8 +94,7 @@ function WizardBody({ jobId }: { jobId: string }) {
     mutationFn: (patch) =>
       api(`/admin/studio/jobs/${jobId}/metadata`, { method: "PATCH", body: JSON.stringify(patch) }),
     onSuccess: (job) => qc.setQueryData(["studio-job", jobId], (old: StudioJob | undefined) =>
-      // The PATCH response is the full row — checkStatus/gates/artifacts may have been
-      // RESET server-side (instrument/soloPart change); writing them re-arms polling.
+      // Full row write matters: instrument/soloPart edits reset checkStatus/gates server-side, re-arming polling.
       old ? { ...old, ...job } : job,
     ),
   });
@@ -157,7 +154,6 @@ function WizardBody({ jobId }: { jobId: string }) {
     if (opts.workChecks) void runWorkChecks(next);
   }
 
-  // Replace-files affordance (lives in section 1).
   const [newXml, setNewXml] = useState<File | null>(null);
   const [newMidi, setNewMidi] = useState<File | null>(null);
   const replace = useMutation<StudioJob, Error>({
@@ -177,8 +173,7 @@ function WizardBody({ jobId }: { jobId: string }) {
   const submit = useMutation<StudioJob, Error>({
     mutationFn: () => api(`/admin/studio/jobs/${jobId}/submit`, { method: "POST" }),
     onSuccess: (res) => {
-      // Write the queued row into the cache BEFORE navigating — the detail page must
-      // never see the stale draft snapshot the wizard was just polling.
+      // Write the queued row into the cache BEFORE navigating, or the detail page sees the stale draft.
       qc.setQueryData(["studio-job", jobId], (old: StudioJob | undefined) =>
         old ? { ...old, ...res } : res,
       );
@@ -223,8 +218,7 @@ function WizardBody({ jobId }: { jobId: string }) {
     !!meta.composer?.trim() &&
     !!meta.rights &&
     (meta.rights !== "public_domain" || !!meta.rightsNote?.trim());
-  // save.isPending guard: a blur-save fired by the submit click itself must land
-  // before the server validates the row.
+  // save.isPending guard: the submit click's own blur-save must land before the server validates.
   const canSubmit = checksPassed && metaComplete && !hasErrors && !submit.isPending && !save.isPending;
   const phonePreview = job.previews?.find((p) => p.role === "svg" && p.variant === "phone");
 
@@ -250,7 +244,6 @@ function WizardBody({ jobId }: { jobId: string }) {
       </div>
 
       <div className="grid grid-cols-[1fr_310px] gap-6 items-start max-w-5xl">
-        {/* ——— left: the form ——— */}
         <div className="space-y-4 min-w-0">
           <Card className="block p-5">
             <div className="flex items-center justify-between mb-3">
@@ -539,7 +532,6 @@ function WizardBody({ jobId }: { jobId: string }) {
           </Card>
         </div>
 
-        {/* ——— right: live checks rail ——— */}
         <div className="sticky top-4">
           <CheckRail job={job} />
         </div>
