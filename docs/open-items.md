@@ -74,7 +74,8 @@ this piece. The 8va failure has no counterpart here. So does D.C./D.S., metronom
 - **m59** — the two grace notes that terminate the trill move from staff 1 / voice 1 at the end
   of the bar to staff 2 / voice 5 at the start of it. Wrong hand, wrong beat. The only
   note-level divergence in 1134 notes.
-- **23 fingerings across 13 stacks land on the wrong note.** MuseScore assigns a
+- **13 of 25 multi-fingering stacks are ordered wrongly** — 23 digits across the 11 real chords,
+  plus two single-note substitution pairs (m7, m8). MuseScore assigns a
   multi-`<fingering>` list bottom-to-top in document order and discards `default-y`; Dolet's
   document order is arbitrary and the truth is *only* in `default-y`. Verified exactly, 25/25
   with no exception. Clearest case m87: left hand D3+A3, Dolet gives 5 to D3, MuseScore gives 5
@@ -106,24 +107,25 @@ writes D.C. that way, which is the opposite of Dolet's words-only form and is ce
 
 Screenshots: `~/Desktop/MuseScore_vs_Sibelius_对比/`.
 
-## Playback tempo does not come from the page for four pieces (2026-08-08)
+## Two catalogue rows contradict their own page (2026-08-08)
 
-`split_collection.piece_tempo` falls through to a bare default when the printed tempo word is
-not in its table. Four pieces ship a constant nobody chose: `clementi_op36_1_1` and
-`clementi_op36_3_1` (page says *Spiritoso*) → 120, `clementi_op36_4_3` (*Allegro Vivace*) → 132,
-`clementi_op36_5_2` (*Allegro moderato*) → 116.
+`clementi_sonatina_c_major_op_36_no_1_i_allegro` ships subtitle *I. Allegro* while its own facts
+card says *Spiritoso.* — which is what is printed. Same shape in
+`clementi_op36_5_2`: subtitle *II. Allegretto moderato — Swiss Air*, page *Allegro moderato*. The
+two fields have different sources and never compete: the subtitle comes from `library_plan.py`
+(and the engraver's `A-Info.docx`), `facts.tempo_text` from the score's own `directive="yes"`
+words. The whole facts object ships to the app, so both strings are user-visible. Possibly
+deliberate edition naming — **ask the engraver before "fixing" it.**
 
-Two pieces also carry a subtitle whose tempo word contradicts the page: `clementi_op36_1_1`
-(subtitle *I. Allegro*, page *Spiritoso.*) and `clementi_op36_5_2` (subtitle
-*II. Allegretto moderato — Swiss Air*, page *Allegro moderato*). The subtitles come from the
-engraver's own `A-Info.docx`, so this may be deliberate edition naming rather than a defect —
-ask him.
+Not a defect, recorded so it is not re-investigated: `TERM_BPM`'s `"default"` tag marks a bpm
+taken from Sibelius's own playback dictionary for that term, not a fallback for an unknown word.
+`spiritoso`, `allegro vivace` and `allegro moderato` are all in the table.
 
-The engraver's sibling MIDIs carry their own tempo maps (Clementi No. 1: 100 / 80 / 120 against
-our 120 / 75 / 140). **Do not treat these as ground truth without checking.** All fifteen Bach
-inventions share a single 100 and all of Hanon Part II a single 60, which is what Sibelius plays
-when nothing is set. `TEMPO_OVERRIDE["clementi_op36_5_1"] = 160` was adopted from a MIDI whose
-value is *not* a Sibelius default, which is why that one was safe.
+Unresolved: the engraver's sibling MIDIs carry their own tempo maps (Clementi No. 1:
+100 / 80 / 120 against our 120 / 75 / 140). **Do not adopt these without checking.** All fifteen
+Bach inventions share a single 100 and all of Hanon Part II a single 60 — Sibelius's no-mark
+default. `TEMPO_OVERRIDE["clementi_op36_5_1"] = 160` was safe precisely because 160 is *not* a
+default.
 
 ## The Dropbox library moves under us
 
