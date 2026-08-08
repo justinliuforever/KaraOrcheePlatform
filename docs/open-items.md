@@ -57,6 +57,74 @@ across 232 staff spaces looks empty.
 - Hanon No. 43 passes every gate now but is a NEW catalogue entry; the engraver asked to review
   new pieces himself, so it should go to Review, not straight to publish.
 
+## MuseScore was measured once, on the wrong piece (2026-08-08)
+
+The engraver sent a MuseScore Studio 4.7.4 export of Clementi Sonatina Op. 36 No. 1. We hold
+his Dolet export of the same file, so this is a controlled A/B: same engraver, same edition,
+134 measures, 1243 notes, 422 fingerings on both sides.
+
+**It cannot answer the question that prompted it.** Neither export contains a single
+`<octave-shift>` or `<pedal>`, and `dolet_notices()` returns `[]` — Dolet dropped nothing from
+this piece. The 8va failure has no counterpart here. So does D.C./D.S., metronome marks,
+`<symbol>` rest overrides, and interleaved voices: zero instances of each, in both files. Eight
+`engraving_norm` passes never executed. **A verdict on MuseScore needs Chopin Op. 34.**
+
+**Three defects the MuseScore round-trip introduced**, all invisible to every gate we ship:
+
+- **m59** — the two grace notes that terminate the trill move from staff 1 / voice 1 at the end
+  of the bar to staff 2 / voice 5 at the start of it. Wrong hand, wrong beat. The only
+  note-level divergence in 1134 notes.
+- **23 fingerings across 13 stacks land on the wrong note.** MuseScore assigns a
+  multi-`<fingering>` list bottom-to-top in document order and discards `default-y`; Dolet's
+  document order is arbitrary and the truth is *only* in `default-y`. Verified exactly, 25/25
+  with no exception. Clearest case m87: left hand D3+A3, Dolet gives 5 to D3, MuseScore gives 5
+  to A3. **Unrecoverable** — the original geometry is not in the exported file, so no change on
+  our side can fix a file that has been through MuseScore.
+- **m16, m20, m49** — MuseScore's `<tied type="let-ring"/>` imports as MEI `<lv>` with
+  `tstamp2` 0.05 beats after the start, and verovio paints a 0.36 × 0.64 staff-space mark that
+  reads as a marcato accent over the notehead. Dolet writes a stop-less `<tie>` there, which
+  prints nothing. Neither is right; MuseScore's is worse because it prints a wrong instruction.
+  verovio 6.2.1-8d42439.
+
+Where MuseScore is better: it closes every slur (135/135 vs Dolet's 138/136, two unclosed at
+m42-43 and one degenerate at m49), emits no importer warnings, and writes `<fz/>` as one object
+where Dolet splits it into `<f/>` plus a bare `<words>z</words>` (both render identically today).
+
+**Provenance is unconfirmed and it matters.** MuseScore cannot open `.sib`, so this is almost
+certainly a MusicXML round-trip of the Dolet export, not a native engraving. If so, every defect
+above belongs to the *migration path*, and a natively-engraved MuseScore file could differ in
+both directions. **Ask before generalising.**
+
+If we ever accept MuseScore files, the must-fix list is: refuse to guess a fingering pairing when
+the `default-y` steps are a near-constant monotone ladder and there are ≤2 distinct `default-x`
+in the file (`engraving_norm.py:219` → `fingering_layout.py:77`); un-gate the fingering warnings
+from `"Dolet" in software` (`xml_meta.py:161`, and `tests/test_xml_meta.py` asserts the current
+behaviour); rewrite or strip `<lv>@tstamp2`; make the substitution guard at
+`engraving_norm.py:134` use horizontal rather than vertical separation; and teach
+`structure.py` `_reject_jumps` to consume `<sound dacapo>` instead of rejecting it — MuseScore
+writes D.C. that way, which is the opposite of Dolet's words-only form and is certain to appear.
+
+Screenshots: `~/Desktop/MuseScore_vs_Sibelius_对比/`.
+
+## Playback tempo does not come from the page for four pieces (2026-08-08)
+
+`split_collection.piece_tempo` falls through to a bare default when the printed tempo word is
+not in its table. Four pieces ship a constant nobody chose: `clementi_op36_1_1` and
+`clementi_op36_3_1` (page says *Spiritoso*) → 120, `clementi_op36_4_3` (*Allegro Vivace*) → 132,
+`clementi_op36_5_2` (*Allegro moderato*) → 116.
+
+Two pieces also carry a subtitle whose tempo word contradicts the page: `clementi_op36_1_1`
+(subtitle *I. Allegro*, page *Spiritoso.*) and `clementi_op36_5_2` (subtitle
+*II. Allegretto moderato — Swiss Air*, page *Allegro moderato*). The subtitles come from the
+engraver's own `A-Info.docx`, so this may be deliberate edition naming rather than a defect —
+ask him.
+
+The engraver's sibling MIDIs carry their own tempo maps (Clementi No. 1: 100 / 80 / 120 against
+our 120 / 75 / 140). **Do not treat these as ground truth without checking.** All fifteen Bach
+inventions share a single 100 and all of Hanon Part II a single 60, which is what Sibelius plays
+when nothing is set. `TEMPO_OVERRIDE["clementi_op36_5_1"] = 160` was adopted from a MIDI whose
+value is *not* a Sibelius default, which is why that one was safe.
+
 ## The Dropbox library moves under us
 
 Four published pieces (Hanon Part II Nos. 39-42) sat for two weeks on a July 19 upload of
