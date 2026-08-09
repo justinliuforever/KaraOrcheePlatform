@@ -52,7 +52,7 @@ def test_one_reworded_word_is_a_diff_not_a_pass():
 def test_every_number_the_document_prints_is_checked_against_the_probes_constant():
     document = (
         "- **Recovery copies**: deleted files are recoverable by our operators for up to "
-        f"{retention.BLOB_SOFT_DELETE_DAYS} days; database backups are kept "
+        f"{retention.operator_recovery_days()} days; database backups are kept "
         f"{retention.PG_BACKUP_RETENTION_DAYS} days; overwritten note files up to "
         f"{retention.DELETED_VERSION_RETENTION_DAYS} days.\n"
         f"- **Lesson recordings**: deleted {retention.TRANSCRIPT_RETENTION_DAYS} days after processing.\n"

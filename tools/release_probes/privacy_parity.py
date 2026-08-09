@@ -17,7 +17,7 @@ import retention
 # ceasing to be checked.
 NUMBER_CLAIMS = {
     "deleted files are recoverable by our operators for up to {n} days":
-        retention.BLOB_SOFT_DELETE_DAYS,
+        retention.operator_recovery_days(),
     "database backups are kept {n} days": retention.PG_BACKUP_RETENTION_DAYS,
     "overwritten note files up to {n} days": retention.DELETED_VERSION_RETENTION_DAYS,
     "deleted {n} days after processing": retention.TRANSCRIPT_RETENTION_DAYS,

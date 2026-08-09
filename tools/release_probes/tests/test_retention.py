@@ -199,6 +199,24 @@ def test_a_shrunken_soft_delete_window_is_caught():
     assert "blob soft-delete retention" in failures(retention.check_blob_service(off))
 
 
+def test_the_recovery_window_is_the_slowest_purge_plus_soft_delete():
+    assert retention.operator_recovery_days(flipped(AFTER_FLIP)) == 37
+    assert retention.operator_recovery_days(
+        flipped([LIVE_AUDIO, LIVE_SCAN_VERSIONS])) == 14
+
+
+def test_a_disabled_purge_rule_cannot_stretch_the_recovery_window():
+    slow = copy.deepcopy(LIVE_VERSIONS)
+    slow["enabled"] = False
+    assert retention.operator_recovery_days(flipped([LIVE_AUDIO, slow])) == 14
+
+
+def test_a_purge_age_raised_stretches_the_number_the_notice_must_print():
+    slower = copy.deepcopy(LIVE_VERSIONS)
+    slower["definition"]["actions"]["version"]["delete"]["daysAfterCreationGreaterThan"] = 90.0
+    assert retention.operator_recovery_days(flipped([LIVE_AUDIO, slower])) == 97
+
+
 def test_a_postgres_shrunk_below_the_printed_number_is_caught():
     checks = retention.check_pg_backup({"backup": {"backupRetentionDays": 7}})
     assert failures(checks) == ["postgres backup retention"]

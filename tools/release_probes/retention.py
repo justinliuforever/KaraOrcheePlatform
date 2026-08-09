@@ -73,6 +73,18 @@ def _dig(node: Any, *keys: str) -> Any:
     return node
 
 
+def operator_recovery_days(policy: dict | None = None) -> int:
+    """The window a printed sentence must name. Derived, never hand-written: a lifecycle
+    version purge is itself soft-deleted, so a file outlives the slowest purge by the
+    soft-delete days."""
+    rules = rules_by_name(policy if policy is not None else load_intended_policy())
+    purges = [normalize(_dig(r, "definition", "actions", "version", "delete",
+                             "daysAfterCreationGreaterThan"))
+              for r in rules.values() if r.get("enabled")]
+    slowest = max([p for p in purges if p is not None], default=0)
+    return int(slowest) + BLOB_SOFT_DELETE_DAYS
+
+
 def check_management_policy(live: dict, intended: dict | None = None) -> list[Check]:
     intended = intended if intended is not None else load_intended_policy()
     want = rules_by_name(intended)
