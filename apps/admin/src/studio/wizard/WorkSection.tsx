@@ -112,7 +112,7 @@ export default function WorkSection({
                   }}
                 >
                   <span className="font-medium">{w.title}</span>
-                  <span className="text-ink-faint text-xs"> · {w.composer}{w.catalogue ? ` · ${w.catalogue}` : ""} · {w.pieceCount ?? 0} piece{(w.pieceCount ?? 0) === 1 ? "" : "s"}</span>
+                  <span className="text-ink-faint text-xs"> · {w.composer}{w.catalogue ? ` · ${w.catalogue}` : ""} · {w.attachedPieceCount ?? 0} piece{(w.attachedPieceCount ?? 0) === 1 ? "" : "s"}</span>
                 </button>
               ))}
               <button

@@ -326,7 +326,7 @@ export function adminRouter(deps: Deps): Router {
         .from(pieces)
         .groupBy(pieces.workId);
       const byWork = new Map(counts.map((c) => [c.workId, c.count]));
-      res.json({ items: rows.map((w) => ({ ...w, pieceCount: byWork.get(w.id) ?? 0 })) });
+      res.json({ items: rows.map((w) => ({ ...w, attachedPieceCount: byWork.get(w.id) ?? 0 })) });
     }),
   );
 
@@ -549,7 +549,7 @@ export function adminRouter(deps: Deps): Router {
       res.json({
         items: rows.map((b) => ({
           ...b,
-          pieceCount: byBook.get(b.id) ?? 0,
+          attachedPieceCount: byBook.get(b.id) ?? 0,
           ...signCover(b.coverPath),
         })),
       });

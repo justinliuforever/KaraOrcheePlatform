@@ -208,7 +208,7 @@ export default function CollectionsPage() {
                   <p className="text-xs text-ink-soft truncate">{b.author ?? "—"}</p>
                   <div className="mt-1.5 flex items-center justify-between gap-2">
                     <span className="text-xs text-ink-faint tabular-nums">
-                      {b.pieceCount} piece{b.pieceCount === 1 ? "" : "s"}
+                      {b.attachedPieceCount} piece{b.attachedPieceCount === 1 ? "" : "s"}
                     </span>
                     <StatusTag value={b.rights} family="rights" />
                   </div>
@@ -261,7 +261,7 @@ export default function CollectionsPage() {
                       <TableCell className="px-4 py-2 text-ink-soft">{w.catalogue ?? "—"}</TableCell>
                       <TableCell className="px-4 py-2 text-ink-soft">{w.workType.replaceAll("_", " ")}</TableCell>
                       <TableCell className="px-4 py-2 text-right tabular-nums text-ink-soft">
-                        {w.pieceCount ?? 0}
+                        {w.attachedPieceCount ?? 0}
                       </TableCell>
                       <TableCell className="px-4 py-2 text-right text-xs text-ink-soft tabular-nums">
                         <span title={new Date(w.updatedAt).toLocaleString()}>{timeAgo(w.updatedAt)}</span>
@@ -415,7 +415,7 @@ function NewBookDialog({
   const [cover, setCover] = useState<File | null>(null);
   const [coverErr, setCoverErr] = useState<string | null>(null);
 
-  const create = useMutation<Omit<AdminBook, "pieceCount">, Error>({
+  const create = useMutation<Omit<AdminBook, "attachedPieceCount">, Error>({
     mutationFn: () => createBook({ title: title.trim(), author: author.trim() || undefined }, cover!),
     onSuccess: (b) => {
       qc.invalidateQueries({ queryKey: ["books"] });

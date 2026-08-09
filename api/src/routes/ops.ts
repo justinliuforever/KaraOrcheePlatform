@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, inArray, like, lt, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, like, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Deps } from "../deps";
 import { wrap } from "../deps";
@@ -216,6 +216,7 @@ export function opsRouter(deps: Deps): Router {
         .where(and(
           inArray(studioJobs.status, ["canceled", "failed"]),
           like(studioJobs.pieceId, "draft\\_%"),
+          isNull(studioJobs.publishedVersion),
           lt(studioJobs.updatedAt, cutoff),
         ));
       let blobs = 0;

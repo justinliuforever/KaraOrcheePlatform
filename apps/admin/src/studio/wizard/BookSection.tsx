@@ -77,7 +77,7 @@ export default function BookSection({
             {books.map((b) => (
               <option key={b.id} value={b.id}>
                 {b.title}
-                {b.pieceCount ? ` (${b.pieceCount})` : ""}
+                {b.attachedPieceCount ? ` (${b.attachedPieceCount})` : ""}
               </option>
             ))}
             <option value="__new__">+ new book…</option>
@@ -114,7 +114,7 @@ export default function BookSection({
           <div className="min-w-0">
             <p className="text-sm font-medium truncate">{selected.title}</p>
             <p className="text-[11px] text-ink-faint">
-              {selected.pieceCount} piece{selected.pieceCount === 1 ? "" : "s"} in the library
+              {selected.attachedPieceCount} piece{selected.attachedPieceCount === 1 ? "" : "s"} in the library
               {!selected.coverThumbUrl && " · cover missing — add one on the Collections page"}
             </p>
           </div>

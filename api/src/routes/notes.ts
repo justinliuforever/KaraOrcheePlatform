@@ -147,12 +147,18 @@ function strippedForStudent(note: NoteRow) {
   return rest;
 }
 
+// Scoping by teacherId alone leaks a dual-role account's own self-notes into the teacher-side routes.
+const teacherOwned = (teacherId: string) =>
+  and(eq(notes.teacherId, teacherId), eq(notes.origin, "teacher"));
+
+const teacherNote = (id: string, teacherId: string) =>
+  and(eq(notes.id, id), teacherOwned(teacherId));
+
 export function notesRouter(deps: Deps): Router {
   const router = Router();
   const guards = [requireAuth(deps.auth), requireUser(deps)];
 
   // ── Teacher side ──────────────────────────────────────────────────────────────
-  // Every teacher-side query must also scope by origin='teacher' — omit it and a dual-role account's self-notes leak into review/retract/duplicate.
   const requireTeacher = (me: { isTeacher: boolean }, res: { status(n: number): { json(b: unknown): unknown } }): boolean => {
     if (me.isTeacher) return true;
     res.status(403).json({ error: "teacher_only", message: "This account isn't set up as a teacher." });
@@ -168,7 +174,7 @@ export function notesRouter(deps: Deps): Router {
       const db = deps.db!.orm;
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
       const studentId = typeof req.query.studentId === "string" ? req.query.studentId : undefined;
-      const conds = [eq(notes.teacherId, me.id), eq(notes.origin, "teacher")];
+      const conds = [teacherOwned(me.id)];
       if (status) conds.push(eq(notes.status, status));
       if (studentId) conds.push(eq(notes.studentId, studentId));
       const rows = await db
@@ -191,7 +197,7 @@ export function notesRouter(deps: Deps): Router {
       const [note] = await db
         .select()
         .from(notes)
-        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id), eq(notes.origin, "teacher")))
+        .where(teacherNote(String(req.params.id), me.id))
         .limit(1);
       if (!note) {
         res.status(404).json({ error: "not_found" });
@@ -217,7 +223,7 @@ export function notesRouter(deps: Deps): Router {
       const [note] = await db
         .select()
         .from(notes)
-        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id), eq(notes.origin, "teacher")))
+        .where(teacherNote(String(req.params.id), me.id))
         .limit(1);
       if (!note) {
         res.status(404).json({ error: "not_found" });
@@ -338,7 +344,7 @@ export function notesRouter(deps: Deps): Router {
       const [note] = await db
         .select()
         .from(notes)
-        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id), eq(notes.origin, "teacher")))
+        .where(teacherNote(String(req.params.id), me.id))
         .limit(1);
       if (!note) {
         res.status(404).json({ error: "not_found" });
@@ -459,7 +465,7 @@ export function notesRouter(deps: Deps): Router {
       const [note] = await db
         .select()
         .from(notes)
-        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id), eq(notes.origin, "teacher")))
+        .where(teacherNote(String(req.params.id), me.id))
         .limit(1);
       if (!note) {
         res.status(404).json({ error: "not_found" });
@@ -582,9 +588,7 @@ export function notesRouter(deps: Deps): Router {
         .update(notes)
         .set({ status: "retracted", retractedAt: sql`now()`, updatedAt: sql`now()` })
         .where(and(
-          eq(notes.id, String(req.params.id)),
-          eq(notes.teacherId, me.id),
-          eq(notes.origin, "teacher"),
+          teacherNote(String(req.params.id), me.id),
           eq(notes.status, "sent"),
         ))
         .returning();
@@ -649,7 +653,7 @@ export function notesRouter(deps: Deps): Router {
       const [note] = await db
         .select()
         .from(notes)
-        .where(and(eq(notes.id, String(req.params.id)), eq(notes.teacherId, me.id), eq(notes.origin, "teacher")))
+        .where(teacherNote(String(req.params.id), me.id))
         .limit(1);
       if (!note) {
         res.status(404).json({ error: "not_found" });
@@ -995,7 +999,7 @@ export function notesRouter(deps: Deps): Router {
           or(
             and(eq(notes.studentId, me.id), eq(notes.status, "sent")),
             // Author, at any status — draft narration is the review preview.
-            ...(me.isTeacher ? [and(eq(notes.teacherId, me.id), eq(notes.origin, "teacher"))] : []),
+            ...(me.isTeacher ? [teacherOwned(me.id)] : []),
           ),
         ))
         .limit(1);

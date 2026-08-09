@@ -165,6 +165,32 @@ async function reground(tx: Tx, noteId: string, measures: number): Promise<numbe
   return n;
 }
 
+/// This list is the wire contract, not the table's columns — a new lessonSessions column reaches the app only by being added here.
+function lessonWire(row: typeof lessonSessions.$inferSelect) {
+  return {
+    id: row.id,
+    teacherId: row.teacherId,
+    studentId: row.studentId,
+    ownerRole: row.ownerRole,
+    clientLessonId: row.clientLessonId,
+    pieceId: row.pieceId,
+    pieceLabel: row.pieceLabel,
+    pieceSource: row.pieceSource,
+    pieceUpdatedAt: row.pieceUpdatedAt,
+    customPieceId: row.customPieceId,
+    language: row.language,
+    attested: row.attested,
+    audioPath: row.audioPath,
+    audioBytes: row.audioBytes,
+    durationSec: row.durationSec,
+    status: row.status,
+    startedAt: row.startedAt,
+    endedAt: row.endedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 // pieceId/studentId are deliberately nullable — both stay fixable later at review.
 export function lessonsRouter(deps: Deps): Router {
   const router = Router();
@@ -311,7 +337,7 @@ export function lessonsRouter(deps: Deps): Router {
         }));
       }
       res.status(201).json({
-        lesson: { ...row, audioPath: path },
+        lesson: { ...lessonWire(row!), audioPath: path },
         uploadUrl: deps.lessons.uploadUrl(path),
       });
     }),
@@ -464,7 +490,7 @@ export function lessonsRouter(deps: Deps): Router {
           const mine = noteRows.filter((n) => n.lessonSessionId === lesson.id);
           return {
             lesson: {
-              ...lesson,
+              ...lessonWire(lesson),
               discardAllowed: discardAllowed({ lessonStatus: lesson.status, job, notes: mine }),
             },
             job: job
@@ -511,7 +537,7 @@ export function lessonsRouter(deps: Deps): Router {
       const job = jobs[0] ?? null;
       res.json({
         lesson: {
-          ...lesson,
+          ...lessonWire(lesson),
           discardAllowed: discardAllowed({ lessonStatus: lesson.status, job, notes: noteRows }),
         },
         job: job

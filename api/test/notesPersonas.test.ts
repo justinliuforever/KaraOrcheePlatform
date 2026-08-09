@@ -617,6 +617,22 @@ describe("origin scoping (born-sent self-notes)", () => {
     expect(retract.body.error).toBe("not_retractable");
   });
 
+  it("teacher-side send 404s on the self-note", async () => {
+    const res = await request(makeApp())
+      .post(`/v1/notes/${selfNoteId}/send`)
+      .set("Authorization", auth(dual))
+      .send({});
+    expect(res.status).toBe(404);
+  });
+
+  it("teacher-side piece-suggestion 404s on the self-note", async () => {
+    const res = await request(makeApp())
+      .post(`/v1/notes/${selfNoteId}/piece-suggestion`)
+      .set("Authorization", auth(dual))
+      .send({ action: "dismiss", pieceId: "p_any" });
+    expect(res.status).toBe(404);
+  });
+
   it("student-side list shows it with origin self and teacherName null", async () => {
     const res = await request(makeApp()).get("/v1/me/notes").set("Authorization", auth(dual));
     expect(res.status).toBe(200);

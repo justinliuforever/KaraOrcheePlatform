@@ -252,7 +252,7 @@ export interface AdminWork {
   display: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
-  pieceCount?: number;
+  attachedPieceCount?: number;
 }
 
 export interface StudioJob {
@@ -296,8 +296,7 @@ export interface AdminBook {
   display: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
-  // LIST: attached-rows rollup; the authored printed total is on the detail response instead.
-  pieceCount: number;
+  attachedPieceCount: number;
   coverUrl: string | null;
   coverThumbUrl: string | null;
 }
@@ -348,14 +347,13 @@ export interface WorkPieceRow extends Omit<BookPieceRow, "bookIndex"> {
   workIndex: number | null;
 }
 
-// pieceCount here is the AUTHORED printed total, not the attached-rows rollup.
-export interface AdminBookDetail extends Omit<AdminBook, "pieceCount"> {
+export interface AdminBookDetail extends AdminBook {
   pieceCount: number | null;
   pieces: BookPieceRow[];
   recentAudit: AuditEntry[];
 }
 
-export interface AdminWorkDetail extends Omit<AdminWork, "pieceCount"> {
+export interface AdminWorkDetail extends AdminWork {
   pieces: WorkPieceRow[];
   children: AdminWork[];
   recentAudit: AuditEntry[];
@@ -386,7 +384,7 @@ export function getBook(id: string): Promise<AdminBookDetail> {
   return api(`/admin/books/${id}`);
 }
 
-export function patchBook(id: string, patch: BookEdit): Promise<Omit<AdminBook, "pieceCount">> {
+export function patchBook(id: string, patch: BookEdit): Promise<Omit<AdminBook, "attachedPieceCount">> {
   return api(`/admin/books/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
 }
 
@@ -401,7 +399,7 @@ export function putBookNumbering(
   return api(`/admin/books/${id}/numbering`, { method: "PUT", body: JSON.stringify({ entries }) });
 }
 
-export function putBookCover(id: string, cover: File): Promise<Omit<AdminBook, "pieceCount">> {
+export function putBookCover(id: string, cover: File): Promise<Omit<AdminBook, "attachedPieceCount">> {
   const form = new FormData();
   form.set("cover", cover);
   return apiForm(`/admin/books/${id}/cover`, form, "PUT");
@@ -410,7 +408,7 @@ export function putBookCover(id: string, cover: File): Promise<Omit<AdminBook, "
 export function createBook(
   fields: { title: string; author?: string },
   cover: File,
-): Promise<Omit<AdminBook, "pieceCount">> {
+): Promise<Omit<AdminBook, "attachedPieceCount">> {
   const form = new FormData();
   form.set("title", fields.title);
   if (fields.author) form.set("author", fields.author);

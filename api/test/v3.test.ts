@@ -137,7 +137,7 @@ describe("works lifecycle", () => {
       .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
     expect(res.body.items[0].id).toBe("mozart_k330");
-    expect(res.body.items[0].pieceCount).toBe(1);
+    expect(res.body.items[0].attachedPieceCount).toBe(1);
   });
 });
 

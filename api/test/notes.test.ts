@@ -3124,3 +3124,69 @@ describe("users/sync profile preservation", () => {
     expect(res.body.displayName).toBe("New");
   });
 });
+
+// Shipped iOS builds decode these payloads with non-optional properties, so a key that stops being sent
+// breaks a client that is already in the field — this pins the key SET, which equality assertions do not.
+describe("wire key sets the shipped app decodes", () => {
+  const LESSON_ROW = [
+    "attested", "audioBytes", "audioPath", "clientLessonId", "createdAt", "customPieceId", "durationSec",
+    "endedAt", "id", "language", "ownerRole", "pieceId", "pieceLabel", "pieceSource", "pieceUpdatedAt",
+    "startedAt", "status", "studentId", "teacherId", "updatedAt",
+  ];
+  const keys = (o: unknown) => Object.keys(o as object).sort();
+
+  it("POST /v1/lessons sends exactly {lesson, uploadUrl}, and the lesson carries no discardAllowed", async () => {
+    const res = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ pieceId: "seed_piece", studentId: student.id });
+    expect(res.status).toBe(201);
+    expect(keys(res.body)).toEqual(["lesson", "uploadUrl"]);
+    expect(keys(res.body.lesson)).toEqual([...LESSON_ROW].sort());
+  });
+
+  it("GET /v1/lessons and GET /v1/lessons/:id send the same lesson shape, plus discardAllowed", async () => {
+    const created = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ pieceId: "seed_piece", studentId: student.id });
+
+    const list = await request(makeApp())
+      .get("/v1/lessons").set("Authorization", `Bearer ${teacher.token}`);
+    expect(keys(list.body)).toEqual(["items"]);
+    expect(keys(list.body.items[0])).toEqual(["job", "lesson", "notes"]);
+    expect(keys(list.body.items[0].lesson)).toEqual([...LESSON_ROW, "discardAllowed"].sort());
+
+    const detail = await request(makeApp())
+      .get(`/v1/lessons/${created.body.lesson.id}`).set("Authorization", `Bearer ${teacher.token}`);
+    expect(keys(detail.body)).toEqual(["job", "lesson", "notes"]);
+    expect(keys(detail.body.lesson)).toEqual([...LESSON_ROW, "discardAllowed"].sort());
+  });
+
+  it("GET /v1/me/notes sends exactly the 13 keys InboxNote decodes", async () => {
+    await seedNote({ teacherId: teacher.id, studentId: student.id, status: "sent", sentAt: new Date() });
+    const res = await request(makeApp())
+      .get("/v1/me/notes").set("Authorization", `Bearer ${student.token}`);
+    expect(keys(res.body)).toEqual(["access", "items"]);
+    expect(keys(res.body.items[0])).toEqual([
+      "annotationCount", "doneCount", "id", "locked", "origin", "pieceId", "pieceLabel", "pieceVersion",
+      "readAt", "sentAt", "status", "teacherId", "teacherName",
+    ]);
+  });
+
+  it("GET /v1/me/notes/:id sends {annotations, note, teacher} and never the teacher-only note columns", async () => {
+    const seeded = await seedNote({
+      teacherId: teacher.id, studentId: student.id, status: "sent", sentAt: new Date(),
+    });
+    const res = await request(makeApp())
+      .get(`/v1/me/notes/${seeded.note.id}`).set("Authorization", `Bearer ${student.token}`);
+    expect(keys(res.body)).toEqual(["annotations", "note", "teacher"]);
+    expect(keys(res.body.note)).toEqual([
+      "content", "contentOriginal", "createdAt", "editedAt", "id", "lessonSessionId", "noteJobId", "origin",
+      "pieceId", "pieceLabel", "pieceVersion", "readAt", "retractedAt", "sentAt", "status", "studentId",
+      "supersededBy", "teacherId", "updatedAt",
+    ]);
+    expect(res.body.note).not.toHaveProperty("pieceSuggestionDismissed");
+    expect(res.body.note).not.toHaveProperty("customPieceId");
+  });
+});

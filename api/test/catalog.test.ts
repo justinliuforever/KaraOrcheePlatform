@@ -225,4 +225,18 @@ describe("repeats capability gate", () => {
     const linear = await request(app).get("/v1/pieces/linear_piece/download");
     expect(linear.status).toBe(200);
   });
+
+  it("blocks download of a non-piano piece without caps=instruments, allows with it", async () => {
+    const app = createServer({ catalog: repeatsStore() });
+    const blocked = await request(app).get("/v1/pieces/violin_piece/download");
+    expect(blocked.status).toBe(403);
+    expect(blocked.body).toEqual({
+      error: "capability_required",
+      piece: "violin_piece",
+      requires: "instruments",
+    });
+    const allowed = await request(app).get("/v1/pieces/violin_piece/download?caps=instruments");
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.id).toBe("violin_piece");
+  });
 });
