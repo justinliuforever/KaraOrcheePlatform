@@ -130,7 +130,7 @@ BLOB_PROPS = {"deleteRetentionPolicy": {"allowPermanentDelete": False, "days": 7
               "containerDeleteRetentionPolicy": {"days": 30, "enabled": True},
               "isVersioningEnabled": True}
 
-PG_SERVER = {"backup": {"backupRetentionDays": 7, "geoRedundantBackup": "Disabled"}}
+PG_SERVER = {"backup": {"backupRetentionDays": 35, "geoRedundantBackup": "Disabled"}}
 
 WORKSPACE = {"retentionInDays": 30, "sku": {"name": "PerGB2018"}}
 TABLES = [{"name": "ContainerAppConsoleLogs_CL", "retentionInDays": 30},
@@ -199,10 +199,10 @@ def test_a_shrunken_soft_delete_window_is_caught():
     assert "blob soft-delete retention" in failures(retention.check_blob_service(off))
 
 
-def test_the_live_postgres_retention_of_35_days_fails_the_printed_number_of_7():
-    checks = retention.check_pg_backup({"backup": {"backupRetentionDays": 35}})
+def test_a_postgres_shrunk_below_the_printed_number_is_caught():
+    checks = retention.check_pg_backup({"backup": {"backupRetentionDays": 7}})
     assert failures(checks) == ["postgres backup retention"]
-    assert checks[0].actual == "35 days" and checks[0].expected == "7 days"
+    assert checks[0].actual == "7 days" and checks[0].expected == "35 days"
 
 
 def test_a_workspace_kept_past_the_printed_30_days_is_caught():

@@ -19,7 +19,7 @@ POLICY_FILE = Path(__file__).with_name("retention_policy.json")
 
 # Each of these is printed verbatim in the published retention table and privacy notice.
 BLOB_SOFT_DELETE_DAYS = 7
-PG_BACKUP_RETENTION_DAYS = 7
+PG_BACKUP_RETENTION_DAYS = 35
 TRANSCRIPT_RETENTION_DAYS = 90
 DELETED_VERSION_RETENTION_DAYS = 30
 AUDIO_VERSION_RETENTION_DAYS = 7

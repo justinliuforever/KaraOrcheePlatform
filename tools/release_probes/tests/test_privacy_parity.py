@@ -62,7 +62,7 @@ def test_every_number_the_document_prints_is_checked_against_the_probes_constant
 
     drifted = document.replace(
         f"database backups are kept {retention.PG_BACKUP_RETENTION_DAYS} days",
-        "database backups are kept 35 days")
+        f"database backups are kept {retention.PG_BACKUP_RETENTION_DAYS + 1} days")
     mismatches = privacy_parity.number_mismatches(drifted)
     assert len(mismatches) == 1
     assert "35" in mismatches[0] and str(retention.PG_BACKUP_RETENTION_DAYS) in mismatches[0]
