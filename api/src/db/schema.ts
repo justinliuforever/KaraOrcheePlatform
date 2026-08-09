@@ -322,7 +322,7 @@ export const noteJobs = pgTable("note_jobs", {
   discardedAt: timestamp("discarded_at", { withTimezone: true }),
   // Wall-time/elapsed measurements must anchor here, never on created_at — a retry leaves created_at at the first attempt.
   startedAt: timestamp("started_at", { withTimezone: true }),
-  transcriptPath: text("transcript_path"),  // notes-assets, durable (survives audio deletion)
+  transcriptPath: text("transcript_path"),  // notes-assets; expires on the same 90-day clock as the audio, as both consent sheets promise
   // Must stay under the transcripts/ prefix — the 90-day blob lifecycle rule keys on that prefix.
   modelOutputPath: text("model_output_path"),
   metrics: jsonb("metrics").notNull().default({}),

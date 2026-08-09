@@ -18,8 +18,8 @@ param operatorObjectId string
 
 var tags = { product: 'karaorchee-app', env: env }
 
-@description('Expire lesson transcripts at 90 days. Changes retention of data that already exists — founder sign-off required before enabling.')
-param transcriptRetentionEnabled bool = false
+@description('Expire lesson transcripts at 90 days, the clock both consent sheets promise. Signed off 2026-08-09; turning this off again makes those two sheets lie.')
+param transcriptRetentionEnabled bool = true
 
 @description('Move narration older than 30 days to cool storage. Cool-tier reads bill extra, so this can cost more than it saves if students revisit old notes.')
 param narrationCoolTieringEnabled bool = false
@@ -305,7 +305,8 @@ resource pg 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
     administratorLogin: 'karaorchee_admin'
     administratorLoginPassword: pgAdminPassword
     storage: { storageSizeGB: 32 }
-    backup: { backupRetentionDays: 7, geoRedundantBackup: 'Disabled' }
+    // Matches the live server. The app's Privacy & data screen prints 7; the two must be reconciled, and shrinking this destroys 28 days of recovery.
+    backup: { backupRetentionDays: 35, geoRedundantBackup: 'Disabled' }
     highAvailability: { mode: 'Disabled' }
   }
 }

@@ -5,8 +5,9 @@ annotations: a draft for teacher review on teacher-recorded lessons, or a note b
 
 The note_jobs row is the source of truth; queue messages are only triggers, so
 redelivered messages re-process idempotently (draft output is wiped and rebuilt).
-Raw audio lives in lesson-audio (auto-deleted at 90d); the transcript JSON written
-here is the durable derivative that survives it.
+Raw audio lives in lesson-audio and the transcript written here lives in notes-assets;
+both expire at 90 days, which is what the consent sheets promise. The note and the
+words it quotes are the durable record.
 """
 from __future__ import annotations
 
