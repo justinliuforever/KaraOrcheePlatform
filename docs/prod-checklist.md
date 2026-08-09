@@ -63,6 +63,10 @@ Nothing here is checked — prod does not exist yet.
 ## Alerts
 - [ ] Recreate DLQ dead-letter alert (ag-karaorchee-ops + alert-sb-deadletter equivalents)
       covering all four queues
+- [ ] Alert on `kind == "purge_failed"` for every label — `audio`, `transcript`, `narration`,
+      `scan`. Scans need it most: the rows are deleted before the blobs are purged, so once the
+      three retries exhaust that log line is the only thing that names the bytes, no orphan sweep
+      exists, and the score-scans container ships with its time-based delete rule disabled
 - [ ] Azure cost budget alert on the prod RG
 
 ## Deploy

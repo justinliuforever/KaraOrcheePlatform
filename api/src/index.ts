@@ -3,6 +3,7 @@ import { createPool, createDb } from "./db/client";
 import { createBlobCatalogStore, createBlobStudioStore } from "./storage";
 import { createBlobLessonStore } from "./notes/lessons_store";
 import { createBlobNotesAssetsStore } from "./notes/assets_store";
+import { createBlobScanStore } from "./notes/scans_store";
 import { createServiceBusQueue, createServiceBusNotesQueue } from "./queue";
 import { NARRATION_QUEUE } from "./notes/narration";
 import { verifierFromConfig } from "./auth";
@@ -35,6 +36,9 @@ function main(): void {
   const notesAssets = config.storage
     ? createBlobNotesAssetsStore(config.storage.connectionString)
     : undefined;
+  const scans = config.storage
+    ? createBlobScanStore(config.storage.connectionString)
+    : undefined;
   const auth = config.auth ? verifierFromConfig(config.auth) : undefined;
   const push = config.apns ? createApnsSender(config.apns) : undefined;
   const opsLogs = config.logAnalyticsWorkspaceId
@@ -57,6 +61,7 @@ function main(): void {
     notesQueue,
     lessons,
     notesAssets,
+    scans,
     push,
     auth,
     corsOrigins: config.adminOrigins,

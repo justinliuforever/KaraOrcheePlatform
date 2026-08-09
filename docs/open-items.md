@@ -209,6 +209,7 @@ correct, they simply do not carry the new fingering and layout work.
 
 ## Known and accepted
 
+- **`POST /v1/notes/:id/duplicate` will silently drop a score when Slice 3 lands.** The insert at `routes/notes.ts:674-683` is an explicit field list that already drops `customPieceId`. §9.3 of the scan design requires the duplicate to copy `score_scan_id` and to never copy `score_scan_detached_at` — a missed copy loses the score on every retract-and-resend, a carried marker renders "isn't available any more" on a note that never had one. Untestable in Slice 1 because no route writes `notes.score_scan_id` yet; both directions need a test the day the attach route exists.
 - **iOS reclaiming `Caches/` is indistinguishable from never-generated narration.** Our own reaper leaves a marker so it reports `evicted`; the OS leaves nothing. Accepted.
 - **`StudentNotesModel.warmNarration`** keeps a per-session "already asked" set that does not consult the reaped marker, so a note evicted mid-session is not re-warmed on arrival until relaunch. The player's own prefetch is the second chance. Not a live defect.
 - **`pytest notes/tests pieces` in one invocation fails at collection** — the notes conftest stubs azure modules globally and poisons pieces' imports. Pre-existing. Run the two suites separately.

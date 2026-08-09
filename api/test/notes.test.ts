@@ -897,6 +897,22 @@ describe("lessons", () => {
     expect(other.body.lesson.id).not.toBe(first.body.lesson.id);
   });
 
+  it("treats an empty clientLessonId as no key rather than as a colliding one", async () => {
+    const first = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ clientLessonId: "", studentId: student.id });
+    expect(first.status).toBe(201);
+
+    const second = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ clientLessonId: "", studentId: student.id });
+
+    expect(second.status).toBe(201);
+    expect(second.body.lesson.id).not.toBe(first.body.lesson.id);
+  });
+
   it("upload-url re-mints a fresh SAS for an un-submitted lesson only", async () => {
     const lesson = await request(makeApp())
       .post("/v1/lessons")

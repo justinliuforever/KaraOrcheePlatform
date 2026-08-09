@@ -21,6 +21,7 @@ import {
 } from "../db/schema";
 import { notesAccess } from "../notes/entitlement";
 import { narrationPrefix } from "../notes/narration";
+import { scanPurgePrefixes, stampAndDeleteScans } from "../notes/scan_delete";
 
 const ROLE_GRANT_ORIGINS = ["signup", "setup"] as const;
 type RoleGrantOrigin = (typeof ROLE_GRANT_ORIGINS)[number];
@@ -221,9 +222,9 @@ export function usersRouter(deps: Deps): Router {
         .flatMap((j) => [j.transcriptPath, j.modelOutputPath])
         .filter((p): p is string => !!p);
 
-      // Narration is purged only for purgedNoteIds — sent notes (and their narration) must survive with the student.
+      // Narration is purged only for purged.noteIds — sent notes (and their narration) must survive with the student.
       let ciamOid: string | null = null;
-      const purgedNoteIds = await db.transaction(async (tx) => {
+      const purged = await db.transaction(async (tx) => {
         await tx
           .update(teacherStudentLinks)
           .set({ status: "removed", removedAt: sql`now()`, updatedAt: sql`now()` })
@@ -267,6 +268,7 @@ export function usersRouter(deps: Deps): Router {
           await tx.delete(noteJobs).where(inArray(noteJobs.lessonSessionId, lessonIds));
           await tx.delete(lessonSessions).where(inArray(lessonSessions.id, lessonIds));
         }
+        const deletedScans = await stampAndDeleteScans(tx, { ownerId: me.id });
         // custom_piece_id is ON DELETE SET NULL on surviving notes — piece_label (what students see) is a separate column, untouched.
         await deleteCustomPiecesOf(tx, me.id);
 
@@ -294,7 +296,7 @@ export function usersRouter(deps: Deps): Router {
           .returning({ ciamOidAtDelete: users.ciamOidAtDelete });
         ciamOid = tombstoned?.ciamOidAtDelete ?? null;
 
-        return [...receivedIds, ...draftIds];
+        return { noteIds: [...receivedIds, ...draftIds], deletedScans };
       });
 
       await userAudit(deps, req, "account.delete", { type: "user", id: me.id });
@@ -326,8 +328,21 @@ export function usersRouter(deps: Deps): Router {
         for (const path of transcriptPaths) {
           await purge("transcript", path, () => deps.notesAssets!.deleteAsset(path));
         }
-        for (const noteId of purgedNoteIds) {
+        for (const noteId of purged.noteIds) {
           await purge("narration", noteId, () => deps.notesAssets!.deletePrefix(narrationPrefix(noteId)));
+        }
+      }
+      if (deps.scans) {
+        for (const prefix of scanPurgePrefixes(deps.scans, me.id, purged.deletedScans)) {
+          await purge("scan", prefix, () => deps.scans!.deletePrefix(prefix));
+        }
+      } else {
+        // The rows are gone before the blobs, so with no store to purge them this line is the only thing left that names the bytes.
+        for (const scan of purged.deletedScans) {
+          console.log(JSON.stringify({
+            kind: "purge_failed", op: "account.delete", label: "scan", key: scan.id,
+            userId: me.id, reqId: req.reqId ?? null, error: "storage_not_configured",
+          }));
         }
       }
       // identityDeleted drives the delete-sheet's sign-in-service sentence — false whenever Graph never answered, unconfigured included.

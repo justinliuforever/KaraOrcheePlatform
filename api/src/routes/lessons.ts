@@ -221,7 +221,9 @@ export function lessonsRouter(deps: Deps): Router {
         ? body.pieceLabel.trim()
         : null;
       const studentId = typeof body.studentId === "string" ? body.studentId : null;
-      const clientLessonId = typeof body.clientLessonId === "string" ? body.clientLessonId : null;
+      const clientLessonId = typeof body.clientLessonId === "string" && body.clientLessonId.trim()
+        ? body.clientLessonId
+        : null;
       const pieceSource = readPieceSource(body.pieceSource);
 
       // Absent falls back to the teacher-wins default — must stay for pre-B1.5 clients that never send this field.

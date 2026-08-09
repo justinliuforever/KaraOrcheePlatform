@@ -11,6 +11,7 @@ import { usersRouter } from "./routes/users";
 import { linksRouter } from "./routes/links";
 import { lessonsRouter } from "./routes/lessons";
 import { notesRouter } from "./routes/notes";
+import { scansRouter } from "./routes/scans";
 import { customPiecesRouter } from "./routes/customPieces";
 import { internalPushRouter } from "./routes/push";
 import { adminRouter } from "./routes/admin";
@@ -41,6 +42,7 @@ export function createServer(deps: Deps = {}): Express {
   app.use(linksRouter(deps));
   app.use(lessonsRouter(deps));
   app.use(notesRouter(deps));
+  app.use(scansRouter(deps));
   app.use(customPiecesRouter(deps));
   app.use(internalPushRouter(deps, process.env.INTERNAL_API_KEY));
   app.use(studioRouter(deps));
