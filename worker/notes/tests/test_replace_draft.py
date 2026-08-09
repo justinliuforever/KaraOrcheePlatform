@@ -535,15 +535,20 @@ def _job_mentions(conn):
     return None
 
 
-def test_the_job_records_only_the_mentions_the_transcript_actually_contains(monkeypatch):
-    conn = FakeConn({
+def _mentions_conn():
+    return FakeConn({
         "FROM note_jobs j": FETCH_ROW_14,
         **LIVE_LESSON,
         LOCK: solo_lock(),
         "SELECT id FROM notes WHERE note_job_id": None,
         "INSERT INTO notes": ("note-9",),
     })
+
+
+def test_the_job_records_only_the_mentions_the_transcript_actually_contains(monkeypatch):
+    conn = _mentions_conn()
     _process_env(monkeypatch)
+    monkeypatch.setenv("NOTES_PIECE_MENTIONS", "1")
     monkeypatch.setattr(main, "extract_json", lambda t: {
         **ORIGINAL, "piece_mentions": ["plenty of lesson talk", "the Arabesque"]})
     main.process(conn, FakeBlobService(), "cs", "job-9")
@@ -551,13 +556,18 @@ def test_the_job_records_only_the_mentions_the_transcript_actually_contains(monk
 
 
 def test_a_job_whose_model_named_nothing_records_an_empty_list_not_a_missing_write(monkeypatch):
-    conn = FakeConn({
-        "FROM note_jobs j": FETCH_ROW_14,
-        **LIVE_LESSON,
-        LOCK: solo_lock(),
-        "SELECT id FROM notes WHERE note_job_id": None,
-        "INSERT INTO notes": ("note-9",),
-    })
+    conn = _mentions_conn()
     _process_env(monkeypatch)
+    monkeypatch.setenv("NOTES_PIECE_MENTIONS", "1")
+    main.process(conn, FakeBlobService(), "cs", "job-9")
+    assert _job_mentions(conn) == []
+
+
+def test_a_model_that_volunteers_mentions_while_the_flag_is_off_stores_none(monkeypatch):
+    conn = _mentions_conn()
+    _process_env(monkeypatch)
+    monkeypatch.delenv("NOTES_PIECE_MENTIONS", raising=False)
+    monkeypatch.setattr(main, "extract_json", lambda t: {
+        **ORIGINAL, "piece_mentions": ["plenty of lesson talk"]})
     main.process(conn, FakeBlobService(), "cs", "job-9")
     assert _job_mentions(conn) == []

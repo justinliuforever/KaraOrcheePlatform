@@ -29,7 +29,7 @@ from narration import narrate_on_demand, narration_stage, targets_from_message
 from obs import jlog
 from pipeline import (GateFail, build_turns, check_transcript, drop_reasons,
                       extract_json, normalize_note, normalize_piece_mentions)
-from prompt import build_system, build_user
+from prompt import build_system, build_user, piece_mentions_enabled
 
 QUEUE = "notes-jobs"
 NARRATION_QUEUE = "notes-narration"
@@ -606,8 +606,10 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
             job_id, "delivered", "gates", piece_desc, measure_count, rejected, obj,
             {"kept": len(annotations), "drops": drops}))
 
+    # Not in normalize_piece_mentions — the eval that clears this flag calls it with the flag off.
     update_job(conn, job_id, stage="gates",
-               piece_mentions=json.dumps(normalize_piece_mentions(obj, text)))
+               piece_mentions=json.dumps(
+                   normalize_piece_mentions(obj, text) if piece_mentions_enabled() else []))
     note_id = replace_draft(conn, job_id, lesson_id, content, obj, annotations)
     if note_id is None:
         # A canceled lesson must never produce a ready_for_review job: it would be

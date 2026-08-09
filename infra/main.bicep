@@ -97,6 +97,10 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
                 tierToCool: { daysAfterModificationGreaterThan: 30 }
                 delete: { daysAfterModificationGreaterThan: 90 }
               }
+              // Without this a superseded version of a lesson recording never expires at all.
+              version: {
+                delete: { daysAfterCreationGreaterThan: 7 }
+              }
             }
           }
         }
