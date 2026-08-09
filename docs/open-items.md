@@ -57,6 +57,31 @@ across 232 staff spaces looks empty.
 - Hanon No. 43 passes every gate now but is a NEW catalogue entry; the engraver asked to review
   new pieces himself, so it should go to Review, not straight to publish.
 
+## The Dolet notice "gate" does not gate (2026-08-09)
+
+`a652a80` reads `<?DoletSibelius …?>` out of the raw upload and computes
+`severity: "block"` for the notices that mean lost pitch. **Nothing reads that field.** Verified:
+
+- `worker/pieces/gates.py` never mentions `export_warnings` or `severity`.
+- Repo-wide, `"block"` appears only inside `dolet_notices.py` itself — the assignment at `:89`
+  and a *sort key* at `:135`.
+- `apps/admin/src/api.ts:237` types `export_warnings` as `{code, measures}` — `severity` is not
+  carried to the client at all.
+- `apps/admin/src/studio/wizard/FactsCard.tsx` holds an allowlist of exactly two codes,
+  `sibelius_direct_export` and `fingering_stack_no_position`. Every `dolet_*` code maps to
+  `undefined` and is dropped by `.filter(Boolean)`.
+- Mutation check: replacing the whole body of `dolet_notices()` with `return []` still passes
+  all 156 `worker/pieces` tests.
+
+So it is an end-to-end no-op. **Do not upload the next batch believing octave-line loss is now
+caught.** It is not; it would repeat the 61-dropped-line incident silently.
+
+Wiring it up is three small edits — carry `severity` in `api.ts`, add the `dolet_*` codes to the
+FactsCard allowlist, and have `gates.py` fail on `severity == "block"`. The third changes upload
+behaviour (it can reject the engraver's file), so it wants its own review, not a drive-by.
+
+Deployed on worker `bd8ed04` anyway, because it is HEAD and it is inert.
+
 ## MuseScore was measured once, on the wrong piece (2026-08-08)
 
 The engraver sent a MuseScore Studio 4.7.4 export of Clementi Sonatina Op. 36 No. 1. We hold
