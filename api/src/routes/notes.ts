@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
@@ -16,6 +16,7 @@ import {
 } from "../notes/narration";
 import { notifyNoteSent } from "../notes/push";
 import { REGROUND_HINT } from "./lessons";
+import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import { normalizeLabel, upsertCustomPiece } from "./customPieces";
 import {
@@ -33,6 +34,7 @@ import {
   noteNarrationClips,
   notes,
   pieces,
+  scoreScans,
   teacherStudentLinks,
   users,
 } from "../db/schema";
@@ -142,13 +144,58 @@ async function noteWithAnnotations(deps: Deps, noteId: string) {
   return { note: note!, annotations, pieceSuggestion: note ? await suggestionFor(deps, note) : null };
 }
 
-// A deny list: every column added to `notes` reaches the student until it is named here.
-function strippedForStudent(note: NoteRow) {
-  const {
-    pieceSuggestionDismissed: _d, customPieceId: _c,
-    scoreScanId: _s, scoreScanDetachedAt: _sd, ...rest
-  } = note;
-  return rest;
+// Dropping any of id/noteJobId/lessonSessionId/teacherId/status/content/createdAt bricks every note on installed builds that decode them as non-optional.
+const STUDENT_NOTE_KEYS = [
+  "id", "noteJobId", "lessonSessionId", "teacherId", "studentId", "origin",
+  "pieceId", "pieceLabel", "pieceVersion", "status", "contentOriginal", "content",
+  "editedAt", "sentAt", "retractedAt", "supersededBy", "readAt", "createdAt", "updatedAt",
+] as const satisfies readonly (keyof NoteRow)[];
+
+function strippedForStudent(note: NoteRow): Pick<NoteRow, (typeof STUDENT_NOTE_KEYS)[number]> {
+  const out = {} as Record<string, unknown>;
+  for (const key of STUDENT_NOTE_KEYS) out[key] = note[key];
+  return out as Pick<NoteRow, (typeof STUDENT_NOTE_KEYS)[number]>;
+}
+
+interface ScoreFields {
+  hasScore: boolean;
+  scorePageCount: number | null;
+  scoreGone: boolean;
+}
+
+// Resolved from the scan row, never from the pointer alone — a client must never render a viewer over bytes the image route would then refuse.
+async function scoreFieldsFor(deps: Deps, note: NoteRow): Promise<ScoreFields> {
+  if (!note.scoreScanId) {
+    return { hasScore: false, scorePageCount: null, scoreGone: note.scoreScanDetachedAt !== null };
+  }
+  const [scan] = await deps
+    .db!.orm.select({
+      status: scoreScans.status,
+      blobPath: scoreScans.blobPath,
+      pageCount: scoreScans.pageCount,
+    })
+    .from(scoreScans)
+    .where(eq(scoreScans.id, note.scoreScanId))
+    .limit(1);
+  const ready = scan?.status === "ready" && scan.blobPath !== null;
+  return { hasScore: ready, scorePageCount: ready ? scan!.pageCount : null, scoreGone: false };
+}
+
+// A scan someone else owns is not an error to explain — it is a scan that does not exist for this caller.
+async function ownedScanId(deps: Deps, ownerId: string, value: unknown): Promise<string | null | "miss"> {
+  if (value === null) return null;
+  if (!isUuid(value)) return "miss";
+  const [scan] = await deps
+    .db!.orm.select({ id: scoreScans.id })
+    .from(scoreScans)
+    .where(and(
+      eq(scoreScans.id, value),
+      eq(scoreScans.ownerId, ownerId),
+      // A taken-down scan can never be served, so putting it in front of a reader would be a promise nothing can keep.
+      ne(scoreScans.status, "taken_down"),
+    ))
+    .limit(1);
+  return scan ? scan.id : "miss";
 }
 
 // Scoping by teacherId alone leaks a dual-role account's own self-notes into the teacher-side routes.
@@ -272,6 +319,15 @@ export function notesRouter(deps: Deps): Router {
       }
       if ("pieceLabel" in body) {
         patch.pieceLabel = typeof body.pieceLabel === "string" && body.pieceLabel.trim() ? body.pieceLabel.trim() : null;
+      }
+      if ("scoreScanId" in body) {
+        // Keeps score_scans.owner_id equal to notes.teacher_id on every referencing note — the invariant every read path assumes.
+        const scanId = await ownedScanId(deps, me.id, body.scoreScanId);
+        if (scanId === "miss") {
+          res.status(404).json({ error: "not_found" });
+          return;
+        }
+        patch.scoreScanId = scanId;
       }
       // One transaction, CAS on draft — a racing send must never lose an edit, and quote (verbatim provenance) is never alterable via this payload.
       let dropped: string[] = [];
@@ -679,6 +735,8 @@ export function notesRouter(deps: Deps): Router {
             studentId: null,
             pieceId: note.pieceId,
             pieceLabel: note.pieceLabel,
+            scoreScanId: note.scoreScanId,
+            // scoreScanDetachedAt is deliberately absent: a fresh note that never had a score must not render "isn't available any more".
             contentOriginal: note.contentOriginal,
             content: note.content,
           })
@@ -803,15 +861,64 @@ export function notesRouter(deps: Deps): Router {
         : await db.select().from(users).where(eq(users.id, note.teacherId)).limit(1);
       res.json({
         // Coalesce noteJobId/lessonSessionId to "" — already-shipped clients decode these as non-optional strings; null bricks the note.
-        // pieceSuggestionDismissed and customPieceId are teacher-side only — strippedForStudent must keep excluding them.
         note: {
           ...strippedForStudent(note),
           noteJobId: note.noteJobId ?? "",
           lessonSessionId: note.lessonSessionId ?? "",
+          ...(await scoreFieldsFor(deps, note)),
         },
         annotations,
         teacher: { id: note.teacherId, displayName: teacher?.displayName ?? null },
       });
+    }),
+  );
+
+  // Self notes are born sent, so this writes to a sent note on purpose — the teacher side's draft-only rule must not be inherited here.
+  router.patch(
+    "/v1/me/notes/:id",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      if (!isUuid(id)) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const [note] = await db
+        .select()
+        .from(notes)
+        .where(and(eq(notes.id, id), eq(notes.studentId, me.id)))
+        .limit(1);
+      if (!note) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (note.origin !== "self") {
+        res.status(403).json({ error: "self_note_only", message: "Notes from your teacher can't be edited." });
+        return;
+      }
+      const body = req.body ?? {};
+      if (!("scoreScanId" in body)) {
+        res.status(400).json({ error: "score_scan_id_required" });
+        return;
+      }
+      const scanId = await ownedScanId(deps, me.id, body.scoreScanId);
+      if (scanId === "miss") {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const [updated] = await db
+        .update(notes)
+        .set({
+          scoreScanId: scanId,
+          // A note that has a score again must stop reporting the old one as gone.
+          scoreScanDetachedAt: scanId ? null : note.scoreScanDetachedAt,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(notes.id, note.id))
+        .returning();
+      res.json(await scoreFieldsFor(deps, updated!));
     }),
   );
 
@@ -1058,6 +1165,91 @@ export function notesRouter(deps: Deps): Router {
         expiresAt: new Date(Date.now() + ASSET_READ_SAS_MINUTES * 60 * 1000).toISOString(),
         clips,
         pending,
+      });
+    }),
+  );
+
+  // ── Score scan ────────────────────────────────────────────────────────────────
+
+  // Narration-shaped, not detail-shaped: the detail route serves a stub for a read-then-retracted note, and an image must not follow that softer rule.
+  router.get(
+    "/v1/notes/:id/score-scan",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      const store = deps.scans;
+      const id = String(req.params.id);
+      if (!isUuid(id)) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (!store) {
+        res.status(503).json({ error: "storage_not_configured" });
+        return;
+      }
+      const [note] = await db
+        .select({
+          id: notes.id,
+          studentId: notes.studentId,
+          sentAt: notes.sentAt,
+          scoreScanId: notes.scoreScanId,
+          scoreScanDetachedAt: notes.scoreScanDetachedAt,
+        })
+        .from(notes)
+        .where(and(
+          eq(notes.id, id),
+          or(
+            and(eq(notes.studentId, me.id), eq(notes.status, "sent")),
+            ...(me.isTeacher ? [teacherOwned(me.id)] : []),
+          ),
+        ))
+        .limit(1);
+      if (!note) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const [scan] = note.scoreScanId
+        ? await db.select().from(scoreScans).where(eq(scoreScans.id, note.scoreScanId)).limit(1)
+        : [];
+      // Owner check first: on a self note the owner IS the student, and nobody is locked out of their own photograph of their own book.
+      if (scan?.ownerId !== me.id && note.studentId === me.id) {
+        const access = await notesAccess(deps, me);
+        if (noteIsLocked(access, note.sentAt)) {
+          res.status(402).json({ error: "subscription_required", access });
+          return;
+        }
+      }
+      // The marker is the only thing that separates "a score was destroyed under you" from "this note never had one".
+      if (!scan) {
+        if (note.scoreScanDetachedAt) {
+          res.status(410).json({ error: "scan_gone" });
+          return;
+        }
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (scan.status === "created") {
+        res.status(409).json({ error: "scan_not_ready" });
+        return;
+      }
+      if (scan.status === "taken_down") {
+        res.status(410).json({ error: "scan_taken_down" });
+        return;
+      }
+      if (!scan.blobPath) {
+        res.status(410).json({ error: "scan_purged" });
+        return;
+      }
+      res.set("Cache-Control", "no-store");
+      res.json({
+        noteId: note.id,
+        // Derived from the owner's id, never from the stored prefix — a signed URL must not address outside this scan's own prefix.
+        pages: Array.from({ length: scan.pageCount }, (_, i) => ({
+          page: i + 1,
+          url: store.readUrl(store.blobPath(scan.ownerId, scan.id, i + 1)),
+        })),
+        expiresAt: new Date(Date.now() + ASSET_READ_SAS_MINUTES * 60 * 1000).toISOString(),
       });
     }),
   );

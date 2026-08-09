@@ -25,10 +25,12 @@ import {
   platformConfig,
   devices,
   auditEvents,
+  scoreScans,
 } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { LessonStore } from "../src/notes/lessons_store";
 import type { NotesAssetsStore } from "../src/notes/assets_store";
+import type { ScanStore } from "../src/notes/scans_store";
 import { createBlobNotesAssetsStore } from "../src/notes/assets_store";
 import { narrationClipPath, narrationPrefix } from "../src/notes/narration";
 import type { NotesQueue } from "../src/queue";
@@ -177,12 +179,46 @@ function makeFakePush(): FakePush {
   return p;
 }
 
+function makeFakeScans(): ScanStore {
+  const incomingPrefix = (ownerId: string, scanId: string) => `incoming/${ownerId}/${scanId}/`;
+  const blobPrefix = (ownerId: string, scanId: string) => `${ownerId}/${scanId}/`;
+  return {
+    incomingPrefix,
+    blobPrefix,
+    incomingPath: (o, s, n) => `${incomingPrefix(o, s)}${n}.jpg`,
+    blobPath: (o, s, n) => `${blobPrefix(o, s)}${n}.jpg`,
+    uploadUrl: (p) => `https://fake/score-scans/${p}?write`,
+    async pageProps() {
+      return { bytes: 1024 };
+    },
+    async readHead() {
+      return Buffer.from([0xff, 0xd8, 0xff]);
+    },
+    async promote() {},
+    readUrl: (p) => `https://fake/score-scans/${p}?read`,
+    async deletePrefix() {},
+  };
+}
+
 let fakeLessons: FakeLessons;
 let fakeQueue: FakeQueue;
 let fakeAssets: FakeAssets;
 let fakePush: FakePush;
+let fakeScans: ScanStore;
 
 function makeApp() {
+  return createServer({
+    db,
+    auth: verifier,
+    lessons: fakeLessons,
+    notesQueue: fakeQueue,
+    notesAssets: fakeAssets,
+    scans: fakeScans,
+    push: fakePush,
+  });
+}
+
+function makeAppWithoutScans() {
   return createServer({
     db,
     auth: verifier,
@@ -276,10 +312,46 @@ const DEFAULT_ANNOTATIONS = [
   },
 ];
 
+async function seedScan(opts: {
+  ownerId: string;
+  title?: string;
+  pageCount?: number;
+  status?: "created" | "ready" | "taken_down";
+  blobPath?: string | null;
+}) {
+  const pageCount = opts.pageCount ?? 3;
+  const status = opts.status ?? "ready";
+  const [row] = await db.orm
+    .insert(scoreScans)
+    .values({
+      ownerId: opts.ownerId,
+      title: opts.title ?? "Czerny 599",
+      pageCount,
+      status,
+      blobPath: "blobPath" in opts
+        ? opts.blobPath
+        : status === "ready"
+          ? `${opts.ownerId}/placeholder/`
+          : null,
+      bytes: status === "ready" ? 4096 : null,
+    })
+    .returning();
+  if (status === "ready" && !("blobPath" in opts)) {
+    await db.orm
+      .update(scoreScans)
+      .set({ blobPath: `${opts.ownerId}/${row!.id}/` })
+      .where(eq(scoreScans.id, row!.id));
+  }
+  return row!;
+}
+
 async function seedNote(opts: {
   teacherId: string;
   studentId?: string | null;
   status?: "draft" | "sent" | "retracted";
+  origin?: "teacher" | "self";
+  scoreScanId?: string | null;
+  scoreScanDetachedAt?: Date | null;
   pieceId?: string | null;
   pieceLabel?: string | null;
   pieceVersion?: number | null;
@@ -319,6 +391,9 @@ async function seedNote(opts: {
       lessonSessionId: lesson!.id,
       teacherId: opts.teacherId,
       studentId: opts.studentId ?? null,
+      origin: opts.origin ?? "teacher",
+      scoreScanId: opts.scoreScanId ?? null,
+      scoreScanDetachedAt: opts.scoreScanDetachedAt ?? null,
       pieceId: opts.pieceId ?? null,
       pieceLabel: opts.pieceLabel ?? null,
       pieceVersion: opts.pieceVersion ?? null,
@@ -368,6 +443,7 @@ beforeAll(async () => {
   fakeQueue = makeFakeQueue();
   fakeAssets = makeFakeAssets();
   fakePush = makeFakePush();
+  fakeScans = makeFakeScans();
 
   await db.orm.insert(pieces).values({
     id: "seed_piece",
@@ -3141,8 +3217,6 @@ describe("users/sync profile preservation", () => {
   });
 });
 
-// Shipped iOS builds decode these payloads with non-optional properties, so a key that stops being sent
-// breaks a client that is already in the field — this pins the key SET, which equality assertions do not.
 describe("wire key sets the shipped app decodes", () => {
   const LESSON_ROW = [
     "attested", "audioBytes", "audioPath", "clientLessonId", "createdAt", "customPieceId", "durationSec",
@@ -3198,11 +3272,573 @@ describe("wire key sets the shipped app decodes", () => {
       .get(`/v1/me/notes/${seeded.note.id}`).set("Authorization", `Bearer ${student.token}`);
     expect(keys(res.body)).toEqual(["annotations", "note", "teacher"]);
     expect(keys(res.body.note)).toEqual([
-      "content", "contentOriginal", "createdAt", "editedAt", "id", "lessonSessionId", "noteJobId", "origin",
-      "pieceId", "pieceLabel", "pieceVersion", "readAt", "retractedAt", "sentAt", "status", "studentId",
-      "supersededBy", "teacherId", "updatedAt",
+      "content", "contentOriginal", "createdAt", "editedAt", "hasScore", "id", "lessonSessionId",
+      "noteJobId", "origin", "pieceId", "pieceLabel", "pieceVersion", "readAt", "retractedAt",
+      "scoreGone", "scorePageCount", "sentAt", "status", "studentId", "supersededBy", "teacherId",
+      "updatedAt",
     ]);
     expect(res.body.note).not.toHaveProperty("pieceSuggestionDismissed");
     expect(res.body.note).not.toHaveProperty("customPieceId");
+  });
+
+  it("GET /v1/me/notes/:id carries all seven fields NotesAPI.Note decodes as non-optional, non-null", async () => {
+    const seeded = await seedNote({
+      teacherId: teacher.id, studentId: student.id, status: "sent", sentAt: new Date(),
+    });
+    const res = await request(makeApp())
+      .get(`/v1/me/notes/${seeded.note.id}`).set("Authorization", `Bearer ${student.token}`);
+    for (const key of ["id", "noteJobId", "lessonSessionId", "teacherId", "status", "content", "createdAt"]) {
+      expect(res.body.note[key]).not.toBeNull();
+      expect(res.body.note[key]).not.toBeUndefined();
+    }
+    expect(keys(res.body.note.content)).toEqual(["lessonSummary", "practicePlan"]);
+  });
+
+  it("GET /v1/me/notes/:id never carries the raw scan columns, on a note that has a scan", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const seeded = await seedNote({
+      teacherId: teacher.id, studentId: student.id, status: "sent", sentAt: new Date(),
+      scoreScanId: scan.id, scoreScanDetachedAt: daysAgo(1),
+    });
+    const res = await request(makeApp())
+      .get(`/v1/me/notes/${seeded.note.id}`).set("Authorization", `Bearer ${student.token}`);
+    expect(res.body.note).not.toHaveProperty("scoreScanId");
+    expect(res.body.note).not.toHaveProperty("scoreScanDetachedAt");
+    expect(JSON.stringify(res.body)).not.toContain(scan.id);
+  });
+
+  it("GET /v1/me/notes carries no scan fields on any row", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    await seedNote({
+      teacherId: teacher.id, studentId: student.id, status: "sent", sentAt: new Date(),
+      scoreScanId: scan.id,
+    });
+    const res = await request(makeApp())
+      .get("/v1/me/notes").set("Authorization", `Bearer ${student.token}`);
+    for (const item of res.body.items) {
+      expect(keys(item)).toEqual([
+        "annotationCount", "doneCount", "id", "locked", "origin", "pieceId", "pieceLabel", "pieceVersion",
+        "readAt", "sentAt", "status", "teacherId", "teacherName",
+      ]);
+    }
+  });
+});
+
+describe("notes: attaching a score scan", () => {
+  let scanT: TestUser;
+  let scanS: TestUser;
+  let otherT: TestUser;
+
+  beforeAll(async () => {
+    scanT = await makeUser({ oid: "scan-teacher", name: "Scan Tessa", role: "teacher" });
+    scanS = await makeUser({ oid: "scan-student", name: "Scan Sam", role: "student" });
+    otherT = await makeUser({ oid: "scan-other-teacher", name: "Other Olive", role: "teacher" });
+    await linkActive(scanT.id, scanS.id);
+  });
+
+  const attach = (noteId: string, token: string, body: Record<string, unknown>) =>
+    request(makeApp()).patch(`/v1/notes/${noteId}`).set("Authorization", `Bearer ${token}`).send(body);
+
+  const refs = async (noteId: string) => {
+    const [row] = await db.orm
+      .select({ scanId: notes.scoreScanId, detachedAt: notes.scoreScanDetachedAt })
+      .from(notes)
+      .where(eq(notes.id, noteId));
+    return row!;
+  };
+
+  it("attaches the author's own scan to a draft", async () => {
+    const scan = await seedScan({ ownerId: scanT.id });
+    const { note } = await seedNote({ teacherId: scanT.id, status: "draft" });
+    const res = await attach(note.id, scanT.token, { scoreScanId: scan.id });
+    expect(res.status).toBe(200);
+    expect(res.body.note.scoreScanId).toBe(scan.id);
+    expect((await refs(note.id)).scanId).toBe(scan.id);
+  });
+
+  it("answers 404 and changes nothing when the scan belongs to another owner", async () => {
+    const mine = await seedScan({ ownerId: scanT.id });
+    const theirs = await seedScan({ ownerId: otherT.id });
+    const { note } = await seedNote({ teacherId: scanT.id, status: "draft", scoreScanId: mine.id });
+    const res = await attach(note.id, scanT.token, { scoreScanId: theirs.id });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("not_found");
+    expect(res.body.message).toBeUndefined();
+    expect((await refs(note.id)).scanId).toBe(mine.id);
+  });
+
+  it("answers 404 when scoreScanId is not a uuid", async () => {
+    const { note } = await seedNote({ teacherId: scanT.id, status: "draft" });
+    const res = await attach(note.id, scanT.token, { scoreScanId: "not-a-uuid" });
+    expect(res.status).toBe(404);
+    expect((await refs(note.id)).scanId).toBeNull();
+  });
+
+  it("detaches on null and leaves the scan row alive", async () => {
+    const scan = await seedScan({ ownerId: scanT.id });
+    const { note } = await seedNote({ teacherId: scanT.id, status: "draft", scoreScanId: scan.id });
+    const res = await attach(note.id, scanT.token, { scoreScanId: null });
+    expect(res.status).toBe(200);
+    expect((await refs(note.id)).scanId).toBeNull();
+    expect(await db.orm.select().from(scoreScans).where(eq(scoreScans.id, scan.id))).toHaveLength(1);
+  });
+
+  it("refuses to attach to a sent note", async () => {
+    const scan = await seedScan({ ownerId: scanT.id });
+    const { note } = await seedNote({
+      teacherId: scanT.id, studentId: scanS.id, status: "sent", sentAt: new Date(),
+    });
+    const res = await attach(note.id, scanT.token, { scoreScanId: scan.id });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("not_editable");
+    expect((await refs(note.id)).scanId).toBeNull();
+  });
+
+  it("accepts a scan that is still uploading", async () => {
+    const scan = await seedScan({ ownerId: scanT.id, status: "created" });
+    const { note } = await seedNote({ teacherId: scanT.id, status: "draft" });
+    const res = await attach(note.id, scanT.token, { scoreScanId: scan.id });
+    expect(res.status).toBe(200);
+    expect((await refs(note.id)).scanId).toBe(scan.id);
+  });
+
+  it("leaves the reference untouched when the body names no scoreScanId", async () => {
+    const scan = await seedScan({ ownerId: scanT.id });
+    const { note } = await seedNote({ teacherId: scanT.id, status: "draft", scoreScanId: scan.id });
+    const res = await attach(note.id, scanT.token, { pieceLabel: "Minuet in G" });
+    expect(res.status).toBe(200);
+    expect((await refs(note.id)).scanId).toBe(scan.id);
+  });
+
+  it("refuses a student calling the teacher route", async () => {
+    const scan = await seedScan({ ownerId: scanS.id });
+    const { note } = await seedNote({ teacherId: scanT.id, status: "draft" });
+    const res = await attach(note.id, scanS.token, { scoreScanId: scan.id });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("teacher_only");
+    expect((await refs(note.id)).scanId).toBeNull();
+  });
+});
+
+describe("PATCH /v1/me/notes/:id", () => {
+  let selfU: TestUser;
+  let selfT: TestUser;
+  let selfOther: TestUser;
+
+  beforeAll(async () => {
+    selfU = await makeUser({ oid: "selfpatch-student", name: "Solo Sasha", role: "student" });
+    selfT = await makeUser({ oid: "selfpatch-teacher", name: "Patch Tessa", role: "teacher" });
+    selfOther = await makeUser({ oid: "selfpatch-other", name: "Other Otto", role: "student" });
+    await linkActive(selfT.id, selfU.id);
+  });
+
+  const patch = (noteId: string, token: string, body: Record<string, unknown>) =>
+    request(makeApp()).patch(`/v1/me/notes/${noteId}`).set("Authorization", `Bearer ${token}`).send(body);
+
+  const selfNote = (opts: { scoreScanId?: string | null; scoreScanDetachedAt?: Date | null } = {}) =>
+    seedNote({
+      teacherId: selfU.id,
+      studentId: selfU.id,
+      origin: "self",
+      status: "sent",
+      sentAt: new Date(),
+      readAt: new Date(),
+      ...opts,
+    });
+
+  const refs = async (noteId: string) => {
+    const [row] = await db.orm
+      .select({ scanId: notes.scoreScanId, detachedAt: notes.scoreScanDetachedAt })
+      .from(notes)
+      .where(eq(notes.id, noteId));
+    return row!;
+  };
+
+  it("attaches a scan to a born-sent self note", async () => {
+    const scan = await seedScan({ ownerId: selfU.id, pageCount: 4 });
+    const { note } = await selfNote();
+    const res = await patch(note.id, selfU.token, { scoreScanId: scan.id });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ hasScore: true, scorePageCount: 4, scoreGone: false });
+    expect((await refs(note.id)).scanId).toBe(scan.id);
+  });
+
+  it("detaches on null", async () => {
+    const scan = await seedScan({ ownerId: selfU.id });
+    const { note } = await selfNote({ scoreScanId: scan.id });
+    const res = await patch(note.id, selfU.token, { scoreScanId: null });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ hasScore: false, scorePageCount: null, scoreGone: false });
+    expect((await refs(note.id)).scanId).toBeNull();
+  });
+
+  it("refuses a note the teacher wrote", async () => {
+    const scan = await seedScan({ ownerId: selfU.id });
+    const { note } = await seedNote({
+      teacherId: selfT.id, studentId: selfU.id, status: "sent", sentAt: new Date(),
+    });
+    const res = await patch(note.id, selfU.token, { scoreScanId: scan.id });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("self_note_only");
+    expect((await refs(note.id)).scanId).toBeNull();
+  });
+
+  it("answers 404 for a scan owned by someone else", async () => {
+    const theirs = await seedScan({ ownerId: selfOther.id });
+    const { note } = await selfNote();
+    const res = await patch(note.id, selfU.token, { scoreScanId: theirs.id });
+    expect(res.status).toBe(404);
+    expect((await refs(note.id)).scanId).toBeNull();
+  });
+
+  it("answers 404 for another person's self note", async () => {
+    const scan = await seedScan({ ownerId: selfOther.id });
+    const { note } = await selfNote();
+    const res = await patch(note.id, selfOther.token, { scoreScanId: scan.id });
+    expect(res.status).toBe(404);
+    expect((await refs(note.id)).scanId).toBeNull();
+  });
+
+  it("answers 404 for a malformed note id", async () => {
+    const res = await patch("not-a-uuid", selfU.token, { scoreScanId: null });
+    expect(res.status).toBe(404);
+  });
+
+  it("answers 400 when the body names no scoreScanId", async () => {
+    const { note } = await selfNote();
+    const res = await patch(note.id, selfU.token, { content: { lessonSummary: "rewritten" } });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("score_scan_id_required");
+  });
+
+  it("accepts only scoreScanId — content in the same body is ignored", async () => {
+    const scan = await seedScan({ ownerId: selfU.id });
+    const { note } = await selfNote();
+    const res = await patch(note.id, selfU.token, {
+      scoreScanId: scan.id,
+      content: { lessonSummary: "rewritten", practicePlan: [] },
+      status: "draft",
+    });
+    expect(res.status).toBe(200);
+    const [row] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect((row!.content as { lessonSummary: string }).lessonSummary).toBe("Nice sense of line today.");
+    expect(row!.status).toBe("sent");
+  });
+
+  it("clears the gone marker on attach, so a later detach does not claim a score was destroyed", async () => {
+    const replacement = await seedScan({ ownerId: selfU.id });
+    const { note } = await selfNote({ scoreScanId: null, scoreScanDetachedAt: daysAgo(1) });
+
+    const before = await request(makeApp())
+      .get(`/v1/me/notes/${note.id}`).set("Authorization", `Bearer ${selfU.token}`);
+    expect(before.body.note.scoreGone).toBe(true);
+
+    const attached = await patch(note.id, selfU.token, { scoreScanId: replacement.id });
+    expect(attached.body).toEqual({ hasScore: true, scorePageCount: 3, scoreGone: false });
+    expect((await refs(note.id)).detachedAt).toBeNull();
+
+    const detached = await patch(note.id, selfU.token, { scoreScanId: null });
+    expect(detached.body.scoreGone).toBe(false);
+
+    const after = await request(makeApp())
+      .get(`/v1/me/notes/${note.id}`).set("Authorization", `Bearer ${selfU.token}`);
+    expect(after.body.note.scoreGone).toBe(false);
+  });
+});
+
+describe("POST /v1/notes/:id/duplicate and the score reference", () => {
+  let dupT: TestUser;
+  let dupS: TestUser;
+
+  beforeAll(async () => {
+    dupT = await makeUser({ oid: "dup-scan-teacher", name: "Dup Tessa", role: "teacher" });
+    dupS = await makeUser({ oid: "dup-scan-student", name: "Dup Sam", role: "student" });
+    await linkActive(dupT.id, dupS.id);
+  });
+
+  it("copies score_scan_id, so retract-and-resend does not lose the score", async () => {
+    const scan = await seedScan({ ownerId: dupT.id });
+    const { note } = await seedNote({
+      teacherId: dupT.id, studentId: dupS.id, status: "retracted", scoreScanId: scan.id,
+      sentAt: daysAgo(2), readAt: daysAgo(2), retractedAt: daysAgo(1),
+    });
+    const res = await request(makeApp())
+      .post(`/v1/notes/${note.id}/duplicate`).set("Authorization", `Bearer ${dupT.token}`);
+    expect(res.status).toBe(201);
+    expect(res.body.scoreScanId).toBe(scan.id);
+  });
+
+  it("never copies score_scan_detached_at", async () => {
+    const { note } = await seedNote({
+      teacherId: dupT.id, studentId: dupS.id, status: "retracted", scoreScanId: null,
+      scoreScanDetachedAt: daysAgo(1), sentAt: daysAgo(3), readAt: daysAgo(3), retractedAt: daysAgo(2),
+    });
+    const res = await request(makeApp())
+      .post(`/v1/notes/${note.id}/duplicate`).set("Authorization", `Bearer ${dupT.token}`);
+    expect(res.status).toBe(201);
+    expect(res.body.scoreScanDetachedAt).toBeNull();
+    expect(res.body.scoreScanId).toBeNull();
+  });
+
+  it("carries a live scan forward while leaving the marker off the copy", async () => {
+    const scan = await seedScan({ ownerId: dupT.id });
+    const { note } = await seedNote({
+      teacherId: dupT.id, studentId: dupS.id, status: "retracted", scoreScanId: scan.id,
+      scoreScanDetachedAt: daysAgo(1), sentAt: daysAgo(3), readAt: daysAgo(3), retractedAt: daysAgo(2),
+    });
+    const res = await request(makeApp())
+      .post(`/v1/notes/${note.id}/duplicate`).set("Authorization", `Bearer ${dupT.token}`);
+    expect(res.body.scoreScanId).toBe(scan.id);
+    expect(res.body.scoreScanDetachedAt).toBeNull();
+  });
+});
+
+describe("GET /v1/notes/:id/score-scan", () => {
+  let recT: TestUser;
+  let recS: TestUser;
+  let recStranger: TestUser;
+
+  beforeAll(async () => {
+    recT = await makeUser({ oid: "recip-teacher", name: "Recip Tessa", role: "teacher" });
+    recS = await makeUser({ oid: "recip-student", name: "Recip Sam", role: "student" });
+    recStranger = await makeUser({ oid: "recip-stranger", name: "Nosy Nell", role: "student" });
+    await linkActive(recT.id, recS.id);
+  });
+
+  const get = (noteId: string, token: string) =>
+    request(makeApp()).get(`/v1/notes/${noteId}/score-scan`).set("Authorization", `Bearer ${token}`);
+
+  const sentWithScan = async (opts: Parameters<typeof seedScan>[0]) => {
+    const scan = await seedScan(opts);
+    const { note } = await seedNote({
+      teacherId: recT.id, studentId: recS.id, status: "sent", sentAt: new Date(), scoreScanId: scan.id,
+    });
+    return { scan, note };
+  };
+
+  it("serves the recipient every page, signed under the owner's prefix", async () => {
+    const { scan, note } = await sentWithScan({ ownerId: recT.id, pageCount: 3 });
+    const res = await get(note.id, recS.token);
+    expect(res.status).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.body.noteId).toBe(note.id);
+    expect(res.body.pages.map((p: { page: number }) => p.page)).toEqual([1, 2, 3]);
+    for (const p of res.body.pages as { page: number; url: string }[]) {
+      expect(p.url).toContain(`/${recT.id}/${scan.id}/${p.page}.jpg`);
+      expect(p.url).not.toContain(recS.id);
+    }
+    expect(Date.parse(res.body.expiresAt)).toBeGreaterThan(Date.now());
+  });
+
+  it("serves the author their own draft's scan", async () => {
+    const scan = await seedScan({ ownerId: recT.id, pageCount: 2 });
+    const { note } = await seedNote({ teacherId: recT.id, status: "draft", scoreScanId: scan.id });
+    const res = await get(note.id, recT.token);
+    expect(res.status).toBe(200);
+    expect(res.body.pages).toHaveLength(2);
+  });
+
+  it("serves a self note's owner even when their trial has lapsed", async () => {
+    const owner = await makeUser({ oid: "recip-lapsed-owner", name: "Lapsed Lior", role: "student" });
+    await db.orm.update(users).set({ trialStartedAt: daysAgo(90) }).where(eq(users.id, owner.id));
+    await setMonetization(daysAgo(90).toISOString());
+    try {
+      const scan = await seedScan({ ownerId: owner.id, pageCount: 2 });
+      const { note } = await seedNote({
+        teacherId: owner.id, studentId: owner.id, origin: "self", status: "sent",
+        sentAt: new Date(), scoreScanId: scan.id,
+      });
+      const detail = await request(makeApp())
+        .get(`/v1/me/notes/${note.id}`).set("Authorization", `Bearer ${owner.token}`);
+      expect(detail.status).toBe(402);
+
+      const res = await get(note.id, owner.token);
+      expect(res.status).toBe(200);
+      expect(res.body.pages).toHaveLength(2);
+    } finally {
+      await setMonetization(null);
+    }
+  });
+
+  it("locks a recipient whose trial lapsed before the note was sent", async () => {
+    const lapsed = await makeUser({ oid: "recip-lapsed-student", name: "Lapsed Lena", role: "student" });
+    await linkActive(recT.id, lapsed.id);
+    await db.orm.update(users).set({ trialStartedAt: daysAgo(90) }).where(eq(users.id, lapsed.id));
+    await setMonetization(daysAgo(90).toISOString());
+    try {
+      const scan = await seedScan({ ownerId: recT.id });
+      const { note } = await seedNote({
+        teacherId: recT.id, studentId: lapsed.id, status: "sent", sentAt: new Date(), scoreScanId: scan.id,
+      });
+      const res = await get(note.id, lapsed.token);
+      expect(res.status).toBe(402);
+      expect(res.body.error).toBe("subscription_required");
+      expect(res.body.access.status).toBe("lapsed");
+    } finally {
+      await setMonetization(null);
+    }
+  });
+
+  it("locks a lapsed recipient before telling them a score was ever destroyed", async () => {
+    const lapsed = await makeUser({ oid: "recip-lapsed-gone", name: "Lapsed Leo", role: "student" });
+    await linkActive(recT.id, lapsed.id);
+    await db.orm.update(users).set({ trialStartedAt: daysAgo(90) }).where(eq(users.id, lapsed.id));
+    await setMonetization(daysAgo(90).toISOString());
+    try {
+      const { note } = await seedNote({
+        teacherId: recT.id, studentId: lapsed.id, status: "sent", sentAt: new Date(),
+        readAt: new Date(), scoreScanId: null, scoreScanDetachedAt: daysAgo(1),
+      });
+      const res = await get(note.id, lapsed.token);
+      expect(res.status).toBe(402);
+      expect(res.body.error).toBe("subscription_required");
+    } finally {
+      await setMonetization(null);
+    }
+  });
+
+  it("answers 404 for a retracted note the recipient had read, though the detail route still serves its stub", async () => {
+    const scan = await seedScan({ ownerId: recT.id });
+    const { note } = await seedNote({
+      teacherId: recT.id, studentId: recS.id, status: "retracted", scoreScanId: scan.id,
+      sentAt: daysAgo(2), readAt: daysAgo(2), retractedAt: daysAgo(1),
+    });
+    const stub = await request(makeApp())
+      .get(`/v1/me/notes/${note.id}`).set("Authorization", `Bearer ${recS.token}`);
+    expect(stub.status).toBe(200);
+    expect(stub.body.note.status).toBe("retracted");
+
+    const res = await get(note.id, recS.token);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("not_found");
+  });
+
+  it("answers 409 scan_not_ready while the scan is still uploading", async () => {
+    const { note } = await sentWithScan({ ownerId: recT.id, status: "created" });
+    const res = await get(note.id, recS.token);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("scan_not_ready");
+  });
+
+  it("answers 410 scan_taken_down for a taken-down scan", async () => {
+    const { note } = await sentWithScan({ ownerId: recT.id, status: "taken_down", blobPath: null });
+    const res = await get(note.id, recS.token);
+    expect(res.status).toBe(410);
+    expect(res.body.error).toBe("scan_taken_down");
+  });
+
+  it("answers 410 scan_purged when the bytes are gone but the row is ready", async () => {
+    const { note } = await sentWithScan({ ownerId: recT.id, status: "ready", blobPath: null });
+    const res = await get(note.id, recS.token);
+    expect(res.status).toBe(410);
+    expect(res.body.error).toBe("scan_purged");
+  });
+
+  it("answers 410 scan_gone when the reference is null and the marker is stamped", async () => {
+    const { note } = await seedNote({
+      teacherId: recT.id, studentId: recS.id, status: "sent", sentAt: new Date(),
+      readAt: new Date(), scoreScanId: null, scoreScanDetachedAt: daysAgo(1),
+    });
+    const res = await get(note.id, recS.token);
+    expect(res.status).toBe(410);
+    expect(res.body.error).toBe("scan_gone");
+  });
+
+  it("answers 404 when the note never had a scan", async () => {
+    const { note } = await seedNote({
+      teacherId: recT.id, studentId: recS.id, status: "sent", sentAt: new Date(),
+    });
+    const res = await get(note.id, recS.token);
+    expect(res.status).toBe(404);
+  });
+
+  it("answers 404 to anyone who is neither the recipient nor the author", async () => {
+    const { note } = await sentWithScan({ ownerId: recT.id });
+    const res = await get(note.id, recStranger.token);
+    expect(res.status).toBe(404);
+  });
+
+  it("answers 404 for a malformed note id", async () => {
+    const res = await get("not-a-uuid", recS.token);
+    expect(res.status).toBe(404);
+  });
+
+  it("answers 503 when scan storage is unconfigured", async () => {
+    const { note } = await sentWithScan({ ownerId: recT.id });
+    const res = await request(makeAppWithoutScans())
+      .get(`/v1/notes/${note.id}/score-scan`).set("Authorization", `Bearer ${recS.token}`);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe("storage_not_configured");
+  });
+});
+
+describe("derived score fields on the student note payload", () => {
+  let derT: TestUser;
+  let derS: TestUser;
+
+  beforeAll(async () => {
+    derT = await makeUser({ oid: "derived-teacher", name: "Derived Tessa", role: "teacher" });
+    derS = await makeUser({ oid: "derived-student", name: "Derived Sam", role: "student" });
+    await linkActive(derT.id, derS.id);
+  });
+
+  const detail = async (opts: {
+    scoreScanId?: string | null;
+    scoreScanDetachedAt?: Date | null;
+  }) => {
+    const { note } = await seedNote({
+      teacherId: derT.id, studentId: derS.id, status: "sent", sentAt: new Date(), ...opts,
+    });
+    const res = await request(makeApp())
+      .get(`/v1/me/notes/${note.id}`).set("Authorization", `Bearer ${derS.token}`);
+    expect(res.status).toBe(200);
+    return res.body.note;
+  };
+
+  it("reports the page count only when the scan is ready with bytes behind it", async () => {
+    const scan = await seedScan({ ownerId: derT.id, pageCount: 7 });
+    expect(await detail({ scoreScanId: scan.id })).toMatchObject({
+      hasScore: true, scorePageCount: 7, scoreGone: false,
+    });
+  });
+
+  it("reports hasScore false while the scan is still uploading", async () => {
+    const scan = await seedScan({ ownerId: derT.id, status: "created", pageCount: 5 });
+    expect(await detail({ scoreScanId: scan.id })).toMatchObject({
+      hasScore: false, scorePageCount: null, scoreGone: false,
+    });
+  });
+
+  it("reports hasScore false for a taken-down scan", async () => {
+    const scan = await seedScan({ ownerId: derT.id, status: "taken_down", blobPath: null });
+    expect(await detail({ scoreScanId: scan.id })).toMatchObject({
+      hasScore: false, scorePageCount: null, scoreGone: false,
+    });
+  });
+
+  it("reports hasScore false when the bytes were purged from under a ready row", async () => {
+    const scan = await seedScan({ ownerId: derT.id, status: "ready", blobPath: null });
+    expect(await detail({ scoreScanId: scan.id })).toMatchObject({
+      hasScore: false, scorePageCount: null, scoreGone: false,
+    });
+  });
+
+  it("reports scoreGone only when the reference is null and the marker is stamped", async () => {
+    expect(await detail({ scoreScanId: null, scoreScanDetachedAt: daysAgo(1) })).toMatchObject({
+      hasScore: false, scorePageCount: null, scoreGone: true,
+    });
+  });
+
+  it("never reports scoreGone over a live reference carrying a stale marker", async () => {
+    const scan = await seedScan({ ownerId: derT.id, pageCount: 3 });
+    expect(await detail({ scoreScanId: scan.id, scoreScanDetachedAt: daysAgo(1) })).toMatchObject({
+      hasScore: true, scorePageCount: 3, scoreGone: false,
+    });
+  });
+
+  it("reports all three empty on a note that never had a scan", async () => {
+    expect(await detail({})).toMatchObject({
+      hasScore: false, scorePageCount: null, scoreGone: false,
+    });
   });
 });

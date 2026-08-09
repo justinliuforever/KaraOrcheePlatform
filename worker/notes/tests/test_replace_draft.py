@@ -127,12 +127,13 @@ def test_teacher_path_wipes_draft_then_inserts_teacher_origin():
     sqls = [s for s, _ in conn.executed]
     assert sqls[0].startswith("SELECT l.status, l.teacher_id") and sqls[0].endswith(LOCK)
     assert conn.executed[0][1] == ("lesson-1",)
-    assert sqls[1].startswith("DELETE FROM note_annotations") and "status = 'draft'" in sqls[1]
-    assert sqls[2] == "DELETE FROM notes WHERE note_job_id = %s AND status = 'draft'"
-    assert sqls[3].startswith("INSERT INTO notes") and "'teacher'" in sqls[3]
-    assert "'sent'" not in sqls[3] and "sent_at" not in sqls[3]
-    assert all("INSERT INTO note_annotations" in s for s in sqls[4:])
-    assert len(sqls) == 4 + len(ANNS)
+    assert sqls[1].startswith("SELECT score_scan_id FROM notes") and "status = 'draft'" in sqls[1]
+    assert sqls[2].startswith("DELETE FROM note_annotations") and "status = 'draft'" in sqls[2]
+    assert sqls[3] == "DELETE FROM notes WHERE note_job_id = %s AND status = 'draft'"
+    assert sqls[4].startswith("INSERT INTO notes") and "'teacher'" in sqls[4]
+    assert "'sent'" not in sqls[4] and "sent_at" not in sqls[4]
+    assert all("INSERT INTO note_annotations" in s for s in sqls[5:])
+    assert len(sqls) == 5 + len(ANNS)
     assert not any(s.startswith("SELECT published_version") or "origin = 'self'" in s
                    for s in sqls)
     w = note_insert(conn)
@@ -526,6 +527,54 @@ def test_the_note_inherits_the_lessons_custom_piece_entity():
     unfiled = FakeConn({LOCK: teacher_lock(), "INSERT INTO notes": ("note-3",)})
     main.replace_draft(unfiled, "job-3", "lesson-1", CONTENT, ORIGINAL, ANNS)
     assert note_insert(unfiled)["custom_piece_id"] is None
+
+
+CARRY = "SELECT score_scan_id FROM notes"
+
+
+def test_a_scan_attached_to_the_draft_survives_the_rebuild():
+    conn = FakeConn({LOCK: teacher_lock(), CARRY: ("scan-1",),
+                     "INSERT INTO notes": ("note-1",)})
+    main.replace_draft(conn, "job-1", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    sqls = [s for s, _ in conn.executed]
+    read = next(i for i, s in enumerate(sqls) if s.startswith(CARRY))
+    wipes = [i for i, s in enumerate(sqls) if s.startswith("DELETE")]
+    assert read < min(wipes)
+    assert conn.executed[read][1] == ("job-1",)
+    assert "status = 'draft'" in sqls[read]
+    assert note_insert(conn)["score_scan_id"] == "scan-1"
+
+
+def test_a_draft_with_no_scan_rebuilds_with_a_null_reference():
+    conn = FakeConn({LOCK: teacher_lock(), CARRY: None,
+                     "INSERT INTO notes": ("note-2",)})
+    main.replace_draft(conn, "job-2", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    assert note_insert(conn)["score_scan_id"] is None
+
+
+def test_the_rebuild_never_writes_the_detached_marker():
+    conn = FakeConn({LOCK: teacher_lock(), CARRY: ("scan-1",),
+                     "INSERT INTO notes": ("note-3",)})
+    main.replace_draft(conn, "job-3", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    sqls = [s for s, _ in conn.executed]
+    assert not any("score_scan_detached_at" in s for s in sqls)
+
+
+def test_the_solo_path_carries_no_scan_because_it_never_wipes_a_note():
+    resumed = FakeConn({LOCK: solo_lock(),
+                        "SELECT id FROM notes WHERE note_job_id": ("existing-note",)})
+    assert main.replace_draft(
+        resumed, "job-4", "lesson-1", CONTENT, ORIGINAL, ANNS) == "existing-note"
+    assert not any(s.startswith("DELETE") or s.startswith(CARRY)
+                   for s, _ in resumed.executed)
+
+    fresh = FakeConn({LOCK: solo_lock(),
+                      "SELECT id FROM notes WHERE note_job_id": None,
+                      "INSERT INTO notes": ("note-5",)})
+    main.replace_draft(fresh, "job-5", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    insert = next(s for s, _ in fresh.executed if s.startswith("INSERT INTO notes"))
+    assert "score_scan" not in insert
+    assert not any(s.startswith(CARRY) for s, _ in fresh.executed)
 
 
 def _job_mentions(conn):

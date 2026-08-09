@@ -449,6 +449,13 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
                     return winner[0]
                 raise
         else:
+            # score_scan_detached_at is deliberately not carried — a draft is never stamped, and a copied marker would lie.
+            cur.execute(
+                """SELECT score_scan_id FROM notes
+                   WHERE note_job_id = %s AND status = 'draft'
+                     AND score_scan_id IS NOT NULL LIMIT 1""",
+                (job_id,))
+            carried_scan = cur.fetchone()
             cur.execute(
                 """DELETE FROM note_annotations WHERE note_id IN
                    (SELECT id FROM notes WHERE note_job_id = %s AND status = 'draft')""",
@@ -456,12 +463,13 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
             cur.execute("DELETE FROM notes WHERE note_job_id = %s AND status = 'draft'", (job_id,))
             cur.execute(
                 """INSERT INTO notes (note_job_id, lesson_session_id, teacher_id, student_id,
-                                      piece_id, piece_label, custom_piece_id, origin,
-                                      content_original, content)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, 'teacher', %s, %s)
+                                      piece_id, piece_label, custom_piece_id, score_scan_id,
+                                      origin, content_original, content)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'teacher', %s, %s)
                    RETURNING id""",
                 (job_id, lesson_id, teacher_id, student_id, piece_id, piece_label,
-                 custom_piece_id, json.dumps(original), json.dumps(content)))
+                 custom_piece_id, carried_scan[0] if carried_scan else None,
+                 json.dumps(original), json.dumps(content)))
         note_id = cur.fetchone()[0]
         for idx, a in enumerate(annotations):
             cur.execute(
