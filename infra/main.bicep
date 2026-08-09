@@ -24,6 +24,12 @@ param transcriptRetentionEnabled bool = false
 @description('Move narration older than 30 days to cool storage. Cool-tier reads bill extra, so this can cost more than it saves if students revisit old notes.')
 param narrationCoolTieringEnabled bool = false
 
+@description('Delete score scans by blob age. Irreversible, and it does not read the database — a row still reading ready with a non-null blob_prefix would mint a SAS for bytes that are gone. Needs a row-side companion on the same clock before it is enabled.')
+param scanRetentionEnabled bool = false
+
+@description('Age at which score-scan blobs are deleted when scanRetentionEnabled is true.')
+param scanRetentionDays int = 365
+
 resource logws 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: 'log-karaorchee-app-${env}'
   location: location
@@ -67,7 +73,8 @@ resource blobSvc 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
   }
 }
 
-var containerNames = ['piece-bundles', 'piece-sources', 'soundfont', 'lesson-audio', 'notes-assets']
+// Its own container, not a notes-assets prefix: user-uploaded third-party content with its own retention clock.
+var containerNames = ['piece-bundles', 'piece-sources', 'soundfont', 'lesson-audio', 'notes-assets', 'score-scans']
 
 resource containers 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = [
   for c in containerNames: {
@@ -140,6 +147,61 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
         // note it belongs to never expires — so no time-based delete: it is purged
         // with its note (note/lesson/account deletion). A future prefix holding a
         // teacher's REAL voice is a recording and needs the 90-day rule above.
+        // Everything that never reached commit: abandoned uploads, oversize PUTs, non-JPEGs, stray writes on a live SAS.
+        {
+          name: 'score-scans-incoming-delete'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['score-scans/incoming/'] }
+            actions: {
+              baseBlob: {
+                delete: { daysAfterModificationGreaterThan: 1 }
+              }
+            }
+          }
+        }
+        // Without this, versioning + soft delete keep a deleted scan recoverable forever and every deletion sentence becomes false.
+        {
+          name: 'score-scans-purge-deleted-versions'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['score-scans/'] }
+            actions: {
+              version: {
+                delete: { daysAfterCreationGreaterThan: 7 }
+              }
+            }
+          }
+        }
+        {
+          name: 'score-scans-cool'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['score-scans/'] }
+            actions: {
+              baseBlob: {
+                tierToCool: { daysAfterModificationGreaterThan: 30 }
+              }
+            }
+          }
+        }
+        // Separate from the cool rule on purpose: an irreversible time-based delete must not ship bundled with the safe half.
+        {
+          name: 'score-scans-delete'
+          enabled: scanRetentionEnabled
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['score-scans/'] }
+            actions: {
+              baseBlob: {
+                delete: { daysAfterModificationGreaterThan: scanRetentionDays }
+              }
+            }
+          }
+        }
         {
           name: 'notes-narration-cool'
           enabled: narrationCoolTieringEnabled

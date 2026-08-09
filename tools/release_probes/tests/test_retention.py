@@ -73,12 +73,56 @@ LIVE_NARRATION = az_rule("notes-narration-cool", {
                 "prefixMatch": ["notes-assets/narration/"]}}, enabled=False)
 
 
+LIVE_SCAN_INCOMING = az_rule("score-scans-incoming-delete", {
+    "actions": {"baseBlob": {"delete": {"daysAfterCreationGreaterThan": None,
+                                        "daysAfterLastAccessTimeGreaterThan": None,
+                                        "daysAfterLastTierChangeGreaterThan": None,
+                                        "daysAfterModificationGreaterThan": 1.0},
+                             "tierToArchive": None, "tierToCold": None,
+                             "tierToCool": None, "tierToHot": None},
+                "snapshot": None, "version": None},
+    "filters": {"blobIndexMatch": None, "blobTypes": ["blockBlob"],
+                "prefixMatch": ["score-scans/incoming/"]}})
+
+LIVE_SCAN_VERSIONS = az_rule("score-scans-purge-deleted-versions", {
+    "actions": {"baseBlob": None, "snapshot": None,
+                "version": {"delete": {"daysAfterCreationGreaterThan": 7.0,
+                                       "daysAfterLastTierChangeGreaterThan": None},
+                            "tierToArchive": None, "tierToCold": None,
+                            "tierToCool": None, "tierToHot": None}},
+    "filters": {"blobIndexMatch": None, "blobTypes": ["blockBlob"],
+                "prefixMatch": ["score-scans/"]}})
+
+LIVE_SCAN_COOL = az_rule("score-scans-cool", {
+    "actions": {"baseBlob": {"tierToCool": {"daysAfterCreationGreaterThan": None,
+                                            "daysAfterLastAccessTimeGreaterThan": None,
+                                            "daysAfterLastTierChangeGreaterThan": None,
+                                            "daysAfterModificationGreaterThan": 30.0},
+                             "delete": None, "tierToArchive": None, "tierToCold": None,
+                             "tierToHot": None},
+                "snapshot": None, "version": None},
+    "filters": {"blobIndexMatch": None, "blobTypes": ["blockBlob"],
+                "prefixMatch": ["score-scans/"]}})
+
+LIVE_SCAN_DELETE = az_rule("score-scans-delete", {
+    "actions": {"baseBlob": {"delete": {"daysAfterCreationGreaterThan": None,
+                                        "daysAfterLastAccessTimeGreaterThan": None,
+                                        "daysAfterLastTierChangeGreaterThan": None,
+                                        "daysAfterModificationGreaterThan": 365.0},
+                             "tierToArchive": None, "tierToCold": None,
+                             "tierToCool": None, "tierToHot": None},
+                "snapshot": None, "version": None},
+    "filters": {"blobIndexMatch": None, "blobTypes": ["blockBlob"],
+                "prefixMatch": ["score-scans/"]}}, enabled=False)
+
+
 def flipped(rules):
     return {"policy": {"rules": copy.deepcopy(rules)},
             "name": "DefaultManagementPolicy"}
 
 
-AFTER_FLIP = [LIVE_AUDIO, LIVE_VERSIONS, LIVE_TRANSCRIPTS, LIVE_NARRATION]
+AFTER_FLIP = [LIVE_AUDIO, LIVE_VERSIONS, LIVE_TRANSCRIPTS, LIVE_NARRATION,
+              LIVE_SCAN_INCOMING, LIVE_SCAN_VERSIONS, LIVE_SCAN_COOL, LIVE_SCAN_DELETE]
 BEFORE_FLIP = [LIVE_AUDIO, LIVE_VERSIONS]
 
 BLOB_PROPS = {"deleteRetentionPolicy": {"allowPermanentDelete": False, "days": 7,
@@ -178,9 +222,12 @@ def test_the_checked_in_policy_is_the_one_the_document_describes():
     assert failures(retention.check_management_policy(retention.load_intended_policy())) == []
     rules = retention.rules_by_name(retention.load_intended_policy())
     assert rules["notes-narration-cool"]["enabled"] is False
+    assert rules["score-scans-delete"]["enabled"] is False
     assert set(rules) == {"lesson-audio-cool-then-delete",
                           "notes-assets-purge-deleted-versions",
-                          "notes-transcripts-delete", "notes-narration-cool"}
+                          "notes-transcripts-delete", "notes-narration-cool",
+                          "score-scans-incoming-delete", "score-scans-purge-deleted-versions",
+                          "score-scans-cool", "score-scans-delete"}
 
 
 def test_az_renderings_compare_equal_to_the_hand_written_file():

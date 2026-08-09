@@ -53,6 +53,70 @@
       }
     },
     {
+      "name": "score-scans-incoming-delete",
+      "enabled": true,
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["score-scans/incoming/"]
+        },
+        "actions": {
+          "baseBlob": {
+            "delete": { "daysAfterModificationGreaterThan": 1 }
+          }
+        }
+      }
+    },
+    {
+      "name": "score-scans-purge-deleted-versions",
+      "enabled": true,
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["score-scans/"]
+        },
+        "actions": {
+          "version": {
+            "delete": { "daysAfterCreationGreaterThan": 7 }
+          }
+        }
+      }
+    },
+    {
+      "name": "score-scans-cool",
+      "enabled": true,
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["score-scans/"]
+        },
+        "actions": {
+          "baseBlob": {
+            "tierToCool": { "daysAfterModificationGreaterThan": 30 }
+          }
+        }
+      }
+    },
+    {
+      "name": "score-scans-delete",
+      "enabled": false,
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["score-scans/"]
+        },
+        "actions": {
+          "baseBlob": {
+            "delete": { "daysAfterModificationGreaterThan": 365 }
+          }
+        }
+      }
+    },
+    {
       "name": "notes-narration-cool",
       "enabled": false,
       "type": "Lifecycle",

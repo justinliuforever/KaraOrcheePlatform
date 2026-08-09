@@ -142,8 +142,12 @@ async function noteWithAnnotations(deps: Deps, noteId: string) {
   return { note: note!, annotations, pieceSuggestion: note ? await suggestionFor(deps, note) : null };
 }
 
+// A deny list: every column added to `notes` reaches the student until it is named here.
 function strippedForStudent(note: NoteRow) {
-  const { pieceSuggestionDismissed: _d, customPieceId: _c, ...rest } = note;
+  const {
+    pieceSuggestionDismissed: _d, customPieceId: _c,
+    scoreScanId: _s, scoreScanDetachedAt: _sd, ...rest
+  } = note;
   return rest;
 }
 

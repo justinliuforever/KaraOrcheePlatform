@@ -246,6 +246,28 @@ export const customPieces = pgTable("custom_pieces", {
   uniqueIndex("uq_custom_pieces_teacher_label").on(t.teacherId, t.normalizedLabel),
 ]);
 
+// Never joined to pieces or custom_pieces: `title` is what the owner typed, not a piece identity.
+export const scoreScans = pgTable("score_scans", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerId: uuid("owner_id").notNull().references(() => users.id),
+  title: text("title").notNull(),
+  // Idempotency key for outbox retries — NULLs never collide against the (ownerId, clientScanId) unique constraint.
+  clientScanId: text("client_scan_id"),
+  // Declared at create, re-counted from committed blobs at commit — a card must never print a page count the artifact cannot back.
+  pageCount: integer("page_count").notNull(),
+  blobPath: text("blob_prefix"),  // score-scans container-relative; nulled on purge like lesson_sessions.audio_path
+  bytes: integer("bytes"),
+  status: text("status").notNull().default("created"),  // created | ready | taken_down
+  takenDownAt: timestamp("taken_down_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("uq_score_scans_owner_client").on(t.ownerId, t.clientScanId),
+  index("ix_score_scans_owner_created").on(t.ownerId, t.createdAt.desc()),
+  check("ck_score_scans_status", sql`${t.status} IN ('created', 'ready', 'taken_down')`),
+  check("ck_score_scans_pages", sql`${t.pageCount} BETWEEN 1 AND 20`),
+]);
+
 // Row is created at SEND time (recording is local until then) — piece/student are nullable, fixed at review.
 // teacherId is the RECORDER/owner — the student themselves on a solo recording.
 // owner_role snapshots who held the phone at create — never re-derive it from later role grants.
@@ -321,6 +343,9 @@ export const notes = pgTable("notes", {
   pieceId: text("piece_id").references(() => pieces.id),
   pieceLabel: text("piece_label"),
   customPieceId: uuid("custom_piece_id").references(() => customPieces.id, { onDelete: "set null" }),
+  scoreScanId: uuid("score_scan_id").references(() => scoreScans.id, { onDelete: "set null" }),
+  // Stamped only when a referenced scan was destroyed under a note the recipient had already read — the only thing that makes that sentence renderable.
+  scoreScanDetachedAt: timestamp("score_scan_detached_at", { withTimezone: true }),
   // Append-only, never cleared — re-asking a dismissed suggestion is the annoyance this promises not to be.
   pieceSuggestionDismissed: jsonb("piece_suggestion_dismissed").notNull().default([]),
   // Anchors pin to the piece version live at send — republish can renumber measures.
@@ -341,6 +366,8 @@ export const notes = pgTable("notes", {
   uniqueIndex("uq_note_self_per_job").on(t.noteJobId).where(sql`${t.origin} = 'self'`),
   index("ix_notes_teacher_student_sent").on(t.teacherId, t.studentId, t.sentAt),
   index("ix_notes_student_sent").on(t.studentId, t.sentAt),
+  // Partial: most notes carry no scan. Serves both the delete preflight and the delete sweep.
+  index("ix_notes_score_scan").on(t.scoreScanId).where(sql`${t.scoreScanId} IS NOT NULL`),
 ]);
 
 // Review may edit the instruction, never the quote — quotes are verbatim transcript evidence; delete the row instead.
@@ -436,5 +463,6 @@ export type Note = typeof notes.$inferSelect;
 export type NoteAnnotation = typeof noteAnnotations.$inferSelect;
 export type NoteNarrationClip = typeof noteNarrationClips.$inferSelect;
 export type CustomPiece = typeof customPieces.$inferSelect;
+export type ScoreScan = typeof scoreScans.$inferSelect;
 export type Entitlement = typeof entitlements.$inferSelect;
 export type Device = typeof devices.$inferSelect;
