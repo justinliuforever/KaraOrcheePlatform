@@ -1,0 +1,8 @@
+# eval/runs holds model output derived from three real lessons, one a minor's, with a
+# street address in the filenames. `az acr build` honours this file and .git — never
+# .gitignore — so without this line an ACR layer keeps them forever, outside every
+# retention rule the platform has.
+eval/runs/
+__pycache__/
+.pytest_cache/
+*.pyc

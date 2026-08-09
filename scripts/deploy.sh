@@ -4,7 +4,7 @@
 # on a nonexistent tag (single-revision mode keeps the OLD code serving while the new
 # one crash-loops, so healthz alone cannot tell you which code runs; check revisions).
 set -euo pipefail
-COMPONENT="${1:?usage: scripts/deploy.sh <api|worker|admin> [env]}"
+COMPONENT="${1:?usage: scripts/deploy.sh <api|worker|notes|admin> [env]}"
 ENV="${2:-dev}"
 ACR=acrkaraorchee
 RG="rg-karaorchee-app-${ENV}"
@@ -24,6 +24,14 @@ case "$COMPONENT" in
     az acr build -r "$ACR" -t "$IMG" worker/pieces
     az containerapp update -n "ca-pieces-worker-${ENV}" -g "$RG" --image "$IMG" --query properties.latestRevisionName -o tsv
     echo "verify: wait until the OLD revision is fully gone before trusting queue behavior (draining replicas steal Service Bus messages)"
+    ;;
+  notes)
+    # Repo name is top-level, NOT under karaorchee-app/ like the other two — copying the
+    # worker) line by analogy creates a new orphaned repo the container app never pulls.
+    IMG="${ACR}.azurecr.io/notes-worker:${TAG}"
+    az acr build -r "$ACR" -t "$IMG" worker/notes
+    az containerapp update -n "ca-notes-worker-${ENV}" -g "$RG" --image "$IMG" --query properties.latestRevisionName -o tsv
+    echo "verify: both 'up' lines (notes-jobs and notes-narration) must appear, and the OLD revision must show no replicas"
     ;;
   admin)
     (cd apps/admin && BUILD_SHA="$TAG" npm run build)
