@@ -14,7 +14,8 @@ import { createTestDb } from "./testdb";
 import { notes, platformConfig, scoreScans, users } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { ScanStore } from "../src/notes/scans_store";
-import { jpegHeadVerdict } from "../src/notes/jpeg";
+import { ScanChangedError } from "../src/notes/scans_store";
+import { SCAN_HEAD_BYTES, jpegHeadVerdict } from "../src/notes/jpeg";
 
 const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
 const AUDIENCE = "api://karaorchee";
@@ -87,9 +88,11 @@ let logged: string[];
 
 interface FakeScans extends ScanStore {
   promoted: [string, string][];
+  promotedIfMatch: (string | null | undefined)[];
   deletedPrefixes: string[];
   bytesByPath: Map<string, number>;
   headByPath: Map<string, Buffer>;
+  headBytes: number[];
   defaultBytes: number | null;
   defaultHead: Buffer;
   failPrefixes: Set<string>;
@@ -102,9 +105,11 @@ function makeFakeScans(): FakeScans {
   const blobPrefix = (ownerId: string, scanId: string) => `${ownerId}/${scanId}/`;
   const f: FakeScans = {
     promoted: [],
+    promotedIfMatch: [],
     deletedPrefixes: [],
     bytesByPath: new Map(),
     headByPath: new Map(),
+    headBytes: [],
     defaultBytes: 1024,
     defaultHead: JPEG,
     failPrefixes: new Set(),
@@ -119,13 +124,15 @@ function makeFakeScans(): FakeScans {
     async pageProps(path) {
       const override = f.bytesByPath.get(path);
       const bytes = override ?? f.defaultBytes;
-      return bytes === null ? null : { bytes };
+      return bytes === null ? null : { bytes, etag: `etag:${path}` };
     },
-    async readHead(path) {
+    async readHead(path, bytes) {
+      f.headBytes.push(bytes);
       return f.headByPath.get(path) ?? f.defaultHead;
     },
-    async promote(from, to) {
+    async promote(from, to, opts) {
       f.promoted.push([from, to]);
+      f.promotedIfMatch.push(opts?.ifMatch);
       if (f.onPromote) await f.onPromote();
     },
     readUrl: (p) => `https://fake/score-scans/${p}?read`,
@@ -216,6 +223,31 @@ async function scanRow(id: string) {
   return row!;
 }
 
+function plantOnFirstScanSelect(plant: () => Promise<void>): () => void {
+  const orm = db.orm as any;
+  const realSelect = orm.select.bind(orm);
+  let fired = false;
+  orm.select = (...args: any[]) => {
+    const builder = realSelect(...args);
+    const realFrom = builder.from.bind(builder);
+    builder.from = (table: any) => {
+      const q = realFrom(table);
+      if (table !== scoreScans || fired) return q;
+      fired = true;
+      const realThen = q.then.bind(q);
+      q.then = (ok: any, err: any) => realThen(async (rows: any) => {
+        await plant();
+        return ok ? ok(rows) : rows;
+      }, err);
+      return q;
+    };
+    return builder;
+  };
+  return () => {
+    delete orm.select;
+  };
+}
+
 describe("POST /v1/score-scans", () => {
   it("mints one write URL per page under incoming/", async () => {
     const me = await makeUser("scan-create");
@@ -286,6 +318,57 @@ describe("POST /v1/score-scans", () => {
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
     expect(second.body.scan.id).not.toBe(first.body.scan.id);
+    expect(await db.orm.select().from(scoreScans).where(eq(scoreScans.ownerId, me.id))).toHaveLength(2);
+  });
+
+  it("hands back the winner when a twin create takes the key between the check and the insert", async () => {
+    const me = await makeUser("scan-create-race");
+    const key = "outbox-race";
+    let plantedId: string | null = null;
+    const unplug = plantOnFirstScanSelect(async () => {
+      const [planted] = await db.orm
+        .insert(scoreScans)
+        .values({ ownerId: me.id, title: "Raced", clientScanId: key, pageCount: 2 })
+        .returning();
+      plantedId = planted!.id;
+    });
+
+    let res;
+    try {
+      res = await createScan(me.token, { clientScanId: key });
+    } finally {
+      unplug();
+    }
+
+    expect(res.status).toBe(200);
+    expect(res.body.scan.id).toBe(plantedId);
+    expect(res.body.scan.title).toBe("Raced");
+    expect(res.body.uploadUrls).toHaveLength(2);
+    const rows = await db.orm
+      .select()
+      .from(scoreScans)
+      .where(and(eq(scoreScans.ownerId, me.id), eq(scoreScans.clientScanId, key)));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("still keeps the two creates apart when the twin takes a different key", async () => {
+    const me = await makeUser("scan-create-race-otherkey");
+    const unplug = plantOnFirstScanSelect(async () => {
+      await db.orm
+        .insert(scoreScans)
+        .values({ ownerId: me.id, title: "Raced", clientScanId: "other-key", pageCount: 2 })
+        .returning();
+    });
+
+    let res;
+    try {
+      res = await createScan(me.token, { clientScanId: "mine" });
+    } finally {
+      unplug();
+    }
+
+    expect(res.status).toBe(201);
+    expect(res.body.scan.clientScanId).toBe("mine");
     expect(await db.orm.select().from(scoreScans).where(eq(scoreScans.ownerId, me.id))).toHaveLength(2);
   });
 
@@ -392,6 +475,30 @@ describe("POST /v1/score-scans/:id/commit", () => {
       .set("Authorization", `Bearer ${token}`);
   }
 
+  it("copies the exact bytes the size gate measured, not whatever is there at copy time", async () => {
+    const { me, scanId } = await stagedScan("scan-commit-ifmatch", 2);
+
+    const res = await commit(me.token, scanId);
+
+    expect(res.status).toBe(200);
+    expect(scans.promotedIfMatch).toEqual([
+      `etag:incoming/${me.id}/${scanId}/1.jpg`,
+      `etag:incoming/${me.id}/${scanId}/2.jpg`,
+    ]);
+  });
+
+  it("refuses a page swapped between the gate and the copy instead of storing it", async () => {
+    const { me, scanId } = await stagedScan("scan-commit-changed", 1);
+    scans.onPromote = async () => {
+      throw new ScanChangedError();
+    };
+
+    const res = await commit(me.token, scanId);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("pages_changed");
+  });
+
   it("promotes every page, counts them, and sweeps the stage last", async () => {
     const { me, scanId } = await stagedScan("scan-commit-ok", 3);
     scans.defaultBytes = 4096;
@@ -411,6 +518,14 @@ describe("POST /v1/score-scans/:id/commit", () => {
     const row = await scanRow(scanId);
     expect(row.blobPath).toBe(`${me.id}/${scanId}/`);
     expect(row.bytes).toBe(12288);
+  });
+
+  it("asks each page for exactly the head the JPEG gate is sized for", async () => {
+    const { me, scanId } = await stagedScan("scan-commit-headbytes", 3);
+
+    expect((await commit(me.token, scanId)).status).toBe(200);
+
+    expect(scans.headBytes).toEqual([SCAN_HEAD_BYTES, SCAN_HEAD_BYTES, SCAN_HEAD_BYTES]);
   });
 
   it("names the missing page and leaves the stage alone", async () => {
@@ -456,6 +571,7 @@ describe("POST /v1/score-scans/:id/commit", () => {
 
     expect(res.status).toBe(415);
     expect(res.body).toMatchObject({ error: "not_an_image", n: 2, reason: "exif" });
+    expect(res.body.message).toContain("Page 2");
     expect(scans.promoted).toEqual([]);
     expect(scans.deletedPrefixes).toEqual([]);
     expect((await scanRow(scanId)).status).toBe("created");
@@ -486,6 +602,17 @@ describe("POST /v1/score-scans/:id/commit", () => {
     const row = await scanRow(scanId);
     expect(row.pageCount).toBe(scans.promoted.length);
     expect(row.status).toBe("ready");
+  });
+
+  it("names the page in a sentence the client can show verbatim", async () => {
+    const { me, scanId } = await stagedScan("scan-commit-415message", 4);
+    scans.headByPath.set(`incoming/${me.id}/${scanId}/3.jpg`, PDF);
+
+    const res = await commit(me.token, scanId);
+
+    expect(res.status).toBe(415);
+    expect(res.body.n).toBe(3);
+    expect(res.body.message).toBe("Page 3 isn't a photo we can use.");
   });
 
   it("rejects a renamed non-JPEG and leaves the stage alone", async () => {
@@ -531,15 +658,36 @@ describe("POST /v1/score-scans/:id/commit", () => {
     expect(res.body).toMatchObject({ error: "not_an_image", n: 1, reason: "unreadable" });
   });
 
-  it("409s a second commit and does not promote again", async () => {
+  it("hands a second commit the same ready scan without promoting or re-counting", async () => {
     const { me, scanId } = await stagedScan("scan-commit-twice");
-    expect((await commit(me.token, scanId)).status).toBe(200);
+    scans.defaultBytes = 4096;
+    const first = await commit(me.token, scanId);
+    expect(first.status).toBe(200);
     scans.promoted = [];
+    scans.deletedPrefixes = [];
+    scans.defaultBytes = 999999;
 
     const again = await commit(me.token, scanId);
-    expect(again.status).toBe(409);
-    expect(again.body.error).toBe("already_committed");
+
+    expect(again.status).toBe(200);
+    expect(again.body.scan).toEqual(first.body.scan);
     expect(scans.promoted).toEqual([]);
+    expect(scans.deletedPrefixes).toEqual([]);
+    const row = await scanRow(scanId);
+    expect(row.bytes).toBe(8192);
+    expect(row.pageCount).toBe(2);
+  });
+
+  it("answers a commit whose upload-url twin still refuses the committed scan", async () => {
+    const { me, scanId } = await stagedScan("scan-commit-mintafter");
+    expect((await commit(me.token, scanId)).status).toBe(200);
+
+    const minted = await request(makeApp())
+      .post(`/v1/score-scans/${scanId}/upload-url`)
+      .set("Authorization", `Bearer ${me.token}`);
+
+    expect(minted.status).toBe(409);
+    expect(minted.body.error).toBe("already_committed");
   });
 
   it("flips the row before it sweeps the stage", async () => {
@@ -583,8 +731,77 @@ describe("POST /v1/score-scans/:id/commit", () => {
 
     const res = await commit(me.token, scanId);
 
+    expect(res.status).toBe(200);
+    expect(res.body.scan.id).toBe(scanId);
+    expect(res.body.scan.status).toBe("ready");
+    expect(scans.deletedPrefixes).toEqual([]);
+  });
+
+  it("reports the winner's row when the swept stage breaks the loser's copy", async () => {
+    const { me, scanId } = await stagedScan("scan-commit-sweptmidcopy", 2);
+    scans.onPromote = async () => {
+      await db.orm
+        .update(scoreScans)
+        .set({ status: "ready", bytes: 2048, blobPath: `${me.id}/${scanId}/` })
+        .where(eq(scoreScans.id, scanId));
+      scans.onPromote = async () => {
+        throw new Error("CannotVerifyCopySource");
+      };
+    };
+
+    const res = await commit(me.token, scanId);
+
+    expect(res.status).toBe(200);
+    expect(res.body.scan.id).toBe(scanId);
+    expect(res.body.scan.status).toBe("ready");
+    expect(res.body.scan.bytes).toBe(2048);
+    expect(scans.deletedPrefixes).toEqual([]);
+  });
+
+  it("says taken down when the loser's copy breaks on a scan pulled mid-commit", async () => {
+    const { me, scanId } = await stagedScan("scan-commit-pulledmidcopy", 2);
+    scans.onPromote = async () => {
+      await db.orm.update(scoreScans).set({ status: "taken_down" }).where(eq(scoreScans.id, scanId));
+      scans.onPromote = async () => {
+        throw new Error("CannotVerifyCopySource");
+      };
+    };
+
+    const res = await commit(me.token, scanId);
+
     expect(res.status).toBe(409);
-    expect(res.body.error).toBe("already_committed");
+    expect(res.body.error).toBe("scan_taken_down");
+    expect(scans.deletedPrefixes).toEqual([]);
+  });
+
+  it("purges what it promoted when the copy breaks on a row deleted under it", async () => {
+    const { me, scanId } = await stagedScan("scan-commit-deletedmidcopy", 2);
+    scans.onPromote = async () => {
+      await db.orm.delete(scoreScans).where(eq(scoreScans.id, scanId));
+      scans.onPromote = async () => {
+        throw new Error("CannotVerifyCopySource");
+      };
+    };
+
+    const res = await commit(me.token, scanId);
+
+    expect(res.status).toBe(404);
+    expect(scans.deletedPrefixes).toEqual([
+      `${me.id}/${scanId}/`,
+      `incoming/${me.id}/${scanId}/`,
+    ]);
+  });
+
+  it("still fails a commit whose copy breaks while the row is untouched", async () => {
+    const { me, scanId } = await stagedScan("scan-commit-copyfail", 2);
+    scans.onPromote = async () => {
+      throw new Error("blob service unavailable");
+    };
+
+    const res = await commit(me.token, scanId);
+
+    expect(res.status).toBe(500);
+    expect((await scanRow(scanId)).status).toBe("created");
     expect(scans.deletedPrefixes).toEqual([]);
   });
 

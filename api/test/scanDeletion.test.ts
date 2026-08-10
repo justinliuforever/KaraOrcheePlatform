@@ -43,8 +43,8 @@ function makeFakeScans(): FakeScans {
     incomingPath: (o, s, n) => `${incomingPrefix(o, s)}${n}.jpg`,
     blobPath: (o, s, n) => `${blobPrefix(o, s)}${n}.jpg`,
     uploadUrl: (p) => `https://fake/score-scans/${p}?sas`,
-    async pageProps() {
-      return { bytes: 1024 };
+    async pageProps(path) {
+      return { bytes: 1024, etag: `etag:${path}` };
     },
     async readHead() {
       return Buffer.from([0xff, 0xd8, 0xff]);

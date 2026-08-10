@@ -1,11 +1,9 @@
 import {
-  BlobServiceClient,
-  StorageSharedKeyCredential,
   BlobSASPermissions,
   SASProtocol,
   generateBlobSASQueryParameters,
-  RestError,
 } from "@azure/storage-blob";
+import { blobService, blobProps } from "../blob";
 
 const CONTAINER = "lesson-audio";  // bicep lifecycle: cool @30d, DELETE @90d
 const UPLOAD_SAS_HOURS = 2;
@@ -19,28 +17,8 @@ export interface LessonStore {
   deleteAudio(path: string): Promise<void>;
 }
 
-function parseConnectionString(cs: string): { accountName: string; accountKey: string } {
-  const parts = Object.fromEntries(
-    cs.split(";").map((kv) => {
-      const idx = kv.indexOf("=");
-      return [kv.slice(0, idx), kv.slice(idx + 1)];
-    }),
-  );
-  const accountName = parts["AccountName"];
-  const accountKey = parts["AccountKey"];
-  if (!accountName || !accountKey) {
-    throw new Error("STORAGE_CONNECTION_STRING missing AccountName/AccountKey");
-  }
-  return { accountName, accountKey };
-}
-
 export function createBlobLessonStore(connectionString: string): LessonStore {
-  const { accountName, accountKey } = parseConnectionString(connectionString);
-  const credential = new StorageSharedKeyCredential(accountName, accountKey);
-  const service = new BlobServiceClient(
-    `https://${accountName}.blob.core.windows.net`,
-    credential,
-  );
+  const { credential, service } = blobService(connectionString);
   const container = service.getContainerClient(CONTAINER);
 
   return {
@@ -60,14 +38,8 @@ export function createBlobLessonStore(connectionString: string): LessonStore {
       ).toString();
       return `${container.getBlockBlobClient(path).url}?${sas}`;
     },
-    async audioProps(path) {
-      try {
-        const props = await container.getBlockBlobClient(path).getProperties();
-        return { bytes: props.contentLength ?? 0 };
-      } catch (err) {
-        if (err instanceof RestError && err.statusCode === 404) return null;
-        throw err;
-      }
+    audioProps(path) {
+      return blobProps(container, path);
     },
     async deleteAudio(path) {
       await container.getBlockBlobClient(path).deleteIfExists();

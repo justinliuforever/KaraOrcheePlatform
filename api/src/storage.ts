@@ -1,11 +1,10 @@
 import {
-  BlobServiceClient,
-  StorageSharedKeyCredential,
   BlobSASPermissions,
   SASProtocol,
   generateBlobSASQueryParameters,
   RestError,
 } from "@azure/storage-blob";
+import { blobService } from "./blob";
 
 const CONTAINER = "piece-bundles";
 const SOURCES_CONTAINER = "piece-sources";
@@ -52,28 +51,8 @@ export interface StudioStore {
   deleteSourceBlob?(path: string): Promise<void>;
 }
 
-function parseConnectionString(cs: string): { accountName: string; accountKey: string } {
-  const parts = Object.fromEntries(
-    cs.split(";").map((kv) => {
-      const idx = kv.indexOf("=");
-      return [kv.slice(0, idx), kv.slice(idx + 1)];
-    }),
-  );
-  const accountName = parts["AccountName"];
-  const accountKey = parts["AccountKey"];
-  if (!accountName || !accountKey) {
-    throw new Error("STORAGE_CONNECTION_STRING missing AccountName/AccountKey");
-  }
-  return { accountName, accountKey };
-}
-
 export function createBlobCatalogStore(connectionString: string): CatalogStore {
-  const { accountName, accountKey } = parseConnectionString(connectionString);
-  const credential = new StorageSharedKeyCredential(accountName, accountKey);
-  const service = new BlobServiceClient(
-    `https://${accountName}.blob.core.windows.net`,
-    credential,
-  );
+  const { credential, service } = blobService(connectionString);
 
   return {
     async readCatalog() {
@@ -109,12 +88,7 @@ export function createBlobCatalogStore(connectionString: string): CatalogStore {
 }
 
 export function createBlobStudioStore(connectionString: string): StudioStore {
-  const { accountName, accountKey } = parseConnectionString(connectionString);
-  const credential = new StorageSharedKeyCredential(accountName, accountKey);
-  const service = new BlobServiceClient(
-    `https://${accountName}.blob.core.windows.net`,
-    credential,
-  );
+  const { accountName, credential, service } = blobService(connectionString);
   const bundles = service.getContainerClient(CONTAINER);
   const sources = service.getContainerClient(SOURCES_CONTAINER);
 

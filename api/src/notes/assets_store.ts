@@ -1,11 +1,10 @@
 import {
-  BlobServiceClient,
-  StorageSharedKeyCredential,
   BlobSASPermissions,
   SASProtocol,
   generateBlobSASQueryParameters,
   RestError,
 } from "@azure/storage-blob";
+import { blobService, deleteBlobsUnder } from "../blob";
 
 const CONTAINER = "notes-assets"; // transcripts expire at 90d; narration lives with its note
 
@@ -30,28 +29,8 @@ export interface NotesAssetsStore {
   deletePrefix(prefix: string): Promise<void>;
 }
 
-function parseConnectionString(cs: string): { accountName: string; accountKey: string } {
-  const parts = Object.fromEntries(
-    cs.split(";").map((kv) => {
-      const idx = kv.indexOf("=");
-      return [kv.slice(0, idx), kv.slice(idx + 1)];
-    }),
-  );
-  const accountName = parts["AccountName"];
-  const accountKey = parts["AccountKey"];
-  if (!accountName || !accountKey) {
-    throw new Error("STORAGE_CONNECTION_STRING missing AccountName/AccountKey");
-  }
-  return { accountName, accountKey };
-}
-
 export function createBlobNotesAssetsStore(connectionString: string): NotesAssetsStore {
-  const { accountName, accountKey } = parseConnectionString(connectionString);
-  const credential = new StorageSharedKeyCredential(accountName, accountKey);
-  const service = new BlobServiceClient(
-    `https://${accountName}.blob.core.windows.net`,
-    credential,
-  );
+  const { credential, service } = blobService(connectionString);
   const container = service.getContainerClient(CONTAINER);
 
   const readUrl = (path: string): string => {
@@ -85,12 +64,8 @@ export function createBlobNotesAssetsStore(connectionString: string): NotesAsset
     async deleteAsset(path) {
       await container.getBlockBlobClient(path).deleteIfExists();
     },
-    async deletePrefix(prefix) {
-      // A prefix that is not a folder would sweep siblings — an empty one, the container.
-      if (!prefix.endsWith("/")) throw new Error("deletePrefix requires a trailing slash");
-      for await (const blob of container.listBlobsFlat({ prefix })) {
-        await container.getBlockBlobClient(blob.name).deleteIfExists();
-      }
+    deletePrefix(prefix) {
+      return deleteBlobsUnder(container, prefix);
     },
   };
 }

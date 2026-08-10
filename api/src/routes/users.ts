@@ -21,6 +21,7 @@ import {
 } from "../db/schema";
 import { notesAccess } from "../notes/entitlement";
 import { narrationPrefix } from "../notes/narration";
+import { logPurgeFailed, purgeRunner } from "../notes/purge";
 import { scanPurgePrefixes, stampAndDeleteScans } from "../notes/scan_delete";
 
 const ROLE_GRANT_ORIGINS = ["signup", "setup"] as const;
@@ -300,25 +301,7 @@ export function usersRouter(deps: Deps): Router {
       });
 
       await userAudit(deps, req, "account.delete", { type: "user", id: me.id });
-      // Purge failures must surface as an alertable structured event, never a swallowed error — the delete sheet promises this is destroyed.
-      const purge = async (label: string, key: string, act: () => Promise<unknown>) => {
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          try {
-            await act();
-            return;
-          } catch (err) {
-            if (attempt === 3) {
-              console.log(JSON.stringify({
-                kind: "purge_failed", op: "account.delete", label, key,
-                userId: me.id, reqId: req.reqId ?? null,
-                error: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
-              }));
-              return;
-            }
-            await new Promise((r) => setTimeout(r, 250 * attempt));
-          }
-        }
-      };
+      const purge = purgeRunner({ op: "account.delete", userId: me.id, reqId: req.reqId ?? null });
       if (deps.lessons) {
         for (const path of audioPaths) {
           await purge("audio", path, () => deps.lessons!.deleteAudio(path));
@@ -337,12 +320,11 @@ export function usersRouter(deps: Deps): Router {
           await purge("scan", prefix, () => deps.scans!.deletePrefix(prefix));
         }
       } else {
-        // The rows are gone before the blobs, so with no store to purge them this line is the only thing left that names the bytes.
         for (const scan of purged.deletedScans) {
-          console.log(JSON.stringify({
-            kind: "purge_failed", op: "account.delete", label: "scan", key: scan.id,
+          logPurgeFailed({
+            op: "account.delete", label: "scan", key: scan.id,
             userId: me.id, reqId: req.reqId ?? null, error: "storage_not_configured",
-          }));
+          });
         }
       }
       // identityDeleted drives the delete-sheet's sign-in-service sentence — false whenever Graph never answered, unconfigured included.

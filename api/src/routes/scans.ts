@@ -7,6 +7,8 @@ import { requireUser, userAudit } from "../notes/user";
 import { isUuid } from "../ids";
 import { notes, scoreScans, users, type ScoreScan } from "../db/schema";
 import { ASSET_READ_SAS_MINUTES } from "../notes/assets_store";
+import type { ScanStore } from "../notes/scans_store";
+import { ScanChangedError } from "../notes/scans_store";
 import { SCAN_HEAD_BYTES, jpegHeadVerdict } from "../notes/jpeg";
 import { purgeRunner } from "../notes/purge";
 import { scanPurgePrefixes, stampAndDeleteScans } from "../notes/scan_delete";
@@ -38,6 +40,21 @@ function notCreatedError(status: string): string {
 
 function pageNumbers(count: number): number[] {
   return Array.from({ length: count }, (_, i) => i + 1);
+}
+
+function notAnImageMessage(n: number): string {
+  return `Page ${n} isn't a photo we can use.`;
+}
+
+function existingScanBody(store: ScanStore, ownerId: string, row: ScoreScan) {
+  if (row.status !== "created") return { scan: scanWire(row) };
+  return {
+    scan: scanWire(row),
+    uploadUrls: pageNumbers(row.pageCount).map((page) => ({
+      page,
+      url: store.uploadUrl(store.incomingPath(ownerId, row.id, page)),
+    })),
+  };
 }
 
 function sasExpiresAt(): string {
@@ -72,21 +89,11 @@ export function scansRouter(deps: Deps): Router {
           .where(and(eq(scoreScans.ownerId, me.id), eq(scoreScans.clientScanId, clientScanId)))
           .limit(1);
         if (dup) {
-          if (dup.status !== "created") {
-            res.status(200).json({ scan: scanWire(dup) });
-            return;
-          }
-          if (!deps.scans) {
+          if (dup.status === "created" && !deps.scans) {
             res.status(503).json({ error: "storage_not_configured" });
             return;
           }
-          res.status(200).json({
-            scan: scanWire(dup),
-            uploadUrls: pageNumbers(dup.pageCount).map((page) => ({
-              page,
-              url: deps.scans!.uploadUrl(deps.scans!.incomingPath(me.id, dup.id, page)),
-            })),
-          });
+          res.status(200).json(existingScanBody(deps.scans!, me.id, dup));
           return;
         }
       }
@@ -113,13 +120,25 @@ export function scansRouter(deps: Deps): Router {
       const [row] = await db
         .insert(scoreScans)
         .values({ ownerId: me.id, title, clientScanId, pageCount })
+        .onConflictDoNothing({ target: [scoreScans.ownerId, scoreScans.clientScanId] })
         .returning();
-      await userAudit(deps, req, "scan.create", { type: "scan", id: row!.id }, { pageCount });
+      if (!row) {
+        // Only a keyed insert can be refused — a null clientScanId never collides on uq_score_scans_owner_client.
+        const [winner] = await db
+          .select()
+          .from(scoreScans)
+          .where(and(eq(scoreScans.ownerId, me.id), eq(scoreScans.clientScanId, clientScanId!)))
+          .limit(1);
+        if (!winner) throw new Error("score scan create conflicted with a row that no longer exists");
+        res.status(200).json(existingScanBody(deps.scans, me.id, winner));
+        return;
+      }
+      await userAudit(deps, req, "scan.create", { type: "scan", id: row.id }, { pageCount });
       res.status(201).json({
-        scan: scanWire(row!),
+        scan: scanWire(row),
         uploadUrls: pageNumbers(pageCount).map((page) => ({
           page,
-          url: deps.scans!.uploadUrl(deps.scans!.incomingPath(me.id, row!.id, page)),
+          url: deps.scans!.uploadUrl(deps.scans!.incomingPath(me.id, row.id, page)),
         })),
       });
     }),
@@ -188,6 +207,11 @@ export function scansRouter(deps: Deps): Router {
         res.status(404).json({ error: "not_found" });
         return;
       }
+      // A retry whose 200 was lost must find the scan saved, not stranded — only a takedown refuses.
+      if (scan.status === "ready") {
+        res.json({ scan: scanWire(scan) });
+        return;
+      }
       if (scan.status !== "created") {
         res.status(409).json({ error: notCreatedError(scan.status) });
         return;
@@ -196,6 +220,8 @@ export function scansRouter(deps: Deps): Router {
       // Every 4xx below leaves the staged blobs where they are — the 1-day incoming sweep is the cleanup, and a deleted stage cannot be diagnosed.
       const pages = pageNumbers(scan.pageCount);
       let bytes = 0;
+      // Kept so the copy below can be pinned to the bytes this loop measured — the write grant is live for two hours after it.
+      const etags = new Map<number, string | null>();
       for (const page of pages) {
         const props = await store.pageProps(store.incomingPath(me.id, scan.id, page));
         if (!props || props.bytes === 0) {
@@ -203,6 +229,7 @@ export function scansRouter(deps: Deps): Router {
           return;
         }
         bytes += props.bytes;
+        etags.set(page, props.etag);
       }
       if (bytes > MAX_SCAN_BYTES) {
         res.status(413).json({ error: "scan_too_large", bytes, maxBytes: MAX_SCAN_BYTES });
@@ -212,16 +239,56 @@ export function scansRouter(deps: Deps): Router {
         const head = await store.readHead(store.incomingPath(me.id, scan.id, page), SCAN_HEAD_BYTES);
         const verdict = jpegHeadVerdict(head);
         if (verdict !== "ok") {
-          res.status(415).json({ error: "not_an_image", n: page, reason: verdict });
+          res.status(415).json({
+            error: "not_an_image",
+            n: page,
+            reason: verdict,
+            message: notAnImageMessage(page),
+          });
           return;
         }
       }
 
-      for (const page of pages) {
-        await store.promote(
-          store.incomingPath(me.id, scan.id, page),
-          store.blobPath(me.id, scan.id, page),
-        );
+      const purge = purgeRunner({ op: "scan.commit", userId: me.id, reqId: req.reqId ?? null });
+      const answerSurvivor = async (): Promise<boolean> => {
+        const [survivor] = await db
+          .select()
+          .from(scoreScans)
+          .where(eq(scoreScans.id, scan.id))
+          .limit(1);
+        // Only when the row is gone: a concurrent successful commit put its pages at these same paths.
+        if (!survivor) {
+          for (const prefix of [store.blobPrefix(me.id, scan.id), store.incomingPrefix(me.id, scan.id)]) {
+            await purge("scan", prefix, () => store.deletePrefix(prefix));
+          }
+          res.status(404).json({ error: "not_found" });
+          return true;
+        }
+        if (survivor.status === "created") return false;
+        if (survivor.status === "ready") {
+          res.json({ scan: scanWire(survivor) });
+          return true;
+        }
+        res.status(409).json({ error: notCreatedError(survivor.status) });
+        return true;
+      };
+
+      try {
+        for (const page of pages) {
+          await store.promote(
+            store.incomingPath(me.id, scan.id, page),
+            store.blobPath(me.id, scan.id, page),
+            { ifMatch: etags.get(page) ?? null },
+          );
+        }
+      } catch (err) {
+        if (err instanceof ScanChangedError) {
+          res.status(409).json({ error: "pages_changed", message: MSG_PAGES_MISSING });
+          return;
+        }
+        // The winner sweeps the stage mid-copy — the row it left behind is the honest answer, not the copy error.
+        if (!(await answerSurvivor())) throw err;
+        return;
       }
       // Flip before the stage is swept: a crash the other way round leaves a 'created' row whose pages no longer exist anywhere.
       const [updated] = await db
@@ -235,22 +302,8 @@ export function scansRouter(deps: Deps): Router {
         })
         .where(and(eq(scoreScans.id, scan.id), eq(scoreScans.status, "created")))
         .returning();
-      const purge = purgeRunner({ op: "scan.commit", userId: me.id, reqId: req.reqId ?? null });
       if (!updated) {
-        const [survivor] = await db
-          .select({ status: scoreScans.status })
-          .from(scoreScans)
-          .where(eq(scoreScans.id, scan.id))
-          .limit(1);
-        // Only when the row is gone: a concurrent successful commit put its pages at these same paths.
-        if (!survivor) {
-          for (const prefix of [store.blobPrefix(me.id, scan.id), store.incomingPrefix(me.id, scan.id)]) {
-            await purge("scan", prefix, () => store.deletePrefix(prefix));
-          }
-          res.status(404).json({ error: "not_found" });
-          return;
-        }
-        res.status(409).json({ error: notCreatedError(survivor.status) });
+        if (!(await answerSurvivor())) throw new Error("score scan commit lost a race to a row still created");
         return;
       }
       // The row is already ready — a stage that will not sweep is the 1-day rule's problem, not a reason to tell the client the commit failed.

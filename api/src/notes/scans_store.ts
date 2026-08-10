@@ -1,16 +1,22 @@
 import {
-  BlobServiceClient,
-  StorageSharedKeyCredential,
   BlobSASPermissions,
   SASProtocol,
   generateBlobSASQueryParameters,
   RestError,
 } from "@azure/storage-blob";
+import { blobService, blobProps, deleteBlobsUnder } from "../blob";
 import { ASSET_READ_SAS_MINUTES } from "./assets_store";
 
 const CONTAINER = "score-scans"; // bicep lifecycle: incoming sweep @1d, version purge @7d, cool @30d, delete disabled
 const UPLOAD_SAS_HOURS = 2;
 const INCOMING = "incoming/";
+
+export class ScanChangedError extends Error {
+  constructor() {
+    super("scan_page_changed");
+    this.name = "ScanChangedError";
+  }
+}
 
 export interface ScanStore {
   incomingPath(ownerId: string, scanId: string, n: number): string;
@@ -19,37 +25,18 @@ export interface ScanStore {
   blobPrefix(ownerId: string, scanId: string): string;
   // Single-blob, write-only, HTTPS-only; refuses any path outside incoming/, so nothing a client holds can address the durable prefix.
   uploadUrl(path: string): string;
-  pageProps(path: string): Promise<{ bytes: number } | null>;
+  // The etag is what pins a later promote to these exact bytes; the upload SAS outlives the gate.
+  pageProps(path: string): Promise<{ bytes: number; etag: string | null } | null>;
   readHead(path: string, bytes: number): Promise<Buffer | null>;
-  // Server-side copy into the durable prefix — no bytes on the wire.
-  promote(from: string, to: string): Promise<void>;
+  // Server-side copy into the durable prefix — no bytes on the wire; without ifMatch the size gate is bypassable.
+  promote(from: string, to: string, opts?: { ifMatch?: string | null }): Promise<void>;
   // Single-blob, read-only, HTTPS-only, minutes-long. Never container-scoped.
   readUrl(path: string): string;
   deletePrefix(prefix: string): Promise<void>;
 }
 
-function parseConnectionString(cs: string): { accountName: string; accountKey: string } {
-  const parts = Object.fromEntries(
-    cs.split(";").map((kv) => {
-      const idx = kv.indexOf("=");
-      return [kv.slice(0, idx), kv.slice(idx + 1)];
-    }),
-  );
-  const accountName = parts["AccountName"];
-  const accountKey = parts["AccountKey"];
-  if (!accountName || !accountKey) {
-    throw new Error("STORAGE_CONNECTION_STRING missing AccountName/AccountKey");
-  }
-  return { accountName, accountKey };
-}
-
 export function createBlobScanStore(connectionString: string): ScanStore {
-  const { accountName, accountKey } = parseConnectionString(connectionString);
-  const credential = new StorageSharedKeyCredential(accountName, accountKey);
-  const service = new BlobServiceClient(
-    `https://${accountName}.blob.core.windows.net`,
-    credential,
-  );
+  const { credential, service } = blobService(connectionString);
   const container = service.getContainerClient(CONTAINER);
 
   const incomingPrefix = (ownerId: string, scanId: string): string =>
@@ -70,14 +57,6 @@ export function createBlobScanStore(connectionString: string): ScanStore {
       credential,
     ).toString();
     return `${container.getBlockBlobClient(path).url}?${sas}`;
-  };
-
-  const deletePrefix = async (prefix: string): Promise<void> => {
-    // A prefix that is not a folder would sweep siblings — an empty one, the container.
-    if (!prefix.endsWith("/")) throw new Error("deletePrefix requires a trailing slash");
-    for await (const blob of container.listBlobsFlat({ prefix })) {
-      await container.getBlockBlobClient(blob.name).deleteIfExists();
-    }
   };
 
   return {
@@ -103,14 +82,8 @@ export function createBlobScanStore(connectionString: string): ScanStore {
       ).toString();
       return `${container.getBlockBlobClient(path).url}?${sas}`;
     },
-    async pageProps(path) {
-      try {
-        const props = await container.getBlockBlobClient(path).getProperties();
-        return { bytes: props.contentLength ?? 0 };
-      } catch (err) {
-        if (err instanceof RestError && err.statusCode === 404) return null;
-        throw err;
-      }
+    pageProps(path) {
+      return blobProps(container, path);
     },
     async readHead(path, bytes) {
       try {
@@ -125,9 +98,18 @@ export function createBlobScanStore(connectionString: string): ScanStore {
         throw err;
       }
     },
-    async promote(from, to) {
+    async promote(from, to, opts) {
       const dest = container.getBlockBlobClient(to);
-      await dest.syncCopyFromURL(readUrl(from));
+      const ifMatch = opts?.ifMatch;
+      try {
+        await dest.syncCopyFromURL(
+          readUrl(from),
+          ifMatch ? { sourceConditions: { ifMatch } } : {},
+        );
+      } catch (err) {
+        if (err instanceof RestError && err.statusCode === 412) throw new ScanChangedError();
+        throw err;
+      }
       // The copy carries the type the client uploaded with — this pin is what keeps a scan from ever being servable as text/html.
       await dest.setHTTPHeaders({
         blobContentType: "image/jpeg",
@@ -135,6 +117,8 @@ export function createBlobScanStore(connectionString: string): ScanStore {
       });
     },
     readUrl,
-    deletePrefix,
+    deletePrefix(prefix) {
+      return deleteBlobsUnder(container, prefix);
+    },
   };
 }
