@@ -217,6 +217,18 @@ correct, they simply do not carry the new fingering and layout work.
 - **`pytest notes/tests pieces` in one invocation fails at collection** — the notes conftest stubs azure modules globally and poisons pieces' imports. Pre-existing. Run the two suites separately.
 - **Our narration character count is not the vendor's bill.** ElevenLabs meters credits at a rate that moved from 0.50 to 0.55 per character between July runs and that none of its own endpoints report. We now record the vendor's own number per clip alongside ours; ours remains the pre-flight ceiling because it is the only figure knowable before a request.
 
+### From the score-scan Slice 1 stage gate (2026-08-09) — real, deliberately not fixed
+
+- **The commit's EXIF gate reads the head of the file only.** `api/src/notes/jpeg.ts` stops at SOS, so "carries no APP1/EXIF segment" means "no APP1 *before* SOS"; metadata appended after the scan data survives. Nobody is harmed by it — the only actor who can place trailing bytes in the file is the scan's owner, in their own photograph — so the fix is to narrow §9.3's sentence to what the gate actually checks, not to scan 40 MiB per page. It was raised, verified, and downgraded on that reasoning; do not re-file it as a privacy hole.
+
+- **A deleted scan leaves a 7-day recoverable tail, and that is the design.** The container has `isVersioningEnabled` plus 7-day soft delete, so `deletePrefix` removes the current blobs and leaves versions behind. §11 rule 2 states it and the shipped privacy line already promises exactly this — "recoverable by our operators for up to 7 days". The E2E leg that "found" it was listing without `--include v`; re-run it that way before anyone calls it a leak.
+
+- **The page encoder is only correct for the source it currently has.** `ScoreScanPageEncoder`'s allow-list strips APP14/Adobe — a CMYK page then renders with inverted colour — and a multi-chunk ICC profile over 64 KiB earns a permanent 415. Both are unreachable while VisionKit is the only producer, because it hands back re-rendered sRGB. **Gate any "choose from Photos" or PDF-import entry point on fixing them**; that entry point is the day both become live.
+
+- **`ScoreScanStore` and `LessonSessionStore` share 62 identical lines on purpose.** Swift forbids static stored properties in generic types, which is where the shared `ioLock` would have to live, and the slice budgeted exactly one refactor of shipped lesson code — `LessonUploader` — so spending it here would have been the wrong one. **Pre-declared extraction trigger:** extract a `FileLedger` when a third ledger appears, or when the `update`/`rawSave` bodies diverge for any reason other than the record type.
+
+- **Whether 20 pages can exceed `MAX_SCAN_BYTES` is unmeasured.** The cap is 40 MB checked against the *sum* of the pages and the encoder does no downscaling, so "That's 20 pages — the most one score can hold" may be a promise the server refuses. One measurement settles it: byte-size one real full-resolution encoded page and multiply by 20 — the harness's 320×440 fixtures cannot answer it. That sentence also drops §7 state 6's repair clause ("Delete a page to add another"), and there is no sentence at all for pages dropped over the cap or for a full disk.
+
 ## Verified clean, so nobody re-opens them
 
 - **The model does not invent bar numbers.** A lesson with zero spoken bar numbers but 24 spoken numerals (a teacher counting beats) produced 5 annotations and 0 placements; one annotation quoting "One, two, three. On each beat you have one note." was classified as a deixis reference, not a bar.
