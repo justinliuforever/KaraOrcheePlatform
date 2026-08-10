@@ -124,4 +124,30 @@ describe("the score-scan blob store", () => {
 
     expect(await store.pageProps(STAGED)).toBeNull();
   });
+
+  it("hands a reader a link that can only ever render as a jpeg, and only for minutes", () => {
+    const store = createBlobScanStore(CONNECTION);
+
+    const url = new URL(store.readUrl(DURABLE));
+
+    expect(url.searchParams.get("sp")).toBe("r");
+    expect(url.searchParams.get("spr")).toBe("https");
+    expect(url.searchParams.get("rsct")).toBe("image/jpeg");
+    expect(url.searchParams.get("rscd")).toBe("inline");
+    const minutes = (Date.parse(url.searchParams.get("se")!) - Date.now()) / 60_000;
+    expect(minutes).toBeGreaterThan(0);
+    expect(minutes).toBeLessThan(120);
+  });
+
+  it("hands a writer a link that cannot address anything already committed", () => {
+    const store = createBlobScanStore(CONNECTION);
+
+    expect(() => store.uploadUrl(DURABLE)).toThrow();
+    expect(() => store.uploadUrl("../owner-2/scan-9/1.jpg")).toThrow();
+
+    const url = new URL(store.uploadUrl(STAGED));
+    expect(url.searchParams.get("sp")).toBe("cw");
+    expect(url.searchParams.get("spr")).toBe("https");
+    expect(url.pathname).toBe(`/score-scans/${STAGED}`);
+  });
 });
