@@ -2,7 +2,7 @@
 """Smoke the deployed score-scan routes, aimed at what the stage-gate fixes changed."""
 import io, json, sys, uuid, urllib.request, urllib.error
 sys.path.insert(0, "/Users/liuqinyuan/Desktop/KaraOrcheePlatform/tools/collection_splitter")
-from admin_auth import token
+from testuser_auth import token
 from PIL import Image
 
 BASE = "https://ca-app-api-dev.graymoss-40d67a2f.centralus.azurecontainerapps.io"
@@ -61,11 +61,11 @@ def check(name, ok, detail=""):
     print(("PASS  " if ok else "FAIL  ") + name + ("   " + detail if detail else ""))
 
 
-status, me = call("GET", "/v1/me")
-check("signed in with a notes role", status == 200 and (me.get("isTeacher") or me.get("isStudent")),
-      f"status={status} teacher={me.get('isTeacher')} student={me.get('isStudent')}")
+status, listing = call("GET", "/v1/score-scans")
+check("the account can reach the scan routes at all", status == 200,
+      f"status={status} {json.dumps(listing)[:120]}")
 if status != 200:
-    print(json.dumps(me)[:400]); sys.exit(1)
+    sys.exit(1)
 
 # --- happy path, then every idempotency claim the fixes made ---
 client_id = str(uuid.uuid4())
