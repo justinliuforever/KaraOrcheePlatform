@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { SCAN_HEAD_BYTES, jpegHeadVerdict, type JpegVerdict } from "../src/notes/jpeg";
 
-const CORPUS = fileURLToPath(
+const CORPUS = fileURLToPath(new URL("./fixtures/scan_conformance.json", import.meta.url));
+const APP_CORPUS = fileURLToPath(
   new URL("../../../KaraOrcheeAMT/Tests/Fixtures/scan_conformance.json", import.meta.url),
 );
 
@@ -26,14 +27,26 @@ function loadCorpus(): Case[] {
     text = readFileSync(CORPUS, "utf8");
   } catch {
     throw new Error(
-      `scan_conformance.json not found at ${CORPUS} — it is referenced out of the app repo, never copied, ` +
-        `so the two repos must stay co-located under ~/Desktop.`,
+      `scan_conformance.json not found at ${CORPUS} — the server half of the corpus lives in this repo ` +
+        `so CI can run it; regenerate it from the app's copy rather than editing it here.`,
     );
   }
   return JSON.parse(text).cases as Case[];
 }
 
 const CASES = loadCorpus();
+
+describe("the corpus the two halves share", () => {
+  it("is byte-identical to the app's copy wherever both repos are checked out", () => {
+    let app: string;
+    try {
+      app = readFileSync(APP_CORPUS, "utf8");
+    } catch {
+      return;
+    }
+    expect(app).toBe(readFileSync(CORPUS, "utf8"));
+  });
+});
 
 function verdictOfPageAsTheCommitGateReadsIt(base64: string): JpegVerdict {
   return jpegHeadVerdict(Buffer.from(base64, "base64").subarray(0, SCAN_HEAD_BYTES));
