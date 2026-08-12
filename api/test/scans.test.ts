@@ -1032,9 +1032,9 @@ describe("GET /v1/score-scans/:id", () => {
   it("names drafts and sent notes in usedBy and leaves retracted ones out", async () => {
     const { me, scanId } = await readyScan("scan-get-usedby");
     const student = await makeUser("scan-get-usedby-s", "student");
-    const gone = await makeUser("scan-get-usedby-gone", "student");
+    const unnamed = await makeUser("scan-get-usedby-unnamed", "student");
     await db.orm.update(users).set({ displayName: "Jordan" }).where(eq(users.id, student.id));
-    await db.orm.update(users).set({ displayName: null }).where(eq(users.id, gone.id));
+    await db.orm.update(users).set({ displayName: null }).where(eq(users.id, unnamed.id));
 
     const seed = async (status: string, studentId: string | null) => {
       const [row] = await db.orm
@@ -1053,7 +1053,7 @@ describe("GET /v1/score-scans/:id", () => {
     };
     const draftId = await seed("draft", null);
     const sentId = await seed("sent", student.id);
-    const tombstonedId = await seed("sent", gone.id);
+    const unnamedId = await seed("sent", unnamed.id);
     const retractedId = await seed("retracted", student.id);
 
     const res = await get(me.token, scanId);
@@ -1063,9 +1063,47 @@ describe("GET /v1/score-scans/:id", () => {
     );
     expect(byId.size).toBe(3);
     expect(byId.has(retractedId)).toBe(false);
-    expect(byId.get(draftId)).toMatchObject({ status: "draft", origin: "teacher", recipientName: null, sentAt: null });
-    expect(byId.get(sentId)).toMatchObject({ status: "sent", recipientName: "Jordan" });
-    expect(byId.get(tombstonedId)).toMatchObject({ status: "sent", recipientName: null });
+    expect(byId.get(draftId)).toMatchObject({
+      status: "draft", origin: "teacher", recipientName: null, sentAt: null, recipientDeleted: false,
+    });
+    expect(byId.get(sentId)).toMatchObject({ status: "sent", recipientName: "Jordan", recipientDeleted: false });
+    expect(byId.get(unnamedId)).toMatchObject({ status: "sent", recipientName: null, recipientDeleted: false });
+  });
+
+  it("separates a student who skipped their name from one whose account is gone — a pair only direct SQL can build, because DELETE /v1/me takes the notes with it", async () => {
+    const { me, scanId } = await readyScan("scan-get-usedby-flag");
+    const unnamed = await makeUser("scan-get-flag-unnamed", "student");
+    const tombstoned = await makeUser("scan-get-flag-gone", "student");
+    await db.orm.update(users).set({ displayName: null }).where(eq(users.id, unnamed.id));
+    await db.orm
+      .update(users)
+      .set({ displayName: null, status: "deleted", deletedAt: new Date() })
+      .where(eq(users.id, tombstoned.id));
+
+    const seed = async (studentId: string) => {
+      const [row] = await db.orm
+        .insert(notes)
+        .values({
+          teacherId: me.id,
+          studentId,
+          status: "sent",
+          sentAt: new Date(),
+          contentOriginal: {},
+          content: {},
+          scoreScanId: scanId,
+        })
+        .returning({ id: notes.id });
+      return row!.id;
+    };
+    const liveId = await seed(unnamed.id);
+    const goneId = await seed(tombstoned.id);
+
+    const res = await get(me.token, scanId);
+    const byId = new Map(
+      res.body.usedBy.map((u: { noteId: string }) => [u.noteId, u as Record<string, unknown>]),
+    );
+    expect(byId.get(liveId)).toMatchObject({ recipientName: null, recipientDeleted: false });
+    expect(byId.get(goneId)).toMatchObject({ recipientName: null, recipientDeleted: true });
   });
 });
 

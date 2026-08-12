@@ -386,12 +386,14 @@ export function scansRouter(deps: Deps): Router {
         res.status(410).json({ error: "scan_purged" });
         return;
       }
-      const usedBy = await db
+      // A null recipientName is also a live student who skipped the optional name — only this flag may be read as a deleted account.
+      const usedByRows = await db
         .select({
           noteId: notes.id,
           status: notes.status,
           origin: notes.origin,
           recipientName: users.displayName,
+          recipientStatus: users.status,
           sentAt: notes.sentAt,
           createdAt: notes.createdAt,
         })
@@ -399,6 +401,10 @@ export function scansRouter(deps: Deps): Router {
         .leftJoin(users, eq(users.id, notes.studentId))
         .where(and(eq(notes.scoreScanId, scan.id), inArray(notes.status, ["draft", "sent"])))
         .orderBy(desc(notes.createdAt));
+      const usedBy = usedByRows.map(({ recipientStatus, ...row }) => ({
+        ...row,
+        recipientDeleted: recipientStatus === "deleted",
+      }));
       res.set("Cache-Control", "no-store");
       res.json({
         scan: scanWire(scan),
