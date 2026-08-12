@@ -27,11 +27,11 @@ export async function stampAndDeleteScans(
     WITH deleted AS (
       DELETE FROM ${scoreScans}
       WHERE ${scoped}
-      RETURNING ${scoreScans.id} AS id
+      RETURNING ${scoreScans.id} AS id, ${scoreScans.status} AS status
     ), stamped AS (
       UPDATE ${notes}
       SET score_scan_detached_at = now(), updated_at = now()
-      WHERE ${notes.scoreScanId} IN (SELECT id FROM deleted)
+      WHERE ${notes.scoreScanId} IN (SELECT id FROM deleted WHERE status <> 'created')
         AND ${notes.readAt} IS NOT NULL
         AND ${notes.status} IN ('sent', 'retracted')
       RETURNING ${notes.id} AS id

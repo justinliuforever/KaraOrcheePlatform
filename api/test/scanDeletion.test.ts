@@ -184,6 +184,42 @@ describe("deleting a scan clears every note that references it", () => {
     expect(row.detachedAt).not.toBeNull();
   });
 
+  it("tells no one a score is gone when the score never finished uploading", async () => {
+    const teacher = await makeUser("scan-del-created");
+    const student = await makeUser("scan-del-created-s", "student");
+    const scanId = await seedScan(teacher.id, "created");
+    const noteId = await seedNote({
+      teacherId: teacher.id,
+      studentId: student.id,
+      status: "sent",
+      readAt: new Date(),
+      scanId,
+    });
+
+    await db.orm.transaction((tx) => stampAndDeleteScans(tx, { ownerId: teacher.id, scanId }));
+
+    const row = await noteRow(noteId);
+    expect(row.scoreScanId).toBeNull();
+    expect(row.detachedAt).toBeNull();
+  });
+
+  it("still marks a read note whose score was taken down after they had seen it", async () => {
+    const teacher = await makeUser("scan-del-tdown");
+    const student = await makeUser("scan-del-tdown-s", "student");
+    const scanId = await seedScan(teacher.id, "taken_down");
+    const noteId = await seedNote({
+      teacherId: teacher.id,
+      studentId: student.id,
+      status: "sent",
+      readAt: new Date(),
+      scanId,
+    });
+
+    await db.orm.transaction((tx) => stampAndDeleteScans(tx, { ownerId: teacher.id, scanId }));
+
+    expect((await noteRow(noteId)).detachedAt).not.toBeNull();
+  });
+
   it("leaves an unread sent note unmarked", async () => {
     const teacher = await makeUser("scan-del-unread");
     const student = await makeUser("scan-del-unread-s", "student");
