@@ -530,11 +530,12 @@ def test_the_note_inherits_the_lessons_custom_piece_entity():
 
 
 CARRY = "SELECT score_scan_id FROM notes"
+SCAN_LOCK = "SELECT id FROM score_scans"
 
 
 def test_a_scan_attached_to_the_draft_survives_the_rebuild():
-    conn = FakeConn({LOCK: teacher_lock(), CARRY: ("scan-1",),
-                     "INSERT INTO notes": ("note-1",)})
+    conn = FakeConn({LOCK: teacher_lock(piece_id=None), CARRY: ("scan-1",),
+                     SCAN_LOCK: ("scan-1",), "INSERT INTO notes": ("note-1",)})
     main.replace_draft(conn, "job-1", "lesson-1", CONTENT, ORIGINAL, ANNS)
     sqls = [s for s, _ in conn.executed]
     read = next(i for i, s in enumerate(sqls) if s.startswith(CARRY))
@@ -553,11 +554,39 @@ def test_a_draft_with_no_scan_rebuilds_with_a_null_reference():
 
 
 def test_the_rebuild_never_writes_the_detached_marker():
-    conn = FakeConn({LOCK: teacher_lock(), CARRY: ("scan-1",),
-                     "INSERT INTO notes": ("note-3",)})
+    conn = FakeConn({LOCK: teacher_lock(piece_id=None), CARRY: ("scan-1",),
+                     SCAN_LOCK: ("scan-1",), "INSERT INTO notes": ("note-3",)})
     main.replace_draft(conn, "job-3", "lesson-1", CONTENT, ORIGINAL, ANNS)
     sqls = [s for s, _ in conn.executed]
     assert not any("score_scan_detached_at" in s for s in sqls)
+
+
+def test_a_rebuild_onto_a_lesson_with_a_piece_carries_no_scan():
+    conn = FakeConn({LOCK: teacher_lock(piece_id="piece-1"), CARRY: ("scan-1",),
+                     SCAN_LOCK: ("scan-1",), "INSERT INTO notes": ("note-4",)})
+    main.replace_draft(conn, "job-4", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    w = note_insert(conn)
+    assert w["piece_id"] == "piece-1"
+    assert w["score_scan_id"] is None
+    assert not any(s.startswith(SCAN_LOCK) for s, _ in conn.executed)
+
+
+def test_a_scan_deleted_before_the_insert_is_carried_as_null_instead_of_violating_the_key():
+    conn = FakeConn({LOCK: teacher_lock(piece_id=None), CARRY: ("scan-1",),
+                     SCAN_LOCK: None, "INSERT INTO notes": ("note-5",)})
+    main.replace_draft(conn, "job-5", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    assert note_insert(conn)["score_scan_id"] is None
+
+
+def test_the_carried_scan_is_locked_before_the_draft_is_deleted():
+    conn = FakeConn({LOCK: teacher_lock(piece_id=None), CARRY: ("scan-1",),
+                     SCAN_LOCK: ("scan-1",), "INSERT INTO notes": ("note-6",)})
+    main.replace_draft(conn, "job-6", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    sqls = [s for s, _ in conn.executed]
+    held = next(i for i, s in enumerate(sqls) if s.startswith(SCAN_LOCK))
+    assert sqls[held].endswith("FOR UPDATE")
+    assert conn.executed[held][1] == ("scan-1",)
+    assert held < min(i for i, s in enumerate(sqls) if s.startswith("DELETE"))
 
 
 def test_the_solo_path_carries_no_scan_because_it_never_wipes_a_note():

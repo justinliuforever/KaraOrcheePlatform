@@ -329,6 +329,7 @@ export function notesRouter(deps: Deps): Router {
         }
         patch.scoreScanId = scanId;
       }
+      if (patch.pieceId) patch.scoreScanId = null;
       // One transaction, CAS on draft — a racing send must never lose an edit, and quote (verbatim provenance) is never alterable via this payload.
       let dropped: string[] = [];
       const updated = await db.transaction(async (tx) => {
@@ -616,7 +617,7 @@ export function notesRouter(deps: Deps): Router {
         }
         await tx
           .update(notes)
-          .set({ pieceId, updatedAt: sql`now()` })
+          .set({ pieceId, scoreScanId: null, updatedAt: sql`now()` })
           .where(eq(notes.id, note.id));
         if (measureCount !== null) await reground(tx, note.id, measureCount);
         // Only fresh.source === "library" (exact name match) may set linkedPieceId — a mention-based match isn't proof enough.
@@ -735,7 +736,7 @@ export function notesRouter(deps: Deps): Router {
             studentId: null,
             pieceId: note.pieceId,
             pieceLabel: note.pieceLabel,
-            scoreScanId: note.scoreScanId,
+            scoreScanId: note.pieceId ? null : note.scoreScanId,
             // scoreScanDetachedAt is deliberately absent: a fresh note that never had a score must not render "isn't available any more".
             contentOriginal: note.contentOriginal,
             content: note.content,

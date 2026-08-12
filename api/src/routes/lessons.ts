@@ -697,6 +697,7 @@ export function lessonsRouter(deps: Deps): Router {
             if (pieceLabel !== undefined && n.pieceLabel === before.pieceLabel) np.pieceLabel = pieceLabel;
             // Self notes are born 'sent' at worker insert — there's no later send event to pin pieceVersion at, so it happens here.
             if ("pieceId" in np && n.origin === "self") np.pieceVersion = newPieceVersion;
+            if (np.pieceId) np.scoreScanId = null;
           }
           if (!Object.keys(np).length) {
             touched.push({

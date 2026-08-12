@@ -192,6 +192,7 @@ async function seedNote(opts: {
   status?: "draft" | "sent" | "retracted";
   scoreScanId?: string | null;
   scoreScanDetachedAt?: Date | null;
+  pieceId?: string | null;
   pieceLabel?: string | null;
   sentAt?: Date | null;
   readAt?: Date | null;
@@ -219,6 +220,7 @@ async function seedNote(opts: {
       studentId: opts.studentId ?? null,
       origin: opts.origin ?? "teacher",
       status,
+      pieceId: opts.pieceId ?? null,
       pieceLabel: opts.pieceLabel ?? "Minuet in G",
       scoreScanId: opts.scoreScanId ?? null,
       scoreScanDetachedAt: opts.scoreScanDetachedAt ?? null,
@@ -245,6 +247,7 @@ async function refs(noteId: string) {
     .select({
       scanId: notes.scoreScanId,
       detachedAt: notes.scoreScanDetachedAt,
+      pieceId: notes.pieceId,
       status: notes.status,
       studentId: notes.studentId,
       readAt: notes.readAt,
@@ -683,6 +686,168 @@ describe("POST /v1/notes/:id/duplicate — which score columns travel", () => {
 
     const copy = await refs(res.body.id);
     expect(copy.scanId).toBe(scan.id);
+    expect(copy.detachedAt).toBeNull();
+  });
+});
+
+describe("naming a piece detaches the scan — the invariant at every writer of notes.piece_id", () => {
+  let soloAuthor: TestUser;
+
+  beforeAll(async () => {
+    soloAuthor = await makeUser("nss-piece-solo", "student");
+  });
+
+  const patchLesson = (lessonId: string, token: string, body: Record<string, unknown>) =>
+    request(makeApp()).patch(`/v1/lessons/${lessonId}`).set("Authorization", `Bearer ${token}`).send(body);
+
+  async function libraryRow(scanId: string) {
+    const [row] = await db.orm.select().from(scoreScans).where(eq(scoreScans.id, scanId));
+    return row;
+  }
+
+  it("detaches when PATCH /v1/notes/:id names a catalog piece, and leaves the pages in the library", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const note = await seedNote({ teacherId: teacher.id, scoreScanId: scan.id });
+
+    const res = await attach(note.id, teacher.token, { pieceId: "seed_piece" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.note.scoreScanId).toBeNull();
+    const after = await refs(note.id);
+    expect(after.pieceId).toBe("seed_piece");
+    expect(after.scanId).toBeNull();
+    expect(after.detachedAt).toBeNull();
+    const row = await libraryRow(scan.id);
+    expect(row!.status).toBe("ready");
+    expect(row!.blobPath).not.toBeNull();
+    expect(scans.deletedPrefixes).toEqual([]);
+  });
+
+  it("keeps the piece and no scan when one body carries both", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const note = await seedNote({ teacherId: teacher.id });
+
+    const res = await attach(note.id, teacher.token, { pieceId: "seed_piece", scoreScanId: scan.id });
+
+    expect(res.status).toBe(200);
+    const after = await refs(note.id);
+    expect(after.pieceId).toBe("seed_piece");
+    expect(after.scanId).toBeNull();
+  });
+
+  it("leaves the scan attached when PATCH /v1/notes/:id clears the piece instead of naming one", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const note = await seedNote({ teacherId: teacher.id, pieceId: "seed_piece", scoreScanId: scan.id });
+
+    const res = await attach(note.id, teacher.token, { pieceId: null });
+
+    expect(res.status).toBe(200);
+    const after = await refs(note.id);
+    expect(after.pieceId).toBeNull();
+    expect(after.scanId).toBe(scan.id);
+  });
+
+  it("attaches the scan when one body clears the piece and names a scan", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const note = await seedNote({ teacherId: teacher.id, pieceId: "seed_piece" });
+
+    const res = await attach(note.id, teacher.token, { pieceId: null, scoreScanId: scan.id });
+
+    expect(res.status).toBe(200);
+    const after = await refs(note.id);
+    expect(after.pieceId).toBeNull();
+    expect(after.scanId).toBe(scan.id);
+  });
+
+  it("detaches when the piece-suggestion chip is confirmed", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const note = await seedNote({ teacherId: teacher.id, scoreScanId: scan.id });
+    await db.orm
+      .update(noteJobs)
+      .set({ pieceMentions: ["Practical Method, Op. 599"] })
+      .where(eq(noteJobs.id, note.noteJobId!));
+
+    const res = await request(makeApp())
+      .post(`/v1/notes/${note.id}/piece-suggestion`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ action: "confirm", pieceId: "seed_piece" });
+
+    expect(res.status).toBe(200);
+    const after = await refs(note.id);
+    expect(after.pieceId).toBe("seed_piece");
+    expect(after.scanId).toBeNull();
+    expect(after.detachedAt).toBeNull();
+    expect((await libraryRow(scan.id))!.status).toBe("ready");
+  });
+
+  it("detaches when the lesson's piece cascades onto the draft", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const note = await seedNote({ teacherId: teacher.id, studentId: student.id, scoreScanId: scan.id });
+
+    const res = await patchLesson(note.lessonSessionId!, teacher.token, { pieceId: "seed_piece" });
+
+    expect(res.status).toBe(200);
+    const after = await refs(note.id);
+    expect(after.pieceId).toBe("seed_piece");
+    expect(after.scanId).toBeNull();
+    expect(after.detachedAt).toBeNull();
+    expect((await libraryRow(scan.id))!.status).toBe("ready");
+  });
+
+  it("leaves the scan attached when the lesson clears its piece", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const note = await seedNote({
+      teacherId: teacher.id, studentId: student.id, pieceId: "seed_piece", scoreScanId: scan.id,
+    });
+    await db.orm
+      .update(lessonSessions)
+      .set({ pieceId: "seed_piece" })
+      .where(eq(lessonSessions.id, note.lessonSessionId!));
+
+    const res = await patchLesson(note.lessonSessionId!, teacher.token, { pieceId: null });
+
+    expect(res.status).toBe(200);
+    const after = await refs(note.id);
+    expect(after.pieceId).toBeNull();
+    expect(after.scanId).toBe(scan.id);
+  });
+
+  it("detaches on a born-sent self note without telling its author the score is gone", async () => {
+    const scan = await seedScan({ ownerId: soloAuthor.id });
+    const note = await seedNote({
+      teacherId: soloAuthor.id, studentId: soloAuthor.id, origin: "self", status: "sent",
+      sentAt: new Date(), readAt: new Date(), scoreScanId: scan.id,
+    });
+
+    const res = await patchLesson(note.lessonSessionId!, soloAuthor.token, { pieceId: "seed_piece" });
+
+    expect(res.status).toBe(200);
+    const after = await refs(note.id);
+    expect(after.pieceId).toBe("seed_piece");
+    expect(after.scanId).toBeNull();
+    expect(after.detachedAt).toBeNull();
+    const detail = await getDetail(note.id, soloAuthor.token);
+    expect(detail.body.note).toMatchObject({ hasScore: false, scorePageCount: null, scoreGone: false });
+    expect((await libraryRow(scan.id))!.status).toBe("ready");
+  });
+
+  it("never copies a scan onto the duplicate of a note that already names a piece", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const note = await seedNote({
+      teacherId: teacher.id, studentId: student.id, status: "retracted",
+      pieceId: "seed_piece", scoreScanId: scan.id,
+      sentAt: daysAgo(3), readAt: daysAgo(3), retractedAt: daysAgo(2),
+    });
+
+    const res = await request(makeApp())
+      .post(`/v1/notes/${note.id}/duplicate`)
+      .set("Authorization", `Bearer ${teacher.token}`);
+
+    expect(res.status).toBe(201);
+    expect(res.body.pieceId).toBe("seed_piece");
+    expect(res.body.scoreScanId).toBeNull();
+    const copy = await refs(res.body.id);
+    expect(copy.scanId).toBeNull();
     expect(copy.detachedAt).toBeNull();
   });
 });

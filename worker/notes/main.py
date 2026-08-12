@@ -456,6 +456,12 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
                      AND score_scan_id IS NOT NULL LIMIT 1""",
                 (job_id,))
             carried_scan = cur.fetchone()
+            scan_id = carried_scan[0] if carried_scan and piece_id is None else None
+            if scan_id is not None:
+                # Locked here, or a delete arriving before the insert fails the whole job on the foreign key.
+                cur.execute("SELECT id FROM score_scans WHERE id = %s FOR UPDATE", (scan_id,))
+                if cur.fetchone() is None:
+                    scan_id = None
             cur.execute(
                 """DELETE FROM note_annotations WHERE note_id IN
                    (SELECT id FROM notes WHERE note_job_id = %s AND status = 'draft')""",
@@ -468,7 +474,7 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'teacher', %s, %s)
                    RETURNING id""",
                 (job_id, lesson_id, teacher_id, student_id, piece_id, piece_label,
-                 custom_piece_id, carried_scan[0] if carried_scan else None,
+                 custom_piece_id, scan_id,
                  json.dumps(original), json.dumps(content)))
         note_id = cur.fetchone()[0]
         for idx, a in enumerate(annotations):
