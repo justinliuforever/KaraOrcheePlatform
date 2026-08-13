@@ -198,6 +198,8 @@ async function ownedScanId(deps: Deps, ownerId: string, value: unknown): Promise
   return scan ? scan.id : "miss";
 }
 
+const MSG_NOTE_NAMES_PIECE = "A note that names a piece from the library can't carry score photos.";
+
 // Scoping by teacherId alone leaks a dual-role account's own self-notes into the teacher-side routes.
 const teacherOwned = (teacherId: string) =>
   and(eq(notes.teacherId, teacherId), eq(notes.origin, "teacher"));
@@ -329,7 +331,13 @@ export function notesRouter(deps: Deps): Router {
         }
         patch.scoreScanId = scanId;
       }
-      if (patch.pieceId) patch.scoreScanId = null;
+      // The piece is the note's identity and the scan is the addition, so a scan arriving onto a named piece is refused, never traded for it.
+      if (patch.pieceId) {
+        patch.scoreScanId = null;
+      } else if (patch.scoreScanId && !("pieceId" in patch) && note.pieceId) {
+        res.status(409).json({ error: "note_names_piece", message: MSG_NOTE_NAMES_PIECE });
+        return;
+      }
       // One transaction, CAS on draft — a racing send must never lose an edit, and quote (verbatim provenance) is never alterable via this payload.
       let dropped: string[] = [];
       const updated = await db.transaction(async (tx) => {
@@ -907,6 +915,10 @@ export function notesRouter(deps: Deps): Router {
       const scanId = await ownedScanId(deps, me.id, body.scoreScanId);
       if (scanId === "miss") {
         res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (scanId && note.pieceId) {
+        res.status(409).json({ error: "note_names_piece", message: MSG_NOTE_NAMES_PIECE });
         return;
       }
       const [updated] = await db
