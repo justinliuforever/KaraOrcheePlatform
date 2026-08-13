@@ -6,6 +6,15 @@ Nothing here is forgotten work — each line says who it waits on and what unblo
 
 ---
 
+## Two operator actions, one session, whenever Postgres is reachable
+
+Neither blocks anything. Both need a machine that can reach `pg-karaorchee-app-dev` — this one cannot (firewall/private networking; only the container app gets through), and `az containerapp exec` worked once for an agent and timed out for me, so treat the recipe as fragile rather than reliable.
+
+1. **Recount the forbidden pair, now that the guards are live.** `SELECT count(*) FROM notes WHERE piece_id IS NOT NULL AND score_scan_id IS NOT NULL;` — it was **0 of 8 notes** when counted on revision `0000059`, which was the *unguarded* image, and `rg-karaorchee-app-prod` does not exist so dev is every environment. If it is still 0, nothing else is needed: a `sent` row has no API repair path, so the `UPDATE` below is its only exit and it would have to run before Slice 4 makes such a row student-visible.
+   Repair, if it is ever not 0: `UPDATE notes SET score_scan_id = NULL WHERE piece_id IS NOT NULL AND score_scan_id IS NOT NULL;` — safe while Slice 4 is unbuilt, because no reader was ever shown these scans and no detached marker is owed.
+
+2. **Add the constraint that closes the invariant for good:** `CHECK (piece_id IS NULL OR score_scan_id IS NULL)` on `notes`. Seven statements uphold the rule today — five `piece_id` writers and two attach guards — but the guards are check-then-write, so a theoretical race survives that the piece-side writers do not have. The constraint is the durable close and would have made every one of those seven a belt rather than the only strap.
+
 ## Waiting on the founder
 
 | Item | What is blocked | Notes |
