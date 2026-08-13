@@ -279,7 +279,7 @@ correct, they simply do not carry the new fingering and layout work.
 ### From the score-scan Slice 3 re-gate (2026-08-12) — recorded here, not fixed with the guards
 
 The re-gate's one FIX-NOW is closed: both attach routes now refuse **409 `note_names_piece`** off the
-row (`routes/notes.ts:335-340`, `:919-922`), and §19 of `SCAN_DESIGN.md` states the invariant as a row
+row (`routes/notes.ts:335-340`, `:920-923`), and §19 of `SCAN_DESIGN.md` states the invariant as a row
 property with two enforcement sides. Its four riders are app-side and ride the next app batch. These
 are its records.
 
