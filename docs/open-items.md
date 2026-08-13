@@ -1,19 +1,22 @@
 # Open items
 
-Everything decided-but-unbuilt, built-but-unapplied, or deliberately deferred. Updated 2026-08-12.
+Everything decided-but-unbuilt, built-but-unapplied, or deliberately deferred. Updated 2026-08-13.
 
 Nothing here is forgotten work — each line says who it waits on and what unblocks it. Delete a line when it lands, do not let it rot into "we should probably".
 
 ---
 
-## Two operator actions, one session, whenever Postgres is reachable
+## Reaching Postgres from here — the recipe, since it is needed again
 
-Neither blocks anything. Both need a machine that can reach `pg-karaorchee-app-dev` — this one cannot (firewall/private networking; only the container app gets through), and `az containerapp exec` worked once for an agent and timed out for me, so treat the recipe as fragile rather than reliable.
+This machine cannot reach `pg-karaorchee-app-dev` directly (private networking; only the container app gets through), and the previous note called `az containerapp exec` fragile because it "worked once and timed out". It was not fragile — it was three separate mistakes, each with a fix:
 
-1. **Recount the forbidden pair, now that the guards are live.** `SELECT count(*) FROM notes WHERE piece_id IS NOT NULL AND score_scan_id IS NOT NULL;` — it was **0 of 8 notes** when counted on revision `0000059`, which was the *unguarded* image, and `rg-karaorchee-app-prod` does not exist so dev is every environment. If it is still 0, nothing else is needed: a `sent` row has no API repair path, so the `UPDATE` below is its only exit and it would have to run before Slice 4 makes such a row student-visible.
-   Repair, if it is ever not 0: `UPDATE notes SET score_scan_id = NULL WHERE piece_id IS NOT NULL AND score_scan_id IS NOT NULL;` — safe while Slice 4 is unbuilt, because no reader was ever shown these scans and no detached marker is owed.
+1. **stdin is consumed before the container connects.** Piping the command in at once feeds it to the az CLI's own startup, and the shell comes up empty. Delay the write **~30 s** (`python3 -c "import time,sys; time.sleep(30); sys.stdout.write(…)"`), and send `exit` as its own later write. Twelve seconds was enough once and not enough the next time.
+2. **`--command` splits on spaces**, so pass the single token `sh` and send the real command over stdin.
+3. **A script written to `/tmp` resolves modules from `/tmp`.** Base64 it in, then run it with `NODE_PATH=/app/node_modules`, or `cd /app` first for anything using a CWD-relative path — `migrate.ts` reads `./drizzle`.
 
-2. **Add the constraint that closes the invariant for good:** `CHECK (piece_id IS NULL OR score_scan_id IS NULL)` on `notes`. Seven statements uphold the rule today — five `piece_id` writers and two attach guards — but the guards are check-then-write, so a theoretical race survives that the piece-side writers do not have. The constraint is the durable close and would have made every one of those seven a belt rather than the only strap.
+The runtime image carries `drizzle/` and `dist/`, so **`cd /app && node dist/db/migrate.js` is `npm run db:migrate`** run from inside the cluster. Wrap the whole thing in `script -q /dev/null` for a TTY, and give `timeout` at least 260 s. One command per session — two long lines in one session interleave in the pty and neither runs.
+
+**Both former operator actions are done (2026-08-13).** The count ran first, on revision `0000060`, before the repair could erase the evidence: **0 violating rows of 8 notes**. `ck_note_piece_excludes_scan` then landed as migration `0029` on revision `0000061`, verified by reading `pg_constraint` back. The invariant is no longer a promise made by seven statements.
 
 ## Waiting on the founder
 
@@ -294,7 +297,7 @@ are its records.
 
 - **The attach refusal has no sentence in the app yet, and the string it does show is now misleading.** `setScoreScan` discards the error unbound (`NoteReviewSession.swift:378-389`), so a 409 lands as `ScanAttachCopy.attachFailed` — *"Couldn't add these photos to this note. Try again."* — in the strip, in `ScanPickerSheet` (`:156`, which stays up), and via `NoteDetailView.attachScan`'s catch-all on the self-note route. **Try again is now false**: the refusal is permanent while the row names a piece, and the failure path's `refreshScoreScan()` does not repair the divergent `working.pieceId` that drew the offer, so a teacher can retry forever. The server sends a `message` written to be shown verbatim; the app change is to bind `code == "note_names_piece"` and print it, and to gate the Score section on the row rather than on `working.pieceId`. Until then the refusal is honest in effect (no pair is minted) and generic in wording.
 
-- **A `CHECK (piece_id IS NULL OR score_scan_id IS NULL)` is the durable close, and it must wait for the repair.** The two guards are check-then-write — the row is read, then updated — so a theoretical race survives that the piece-side writers do not have (they detach in the same `UPDATE`). A table constraint ends it for every future writer, but it cannot be added while a violating row exists, and applying it needs a migration run from a machine that can reach Postgres. **Land it in the same operator session as the legacy repair below, constraint after count.**
+- ~~**A `CHECK (piece_id IS NULL OR score_scan_id IS NULL)` is the durable close, and it must wait for the repair.**~~ **Done 2026-08-13** — `ck_note_piece_excludes_scan`, migration `0029`, live on api revision `0000061`. The migration repairs before it constrains, so it needs no separate operator session and applies to a dirty database anywhere. See the recipe section at the top for how it was applied.
 
 - **`markRead` has no origin filter** (S3 gate RECORD 2, never filed). Carried forward unresolved.
 
