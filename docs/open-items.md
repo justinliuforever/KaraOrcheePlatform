@@ -18,6 +18,23 @@ The runtime image carries `drizzle/` and `dist/`, so **`cd /app && node dist/db/
 
 **Both former operator actions are done (2026-08-13).** The count ran first, on revision `0000060`, before the repair could erase the evidence: **0 violating rows of 8 notes**. `ck_note_piece_excludes_scan` then landed as migration `0029` on revision `0000061`, verified by reading `pg_constraint` back. The invariant is no longer a promise made by seven statements.
 
+## The note screen loses its body at phone landscape + AX5 (found 2026-08-13)
+
+**Every note, not just a scanned one, and it predates the scan work.** On iPhone in landscape at the
+largest accessibility text size, `NotePhoneView` renders its header and then `actionBar`'s "Start
+practice" covers the rest of the screen: the summary, the steps and — once Slice 4 mounted it — the
+photographed score are all below the fold at rest.
+
+Proved with a control rather than assumed: `shots_s4_mounted/s4m-scanned-teacher_iphone_landscape_dark_ax5`
+and `s4m-no-piece_iphone_landscape_dark_ax5` are the same axis with and without a scan, and both lose
+their content. `SCAN_DESIGN.md` §8 predicted this axis would be the hard one and named two precedents
+that hide chrome at `vSize == .compact` (`PianoKeyboard` `NotePhoneView:163-171`, the visibility
+disclosure `:180-189`); neither addresses the action bar, which is what actually takes the height.
+
+Not fixed inside Slice 4 on purpose: the repair belongs to a screen every note uses, and dropping the
+scan pane's own caption there would gain about ninety points against a bar that takes the screen —
+a change that would have looked like a fix and moved nothing.
+
 ## Waiting on the founder
 
 | Item | What is blocked | Notes |
