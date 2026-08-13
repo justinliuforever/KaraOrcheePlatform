@@ -258,6 +258,22 @@ async function refs(noteId: string) {
   return row!;
 }
 
+async function refusalMessageChain(op: () => Promise<unknown>): Promise<string> {
+  try {
+    await op();
+    return "";
+  } catch (err) {
+    const parts: string[] = [];
+    let cur: unknown = err;
+    for (let i = 0; i < 5 && cur; i++) {
+      const e = cur as { message?: string; cause?: unknown };
+      if (e.message) parts.push(e.message);
+      cur = e.cause;
+    }
+    return parts.join(" | ");
+  }
+}
+
 async function ownerOfAttachedScan(noteId: string) {
   const [row] = await db.orm
     .select({ scanOwnerId: scoreScans.ownerId, noteTeacherId: notes.teacherId })
@@ -737,7 +753,7 @@ describe("naming a piece detaches the scan — the invariant at every writer of 
 
   it("leaves the scan attached when PATCH /v1/notes/:id clears the piece instead of naming one", async () => {
     const scan = await seedScan({ ownerId: teacher.id });
-    const note = await seedNote({ teacherId: teacher.id, pieceId: "seed_piece", scoreScanId: scan.id });
+    const note = await seedNote({ teacherId: teacher.id, scoreScanId: scan.id });
 
     const res = await attach(note.id, teacher.token, { pieceId: null });
 
@@ -797,7 +813,7 @@ describe("naming a piece detaches the scan — the invariant at every writer of 
   it("leaves the scan attached when the lesson clears its piece", async () => {
     const scan = await seedScan({ ownerId: teacher.id });
     const note = await seedNote({
-      teacherId: teacher.id, studentId: student.id, pieceId: "seed_piece", scoreScanId: scan.id,
+      teacherId: teacher.id, studentId: student.id, scoreScanId: scan.id,
     });
     await db.orm
       .update(lessonSessions)
@@ -831,11 +847,10 @@ describe("naming a piece detaches the scan — the invariant at every writer of 
     expect((await libraryRow(scan.id))!.status).toBe("ready");
   });
 
-  it("never copies a scan onto the duplicate of a note that already names a piece", async () => {
-    const scan = await seedScan({ ownerId: teacher.id });
+  it("never invents a scan on the duplicate of a note that names a piece", async () => {
     const note = await seedNote({
       teacherId: teacher.id, studentId: student.id, status: "retracted",
-      pieceId: "seed_piece", scoreScanId: scan.id,
+      pieceId: "seed_piece",
       sentAt: daysAgo(3), readAt: daysAgo(3), retractedAt: daysAgo(2),
     });
 
@@ -937,10 +952,10 @@ describe("attaching a scan onto a note that already names a piece — the invari
     expect((await refs(note.id)).scanId).toBe(scan.id);
   });
 
-  it("lets a row that already holds both keep taking edits that touch neither column", async () => {
+  it("lets a row holding a scan keep taking edits that touch neither column", async () => {
     const scan = await seedScan({ ownerId: teacher.id });
     const note = await seedNote({
-      teacherId: teacher.id, studentId: student.id, pieceId: "seed_piece", scoreScanId: scan.id,
+      teacherId: teacher.id, studentId: student.id, scoreScanId: scan.id,
     });
 
     const res = await attach(note.id, teacher.token, {
@@ -950,27 +965,25 @@ describe("attaching a scan onto a note that already names a piece — the invari
     expect(res.status).toBe(200);
     const after = await refs(note.id);
     expect((after.content as { lessonSummary: string }).lessonSummary).toBe("Still editable");
-    expect(after.pieceId).toBe("seed_piece");
+    expect(after.pieceId).toBeNull();
     expect(after.scanId).toBe(scan.id);
   });
 
-  it("lets a row that already holds both detach its scan on either route", async () => {
+  it("lets a row holding a scan detach it on either route", async () => {
     const scan = await seedScan({ ownerId: teacher.id });
     const note = await seedNote({
-      teacherId: teacher.id, studentId: student.id, pieceId: "seed_piece", scoreScanId: scan.id,
+      teacherId: teacher.id, studentId: student.id, scoreScanId: scan.id,
     });
 
     const res = await attach(note.id, teacher.token, { scoreScanId: null });
 
     expect(res.status).toBe(200);
-    const after = await refs(note.id);
-    expect(after.pieceId).toBe("seed_piece");
-    expect(after.scanId).toBeNull();
+    expect((await refs(note.id)).scanId).toBeNull();
 
     const selfScan = await seedScan({ ownerId: soloAuthor.id });
     const selfNote = await seedNote({
       teacherId: soloAuthor.id, studentId: soloAuthor.id, origin: "self", status: "sent",
-      sentAt: new Date(), pieceId: "seed_piece", scoreScanId: selfScan.id,
+      sentAt: new Date(), scoreScanId: selfScan.id,
     });
 
     const selfRes = await patchSelf(selfNote.id, soloAuthor.token, { scoreScanId: null });
@@ -979,17 +992,18 @@ describe("attaching a scan onto a note that already names a piece — the invari
     expect((await refs(selfNote.id)).scanId).toBeNull();
   });
 
-  it("refuses a replacement scan on a row that already holds both, rather than swapping one violation for another", async () => {
+  it("refuses a replacement scan on a row that names a piece, rather than swapping one refusal for another", async () => {
     const scan = await seedScan({ ownerId: teacher.id });
     const replacement = await seedScan({ ownerId: teacher.id });
     const note = await seedNote({
-      teacherId: teacher.id, studentId: student.id, pieceId: "seed_piece", scoreScanId: scan.id,
+      teacherId: teacher.id, studentId: student.id, pieceId: "seed_piece",
     });
 
+    expect((await attach(note.id, teacher.token, { scoreScanId: scan.id })).status).toBe(409);
     const res = await attach(note.id, teacher.token, { scoreScanId: replacement.id });
 
     expect(res.status).toBe(409);
-    expect((await refs(note.id)).scanId).toBe(scan.id);
+    expect((await refs(note.id)).scanId).toBeNull();
   });
 
   it("never sends a note whose row was minted through the attach route while it named a piece", async () => {
@@ -1012,6 +1026,48 @@ describe("attaching a scan onto a note that already names a piece — the invari
 
     expect(detail.status).toBe(200);
     expect(detail.body.usedBy).toEqual([]);
+  });
+});
+
+describe("ck_note_piece_excludes_scan — the strap under both check-then-write guards", () => {
+  let author: TestUser;
+
+  beforeAll(async () => {
+    author = await makeUser("nss-ck-solo", "student");
+  });
+
+  it("refuses a row that names a piece while holding a scan", async () => {
+    const scan = await seedScan({ ownerId: author.id });
+
+    const refusal = await refusalMessageChain(() =>
+      seedNote({ teacherId: author.id, origin: "self", pieceId: "seed_piece", scoreScanId: scan.id }));
+
+    expect(refusal).toMatch(/ck_note_piece_excludes_scan/);
+  });
+
+  it("refuses a row that reaches the forbidden pair by UPDATE, not by INSERT", async () => {
+    const scan = await seedScan({ ownerId: author.id });
+    const note = await seedNote({ teacherId: author.id, origin: "self", scoreScanId: scan.id });
+
+    const refusal = await refusalMessageChain(() =>
+      db.orm.update(notes).set({ pieceId: "seed_piece" }).where(eq(notes.id, note.id)));
+
+    expect(refusal).toMatch(/ck_note_piece_excludes_scan/);
+    expect((await refs(note.id)).scanId).toBe(scan.id);
+  });
+
+  it("admits a piece alone, a scan alone, and neither", async () => {
+    const scan = await seedScan({ ownerId: author.id });
+    const withPiece = await seedNote({ teacherId: author.id, origin: "self", pieceId: "seed_piece" });
+    const withScan = await seedNote({ teacherId: author.id, origin: "self", scoreScanId: scan.id });
+    const withNeither = await seedNote({ teacherId: author.id, origin: "self" });
+
+    expect(withPiece.pieceId).toBe("seed_piece");
+    expect(withPiece.scoreScanId).toBeNull();
+    expect(withScan.scoreScanId).toBe(scan.id);
+    expect(withScan.pieceId).toBeNull();
+    expect(withNeither.pieceId).toBeNull();
+    expect(withNeither.scoreScanId).toBeNull();
   });
 });
 

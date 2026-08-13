@@ -362,6 +362,8 @@ export const notes = pgTable("notes", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   check("ck_note_origin", sql`${t.origin} IN ('teacher', 'self')`),
+  // Neither is required; naming one forbids the other. The two attach guards are check-then-write, so only this closes the race.
+  check("ck_note_piece_excludes_scan", sql`${t.pieceId} IS NULL OR ${t.scoreScanId} IS NULL`),
   // Backstop for a real race: a deploy-drain window can run two workers on the same delivery — the loser hits this instead of double-inserting.
   uniqueIndex("uq_note_self_per_job").on(t.noteJobId).where(sql`${t.origin} = 'self'`),
   index("ix_notes_teacher_student_sent").on(t.teacherId, t.studentId, t.sentAt),
