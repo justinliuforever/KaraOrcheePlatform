@@ -35,6 +35,25 @@ Not fixed inside Slice 4 on purpose: the repair belongs to a screen every note u
 scan pane's own caption there would gain about ninety points against a bar that takes the screen —
 a change that would have looked like a fix and moved nothing.
 
+## "Mark done · Step 1 o…" truncates at DEFAULT text size (found 2026-08-13)
+
+Found by Slice 4's second gate, on the commonest axis there is: iPhone, portrait, default text size,
+light. The pill in `NoteActionRail` reads **`Mark done · Step 1 o…`** — shipped copy cut off with no
+accessibility size involved. Frame: `shots_s4_mounted/s4m-scanned-teacher-STEP_iphone_portrait_light_default.png`.
+
+Verified in source rather than inferred from the frame: `NotePlayerLayout.doneTitle`
+(`NotePhoneView.swift:315`) drops the counter only when `compact` is true, and `NoteActionRail` passes
+`compact: typeSize.isAccessibilitySize` — so at default size the long form is always chosen, inside an
+`HStack` that shares the row with two icon buttons.
+
+The code's own comment names the fix: *"Compact form drops the counter (header above already shows
+it)"* — and the header on that very frame reads `STEP 1 OF 2`. Either extend the compact form to phone
+width or let the label wrap.
+
+**Predates Slice 4 and belongs to the note's action rail, not the scan pane.** Filed rather than fixed
+inside that slice, and neither `S4_TRUTH_TABLE.md` nor the adversarial review had recorded it — so the
+app-wide landscape/AX5 ruling does not cover it. Founder's call whether it blocks the slice.
+
 ## Waiting on the founder
 
 | Item | What is blocked | Notes |
