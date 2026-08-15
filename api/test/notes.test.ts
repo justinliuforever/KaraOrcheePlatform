@@ -3272,7 +3272,7 @@ describe("wire key sets the shipped app decodes", () => {
       .get(`/v1/me/notes/${seeded.note.id}`).set("Authorization", `Bearer ${student.token}`);
     expect(keys(res.body)).toEqual(["annotations", "note", "teacher"]);
     expect(keys(res.body.note)).toEqual([
-      "content", "contentOriginal", "createdAt", "editedAt", "hasScore", "id", "lessonSessionId",
+      "content", "contentOriginal", "createdAt", "editedAt", "hasScore", "hasScorePhotos", "id", "lessonSessionId",
       "noteJobId", "origin", "pieceId", "pieceLabel", "pieceVersion", "readAt", "retractedAt",
       "scoreGone", "scorePageCount", "sentAt", "status", "studentId", "supersededBy", "teacherId",
       "updatedAt",
@@ -3459,7 +3459,7 @@ describe("PATCH /v1/me/notes/:id", () => {
     const { note } = await selfNote();
     const res = await patch(note.id, selfU.token, { scoreScanId: scan.id });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ hasScore: true, scorePageCount: 4, scoreGone: false });
+    expect(res.body).toEqual({ hasScorePhotos: true, hasScore: true, scorePageCount: 4, scoreGone: false });
     expect((await refs(note.id)).scanId).toBe(scan.id);
   });
 
@@ -3468,7 +3468,7 @@ describe("PATCH /v1/me/notes/:id", () => {
     const { note } = await selfNote({ scoreScanId: scan.id });
     const res = await patch(note.id, selfU.token, { scoreScanId: null });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ hasScore: false, scorePageCount: null, scoreGone: false });
+    expect(res.body).toEqual({ hasScorePhotos: false, hasScore: false, scorePageCount: null, scoreGone: false });
     expect((await refs(note.id)).scanId).toBeNull();
   });
 
@@ -3534,7 +3534,7 @@ describe("PATCH /v1/me/notes/:id", () => {
     expect(before.body.note.scoreGone).toBe(true);
 
     const attached = await patch(note.id, selfU.token, { scoreScanId: replacement.id });
-    expect(attached.body).toEqual({ hasScore: true, scorePageCount: 3, scoreGone: false });
+    expect(attached.body).toEqual({ hasScorePhotos: true, hasScore: true, scorePageCount: 3, scoreGone: false });
     expect((await refs(note.id)).detachedAt).toBeNull();
 
     const detached = await patch(note.id, selfU.token, { scoreScanId: null });
@@ -3809,17 +3809,24 @@ describe("derived score fields on the student note payload", () => {
     });
   });
 
-  it("reports hasScore false for a taken-down scan", async () => {
+  it("tells the reader a taken-down scan is gone instead of letting the pane vanish", async () => {
     const scan = await seedScan({ ownerId: derT.id, status: "taken_down", blobPath: null });
     expect(await detail({ scoreScanId: scan.id })).toMatchObject({
-      hasScore: false, scorePageCount: null, scoreGone: false,
+      hasScorePhotos: false, scorePageCount: null, scoreGone: true,
     });
   });
 
-  it("reports hasScore false when the bytes were purged from under a ready row", async () => {
+  it("tells the reader the bytes purged from under a ready row are gone", async () => {
     const scan = await seedScan({ ownerId: derT.id, status: "ready", blobPath: null });
     expect(await detail({ scoreScanId: scan.id })).toMatchObject({
-      hasScore: false, scorePageCount: null, scoreGone: false,
+      hasScorePhotos: false, scorePageCount: null, scoreGone: true,
+    });
+  });
+
+  it("leaves a scan that is still uploading absent rather than gone", async () => {
+    const scan = await seedScan({ ownerId: derT.id, status: "created", pageCount: 5 });
+    expect(await detail({ scoreScanId: scan.id })).toMatchObject({
+      hasScorePhotos: false, scorePageCount: null, scoreGone: false,
     });
   });
 

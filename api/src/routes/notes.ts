@@ -158,15 +158,21 @@ function strippedForStudent(note: NoteRow): Pick<NoteRow, (typeof STUDENT_NOTE_K
 }
 
 interface ScoreFields {
+  hasScorePhotos: boolean;
+  // Sent beside the new name until every installed build reads that one; dropping it early makes the pane vanish on an old app, which is the silence this function was fixed for.
   hasScore: boolean;
   scorePageCount: number | null;
   scoreGone: boolean;
 }
 
+function scoreFields(photos: boolean, pageCount: number | null, gone: boolean): ScoreFields {
+  return { hasScorePhotos: photos, hasScore: photos, scorePageCount: pageCount, scoreGone: gone };
+}
+
 // Resolved from the scan row, never from the pointer alone — a client must never render a viewer over bytes the image route would then refuse.
 async function scoreFieldsFor(deps: Deps, note: NoteRow): Promise<ScoreFields> {
   if (!note.scoreScanId) {
-    return { hasScore: false, scorePageCount: null, scoreGone: note.scoreScanDetachedAt !== null };
+    return scoreFields(false, null, note.scoreScanDetachedAt !== null);
   }
   const [scan] = await deps
     .db!.orm.select({
@@ -178,7 +184,9 @@ async function scoreFieldsFor(deps: Deps, note: NoteRow): Promise<ScoreFields> {
     .where(eq(scoreScans.id, note.scoreScanId))
     .limit(1);
   const ready = scan?.status === "ready" && scan.blobPath !== null;
-  return { hasScore: ready, scorePageCount: ready ? scan!.pageCount : null, scoreGone: false };
+  // `created` is still on its way and must stay absent; these three can never be served again, and a reader who already had the pages must be told rather than watch the pane disappear.
+  const gone = !scan || scan.status === "taken_down" || (scan.status === "ready" && scan.blobPath === null);
+  return scoreFields(ready, ready ? scan!.pageCount : null, gone);
 }
 
 // A scan someone else owns is not an error to explain — it is a scan that does not exist for this caller.
