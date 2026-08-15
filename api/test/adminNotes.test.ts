@@ -1092,3 +1092,53 @@ describe("admin takedown of a score scan", () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe("score scans on the user activity surface", () => {
+  it("shows that a scan exists, its shape, and who points at it — and never a way to read it", async () => {
+    const owner = await mkUser();
+    const [scan] = await db.orm.insert(scoreScans).values({
+      ownerId: owner.id, title: "Op. 599 No. 31", pageCount: 3, bytes: 240_000,
+      blobPath: `score-scans/${owner.id}/x/`, status: "ready",
+    }).returning();
+    const res = await request(app()).get(`/admin/users/${owner.id}/notes-activity`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    const [row] = res.body.scoreScans;
+    expect(row).toMatchObject({
+      id: scan.id, title: "Op. 599 No. 31", status: "ready",
+      pageCount: 3, bytes: 240_000, hasBytes: true, referencedBy: 0,
+    });
+    expect(JSON.stringify(row)).not.toContain("blobPath");
+    expect(JSON.stringify(row)).not.toContain("http");
+  });
+
+  it("counts the notes that point at a scan", async () => {
+    const teacher = await mkUser({ isTeacher: true });
+    const student = await mkUser({ isStudent: true });
+    const [scan] = await db.orm.insert(scoreScans).values({
+      ownerId: teacher.id, title: "Shared", pageCount: 1,
+      blobPath: `score-scans/${teacher.id}/y/`, status: "ready",
+    }).returning();
+    for (let i = 0; i < 2; i += 1) {
+      await db.orm.insert(notes).values({
+        teacherId: teacher.id, studentId: student.id, status: "sent", sentAt: new Date(),
+        scoreScanId: scan.id, content: {}, contentOriginal: {},
+      } as never);
+    }
+    const res = await request(app()).get(`/admin/users/${teacher.id}/notes-activity`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.body.scoreScans[0].referencedBy).toBe(2);
+  });
+
+  it("shows a taken-down scan as taken down with no bytes behind it", async () => {
+    const owner = await mkUser();
+    await db.orm.insert(scoreScans).values({
+      ownerId: owner.id, title: "Gone", pageCount: 2,
+      blobPath: null, status: "taken_down", takenDownAt: new Date(),
+    }).returning();
+    const res = await request(app()).get(`/admin/users/${owner.id}/notes-activity`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.body.scoreScans[0]).toMatchObject({ status: "taken_down", hasBytes: false });
+    expect(res.body.scoreScans[0].takenDownAt).not.toBeNull();
+  });
+});

@@ -894,6 +894,18 @@ export interface NotesActivity {
     isAdmin: boolean;
     status: string;
   };
+  // Metadata only by design — there is no read URL for a scan anywhere in this console.
+  scoreScans: {
+    id: string;
+    title: string;
+    status: string;
+    pageCount: number;
+    bytes: number | null;
+    createdAt: string;
+    takenDownAt: string | null;
+    hasBytes: boolean;
+    referencedBy: number;
+  }[];
   links: {
     asTeacher: {
       id: string;
@@ -1012,4 +1024,8 @@ export function getNoteModelOutput(id: string, reason: string): Promise<NoteMode
 
 export function getNotesActivity(userId: string): Promise<NotesActivity> {
   return api(`/admin/users/${userId}/notes-activity`);
+}
+
+export function takeDownScoreScan(id: string, reason: string): Promise<{ ok: true; notesDetached: number }> {
+  return api(`/admin/score-scans/${id}/takedown`, { method: "POST", body: JSON.stringify({ reason }) });
 }

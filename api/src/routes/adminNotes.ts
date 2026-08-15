@@ -883,6 +883,23 @@ export function adminNotesRouter(deps: Deps): Router {
         .select({ count: sql<number>`count(*)::int` })
         .from(notes)
         .where(and(eq(notes.studentId, id), eq(notes.status, "sent")));
+      // Metadata only, never a read URL: §13 draws the same line adminNotes already draws for
+      // transcripts — the operator sees that a scan exists, not the scan.
+      const scans = await db
+        .select({
+          id: scoreScans.id,
+          title: scoreScans.title,
+          status: scoreScans.status,
+          pageCount: scoreScans.pageCount,
+          bytes: scoreScans.bytes,
+          createdAt: scoreScans.createdAt,
+          takenDownAt: scoreScans.takenDownAt,
+          hasBytes: sql<boolean>`${scoreScans.blobPath} IS NOT NULL`,
+          referencedBy: sql<number>`(SELECT count(*)::int FROM notes n WHERE n.score_scan_id = score_scans.id)`,
+        })
+        .from(scoreScans)
+        .where(eq(scoreScans.ownerId, id))
+        .orderBy(desc(scoreScans.createdAt));
       const access = await notesAccess(deps, user);
       res.json({
         user: {
@@ -897,6 +914,7 @@ export function adminNotesRouter(deps: Deps): Router {
         },
         links: { asTeacher: linksAsTeacher, asStudent: linksAsStudent },
         invitesIssued,
+        scoreScans: scans,
         lessons: {
           count: lessonCount?.count ?? 0,
           recordedAsTeacher: lessonCount?.recordedAsTeacher ?? 0,

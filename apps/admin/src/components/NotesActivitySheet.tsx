@@ -1,5 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
-import { getNotesActivity, type NotesAccess, type NotesActivity } from "../api";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { getNotesActivity, takeDownScoreScan, type NotesAccess, type NotesActivity } from "../api";
 import { ErrorNote, PanelSection, Spinner } from "./ui";
 import StatusTag from "./StatusTag";
 import ToneBadge from "./ToneBadge";
@@ -36,8 +37,10 @@ function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString();
 }
 
-/** Read-only notes-activity aggregate for one account, opened from a pairing /
- * invite / entitlement row. No mutations — a diagnostic panel only. */
+/** Notes-activity aggregate for one account, opened from a pairing / invite / entitlement row.
+ * Diagnostic apart from one action: a score scan can be taken down here, because §13 puts the
+ * rights-complaint path on the surface that already shows the scan rather than on a tab of its own.
+ * Metadata only — this console has no route that reads a scan's pages. */
 export default function NotesActivitySheet({ userId, onClose }: { userId: string; onClose: () => void }) {
   const q = useQuery<NotesActivity, Error>({
     queryKey: ["notes-activity", userId],
@@ -46,6 +49,17 @@ export default function NotesActivitySheet({ userId, onClose }: { userId: string
 
   const d = q.data;
   const u = d?.user;
+  const qc = useQueryClient();
+  const [takingDown, setTakingDown] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
+  const takedown = useMutation({
+    mutationFn: ({ id, why }: { id: string; why: string }) => takeDownScoreScan(id, why),
+    onSuccess: () => {
+      setTakingDown(null);
+      setReason("");
+      void qc.invalidateQueries({ queryKey: ["notes-activity", userId] });
+    },
+  });
 
   return (
     <SlideOver
@@ -151,6 +165,73 @@ export default function NotesActivitySheet({ userId, onClose }: { userId: string
                   <span key={p} className="rounded-full bg-paper px-2 py-0.5 text-xs text-ink-soft">
                     {p}
                   </span>
+                ))}
+              </div>
+            )}
+          </PanelSection>
+
+
+          <PanelSection title="Score photos" badge={`${d.scoreScans.length}`}>
+            {d.scoreScans.length === 0 ? (
+              <p className="text-[11px] text-ink-faint">This account has photographed no scores.</p>
+            ) : (
+              <div className="space-y-2">
+                {d.scoreScans.map((s) => (
+                  <div key={s.id} className="rounded border border-line p-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm truncate">{s.title}</p>
+                        <p className="text-[11px] text-ink-faint tabular-nums">
+                          {s.pageCount} page{s.pageCount === 1 ? "" : "s"}
+                          {s.bytes != null && ` · ${Math.round(s.bytes / 1024)} KB`}
+                          {` · ${fmtDate(s.createdAt)}`}
+                          {` · ${s.referencedBy} note${s.referencedBy === 1 ? "" : "s"}`}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <StatusTag value={s.status} />
+                        {s.status !== "taken_down" && (
+                          <button
+                            className="text-[11px] text-bad underline"
+                            onClick={() => { setTakingDown(s.id); setReason(""); }}
+                          >
+                            Take down…
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {s.status === "taken_down" && !s.hasBytes && (
+                      <p className="text-[11px] text-ink-faint mt-1">Pages destroyed{s.takenDownAt && ` ${fmtDate(s.takenDownAt)}`}.</p>
+                    )}
+                    {takingDown === s.id && (
+                      <div className="mt-2 space-y-2">
+                        <p className="text-[11px] text-bad">
+                          This destroys the photographed pages and cannot be undone. It removes them from
+                          every note that shows them — {s.referencedBy} right now — and the owner keeps a row
+                          on their shelf saying the score was taken down.
+                        </p>
+                        <input
+                          className="w-full rounded border border-line px-2 py-1 text-xs"
+                          placeholder="Reason (at least 10 characters) — this is the accountability record"
+                          value={reason}
+                          onChange={(e) => setReason(e.target.value)}
+                        />
+                        {takedown.isError && <ErrorNote message={(takedown.error as Error).message} />}
+                        <div className="flex gap-2">
+                          <button
+                            className="text-[11px] text-bad underline disabled:opacity-40"
+                            disabled={reason.trim().length < 10 || takedown.isPending}
+                            onClick={() => takedown.mutate({ id: s.id, why: reason.trim() })}
+                          >
+                            {takedown.isPending ? "Taking down…" : "Take down these pages"}
+                          </button>
+                          <button className="text-[11px] underline" onClick={() => setTakingDown(null)}>
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 ))}
               </div>
             )}
