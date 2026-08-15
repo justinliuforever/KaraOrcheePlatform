@@ -41,6 +41,41 @@ export async function stampAndDeleteScans(
   return rowsOf(result).map((row) => ({ id: String(row.id) }));
 }
 
+export interface TakenDownScan {
+  id: string;
+  ownerId: string;
+  notesDetached: number;
+}
+
+// The row SURVIVES, unlike an owner delete: the owner is entitled to find out on their own shelf what happened to their file. One statement, for the same reason as above.
+export async function takeDownScan(tx: Tx, scanId: string): Promise<TakenDownScan | null> {
+  const result = await tx.execute(sql`
+    WITH taken AS (
+      UPDATE ${scoreScans}
+      SET status = 'taken_down', taken_down_at = now(), blob_prefix = NULL, updated_at = now()
+      WHERE ${scoreScans.id} = ${scanId} AND ${scoreScans.status} <> 'taken_down'
+      RETURNING ${scoreScans.id} AS id, ${scoreScans.ownerId} AS owner_id
+    ), detached AS (
+      UPDATE ${notes}
+      SET score_scan_id = NULL,
+          score_scan_detached_at = CASE
+            WHEN ${notes.readAt} IS NOT NULL AND ${notes.status} IN ('sent', 'retracted')
+            THEN now() ELSE ${notes.scoreScanDetachedAt} END,
+          updated_at = now()
+      WHERE ${notes.scoreScanId} IN (SELECT id FROM taken)
+      RETURNING ${notes.id} AS id
+    )
+    SELECT taken.id, taken.owner_id, (SELECT count(*) FROM detached) AS notes_detached FROM taken
+  `);
+  const [row] = rowsOf(result);
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    ownerId: String(row.owner_id),
+    notesDetached: Number(row.notes_detached ?? 0),
+  };
+}
+
 // Both prefixes unconditionally: a commit that died between its promotes and the row flip leaves durable bytes under a row whose blob_prefix is still null.
 export function scanPurgePrefixes(
   store: ScanStore,

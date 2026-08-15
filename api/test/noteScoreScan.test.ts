@@ -30,7 +30,7 @@ const AUDIENCE = "api://karaorchee";
 const KID = "test-key";
 
 const STUDENT_NOTE_WIRE_KEYS = [
-  "content", "contentOriginal", "createdAt", "editedAt", "hasScore", "id", "lessonSessionId",
+  "content", "contentOriginal", "createdAt", "editedAt", "hasScore", "hasScorePhotos", "id", "lessonSessionId",
   "noteJobId", "origin", "pieceId", "pieceLabel", "pieceVersion", "readAt", "retractedAt",
   "scoreGone", "scorePageCount", "sentAt", "status", "studentId", "supersededBy", "teacherId",
   "updatedAt",
@@ -526,7 +526,7 @@ describe("PATCH /v1/me/notes/:id — the student's own note", () => {
     const res = await patchSelf(note.id, solo.token, { scoreScanId: scan.id });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ hasScore: true, scorePageCount: 5, scoreGone: false });
+    expect(res.body).toEqual({ hasScorePhotos: true, hasScore: true, scorePageCount: 5, scoreGone: false });
     const after = await refs(note.id);
     expect(after.scanId).toBe(scan.id);
     expect(after.status).toBe("sent");
@@ -549,7 +549,7 @@ describe("PATCH /v1/me/notes/:id — the student's own note", () => {
     const res = await patchSelf(note.id, solo.token, { scoreScanId: null });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ hasScore: false, scorePageCount: null, scoreGone: false });
+    expect(res.body).toEqual({ hasScorePhotos: false, hasScore: false, scorePageCount: null, scoreGone: false });
     expect((await refs(note.id)).scanId).toBeNull();
   });
 
@@ -1465,19 +1465,27 @@ describe("the derived score fields", () => {
     });
   });
 
-  it("reports no score for a taken-down scan", async () => {
+  it("tells the reader a taken-down scan is gone rather than letting the pane vanish", async () => {
     const scan = await seedScan({ ownerId: teacher.id, status: "taken_down", blobPath: null });
 
     expect(await detail({ scoreScanId: scan.id })).toMatchObject({
-      hasScore: false, scorePageCount: null, scoreGone: false,
+      hasScorePhotos: false, scorePageCount: null, scoreGone: true,
     });
   });
 
-  it("reports no score when a ready row lost its bytes", async () => {
+  it("tells the reader a ready row that lost its bytes is gone", async () => {
     const scan = await seedScan({ ownerId: teacher.id, status: "ready", blobPath: null });
 
     expect(await detail({ scoreScanId: scan.id })).toMatchObject({
-      hasScore: false, scorePageCount: null, scoreGone: false,
+      hasScorePhotos: false, scorePageCount: null, scoreGone: true,
+    });
+  });
+
+  it("leaves a scan still uploading absent rather than gone", async () => {
+    const scan = await seedScan({ ownerId: teacher.id, status: "created" });
+
+    expect(await detail({ scoreScanId: scan.id })).toMatchObject({
+      hasScorePhotos: false, scorePageCount: null, scoreGone: false,
     });
   });
 

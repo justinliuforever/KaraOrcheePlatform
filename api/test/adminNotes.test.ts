@@ -21,6 +21,7 @@ import {
   noteJobs,
   notes,
   auditEvents,
+  scoreScans,
 } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { NotesQueue } from "../src/queue";
@@ -1000,5 +1001,94 @@ describe("admin actions honour the label's lifetime", () => {
       .send({ teacherId: t.id, studentId: s.id });
     expect(res.status).toBe(200);
     expect(res.body.link.rejoinedAt).toBeNull();
+  });
+});
+
+describe("admin takedown of a score scan", () => {
+  const deleted: string[] = [];
+  const fakeScans = {
+    incomingPath: () => "", incomingPrefix: (o: string, s: string) => `score-scans/${o}/${s}/incoming/`,
+    blobPath: () => "", blobPrefix: (o: string, s: string) => `score-scans/${o}/${s}/`,
+    uploadUrl: () => "", pageProps: async () => null, readHead: async () => null,
+    promote: async () => {}, readUrl: () => "",
+    deletePrefix: async (prefix: string) => { deleted.push(prefix); },
+  };
+  const takedownApp = () => app({ scans: fakeScans as never });
+
+  async function seedScan(ownerId: string, over: Partial<typeof scoreScans.$inferInsert> = {}) {
+    const [row] = await db.orm.insert(scoreScans).values({
+      ownerId, title: "Op. 599 No. 31", pageCount: 3,
+      blobPath: `score-scans/${ownerId}/x/`, status: "ready", ...over,
+    }).returning();
+    return row;
+  }
+
+  beforeEach(() => { deleted.length = 0; });
+
+  it("refuses without a reason long enough to be an accountability record", async () => {
+    const owner = await mkUser();
+    const scan = await seedScan(owner.id);
+    const res = await request(takedownApp()).post(`/admin/score-scans/${scan.id}/takedown`)
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "no" });
+    expect(res.status).toBe(400);
+    const [after] = await db.orm.select().from(scoreScans).where(eq(scoreScans.id, scan.id));
+    expect(after.status).toBe("ready");
+  });
+
+  it("refuses an account that is not an admin", async () => {
+    const owner = await mkUser();
+    const scan = await seedScan(owner.id);
+    const res = await request(takedownApp()).post(`/admin/score-scans/${scan.id}/takedown`)
+      .set("Authorization", `Bearer ${plainToken}`).send({ reason: "rights complaint from the publisher" });
+    expect(res.status).toBe(403);
+  });
+
+  it("keeps the owner's row so their shelf can say what happened", async () => {
+    const owner = await mkUser();
+    const scan = await seedScan(owner.id);
+    const res = await request(takedownApp()).post(`/admin/score-scans/${scan.id}/takedown`)
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "rights complaint from the publisher" });
+    expect(res.status).toBe(200);
+    const [after] = await db.orm.select().from(scoreScans).where(eq(scoreScans.id, scan.id));
+    expect(after.status).toBe("taken_down");
+    expect(after.takenDownAt).not.toBeNull();
+    expect(after.blobPath).toBeNull();
+  });
+
+  it("destroys the bytes under both prefixes", async () => {
+    const owner = await mkUser();
+    const scan = await seedScan(owner.id);
+    await request(takedownApp()).post(`/admin/score-scans/${scan.id}/takedown`)
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "rights complaint from the publisher" });
+    expect(deleted).toEqual([
+      `score-scans/${owner.id}/${scan.id}/`,
+      `score-scans/${owner.id}/${scan.id}/incoming/`,
+    ]);
+  });
+
+  it("leaves the audit row behind even when destroying the bytes throws", async () => {
+    const owner = await mkUser();
+    const scan = await seedScan(owner.id);
+    const throwing = () => app({ scans: { ...fakeScans, deletePrefix: async () => { throw new Error("blob down"); } } as never });
+    await request(throwing()).post(`/admin/score-scans/${scan.id}/takedown`)
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "rights complaint from the publisher" });
+    const rows = await db.orm.select().from(auditEvents)
+      .where(and(eq(auditEvents.action, "score_scan.takedown"), eq(auditEvents.subjectId, scan.id)));
+    expect(rows).toHaveLength(1);
+    expect((rows[0].detail as Record<string, unknown>).reason).toBe("rights complaint from the publisher");
+  });
+
+  it("refuses to take the same scan down twice", async () => {
+    const owner = await mkUser();
+    const scan = await seedScan(owner.id, { status: "taken_down" });
+    const res = await request(takedownApp()).post(`/admin/score-scans/${scan.id}/takedown`)
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "rights complaint from the publisher" });
+    expect(res.status).toBe(409);
+  });
+
+  it("answers 404 for a scan that does not exist", async () => {
+    const res = await request(takedownApp()).post(`/admin/score-scans/${crypto.randomUUID()}/takedown`)
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "rights complaint from the publisher" });
+    expect(res.status).toBe(404);
   });
 });

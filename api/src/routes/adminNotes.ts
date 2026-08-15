@@ -14,9 +14,11 @@ import {
   noteJobs,
   notes,
   platformConfig,
+  scoreScans,
   teacherStudentLinks,
   users,
 } from "../db/schema";
+import { scanPurgePrefixes, takeDownScan } from "../notes/scan_delete";
 
 const MONETIZATION_KEY = "monetization_live_at";
 const ENTITLEMENT_SOURCES = ["trial", "apple_iap", "admin_grant", "org"];
@@ -578,6 +580,47 @@ export function adminNotesRouter(deps: Deps): Router {
           : null,
         notes: producedNotes,
       });
+    }),
+  );
+
+  // A rights complaint stops the serving; it does not destroy the owner's row, and §13 rules out any
+  // admin path that would read the pages.
+  router.post(
+    "/admin/score-scans/:id/takedown",
+    wrap(async (req, res) => {
+      const db = deps.db!.orm;
+      const id = String(req.params.id);
+      const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+      if (reason.length < 10) {
+        res.status(400).json({ error: "reason_required", message: "A reason of at least 10 characters is required to take a score down." });
+        return;
+      }
+      if (!deps.scans) {
+        res.status(503).json({ error: "storage_not_configured" });
+        return;
+      }
+      const [scan] = await db.select({ id: scoreScans.id, status: scoreScans.status })
+        .from(scoreScans).where(eq(scoreScans.id, id)).limit(1);
+      if (!scan) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (scan.status === "taken_down") {
+        res.status(409).json({ error: "already_taken_down" });
+        return;
+      }
+      // Audited before acting, so a takedown that dies half way is still on the record.
+      await audit(deps, req, "score_scan.takedown", { type: "score_scan", id }, { reason });
+      const taken = await db.transaction((tx) => takeDownScan(tx, id));
+      if (!taken) {
+        res.status(409).json({ error: "already_taken_down" });
+        return;
+      }
+      const store = deps.scans;
+      for (const prefix of scanPurgePrefixes(store, taken.ownerId, [{ id: taken.id }])) {
+        await store.deletePrefix(prefix);
+      }
+      res.json({ ok: true, notesDetached: taken.notesDetached });
     }),
   );
 
