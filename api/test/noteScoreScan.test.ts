@@ -30,7 +30,7 @@ const AUDIENCE = "api://karaorchee";
 const KID = "test-key";
 
 const STUDENT_NOTE_WIRE_KEYS = [
-  "content", "contentOriginal", "createdAt", "editedAt", "hasScore", "hasScorePhotos", "id", "lessonSessionId",
+  "content", "contentOriginal", "createdAt", "editedAt", "hasScorePhotos", "id", "lessonSessionId",
   "noteJobId", "origin", "pieceId", "pieceLabel", "pieceVersion", "readAt", "retractedAt",
   "scoreGone", "scorePageCount", "sentAt", "status", "studentId", "supersededBy", "teacherId",
   "updatedAt",
@@ -526,7 +526,7 @@ describe("PATCH /v1/me/notes/:id — the student's own note", () => {
     const res = await patchSelf(note.id, solo.token, { scoreScanId: scan.id });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ hasScorePhotos: true, hasScore: true, scorePageCount: 5, scoreGone: false });
+    expect(res.body).toEqual({ hasScorePhotos: true, scorePageCount: 5, scoreGone: false });
     const after = await refs(note.id);
     expect(after.scanId).toBe(scan.id);
     expect(after.status).toBe("sent");
@@ -549,7 +549,7 @@ describe("PATCH /v1/me/notes/:id — the student's own note", () => {
     const res = await patchSelf(note.id, solo.token, { scoreScanId: null });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ hasScorePhotos: false, hasScore: false, scorePageCount: null, scoreGone: false });
+    expect(res.body).toEqual({ hasScorePhotos: false, scorePageCount: null, scoreGone: false });
     expect((await refs(note.id)).scanId).toBeNull();
   });
 
@@ -843,7 +843,7 @@ describe("naming a piece detaches the scan — the invariant at every writer of 
     expect(after.scanId).toBeNull();
     expect(after.detachedAt).toBeNull();
     const detail = await getDetail(note.id, soloAuthor.token);
-    expect(detail.body.note).toMatchObject({ hasScore: false, scorePageCount: null, scoreGone: false });
+    expect(detail.body.note).toMatchObject({ hasScorePhotos: false, scorePageCount: null, scoreGone: false });
     expect((await libraryRow(scan.id))!.status).toBe("ready");
   });
 
@@ -1453,7 +1453,7 @@ describe("the derived score fields", () => {
     const scan = await seedScan({ ownerId: teacher.id, pageCount: 7 });
 
     expect(await detail({ scoreScanId: scan.id })).toMatchObject({
-      hasScore: true, scorePageCount: 7, scoreGone: false,
+      hasScorePhotos: true, scorePageCount: 7, scoreGone: false,
     });
   });
 
@@ -1461,7 +1461,7 @@ describe("the derived score fields", () => {
     const scan = await seedScan({ ownerId: teacher.id, status: "created", pageCount: 5 });
 
     expect(await detail({ scoreScanId: scan.id })).toMatchObject({
-      hasScore: false, scorePageCount: null, scoreGone: false,
+      hasScorePhotos: false, scorePageCount: null, scoreGone: false,
     });
   });
 
@@ -1491,7 +1491,7 @@ describe("the derived score fields", () => {
 
   it("reports scoreGone only when the reference is null and the marker is stamped", async () => {
     expect(await detail({ scoreScanId: null, scoreScanDetachedAt: daysAgo(1) })).toMatchObject({
-      hasScore: false, scorePageCount: null, scoreGone: true,
+      hasScorePhotos: false, scorePageCount: null, scoreGone: true,
     });
   });
 
@@ -1499,13 +1499,13 @@ describe("the derived score fields", () => {
     const scan = await seedScan({ ownerId: teacher.id, pageCount: 3 });
 
     expect(await detail({ scoreScanId: scan.id, scoreScanDetachedAt: daysAgo(1) })).toMatchObject({
-      hasScore: true, scorePageCount: 3, scoreGone: false,
+      hasScorePhotos: true, scorePageCount: 3, scoreGone: false,
     });
   });
 
   it("reports all three empty on a note that never had a score", async () => {
     expect(await detail({})).toMatchObject({
-      hasScore: false, scorePageCount: null, scoreGone: false,
+      hasScorePhotos: false, scorePageCount: null, scoreGone: false,
     });
   });
 });
@@ -1540,7 +1540,7 @@ describe("attach, send, read, delete — the whole chain through the shipped rou
     expect(read.status).toBe(200);
 
     const before = await getDetail(note.id, chainStudent.token);
-    expect(before.body.note).toMatchObject({ hasScore: true, scorePageCount: 2, scoreGone: false });
+    expect(before.body.note).toMatchObject({ hasScorePhotos: true, scorePageCount: 2, scoreGone: false });
     expect((await getScoreScan(note.id, chainStudent.token)).status).toBe(200);
 
     const deleted = await request(makeApp())
@@ -1549,7 +1549,7 @@ describe("attach, send, read, delete — the whole chain through the shipped rou
     expect(deleted.status).toBe(200);
 
     const after = await getDetail(note.id, chainStudent.token);
-    expect(after.body.note).toMatchObject({ hasScore: false, scorePageCount: null, scoreGone: true });
+    expect(after.body.note).toMatchObject({ hasScorePhotos: false, scorePageCount: null, scoreGone: true });
     const pages = await getScoreScan(note.id, chainStudent.token);
     expect(pages.status).toBe(410);
     expect(pages.body.error).toBe("scan_gone");
@@ -1585,7 +1585,7 @@ describe("attach, send, read, delete — the whole chain through the shipped rou
       .set("Authorization", `Bearer ${teacher.token}`);
 
     const after = await getDetail(note.id, quietStudent.token);
-    expect(after.body.note).toMatchObject({ hasScore: false, scorePageCount: null, scoreGone: false });
+    expect(after.body.note).toMatchObject({ hasScorePhotos: false, scorePageCount: null, scoreGone: false });
     const pages = await getScoreScan(note.id, quietStudent.token);
     expect(pages.status).toBe(404);
   });

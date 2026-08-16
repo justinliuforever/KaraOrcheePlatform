@@ -374,11 +374,3 @@ are its records.
 - **The model does not invent bar numbers.** A lesson with zero spoken bar numbers but 24 spoken numerals (a teacher counting beats) produced 5 annotations and 0 placements; one annotation quoting "One, two, three. On each beat you have one note." was classified as a deixis reference, not a bar.
 - **Authenticated responses carry `no-store` and `Vary: Authorization`**, set in `requireAuth` so every future authenticated route inherits them. Verified against the deployed revision, not only in tests.
 
-- **`hasScore` is sent beside `hasScorePhotos`, and the old key has a teardown condition, not a "later".**
-  `scoreFieldsFor` (`api/src/routes/notes.ts`) emits both names for the same boolean. The old one exists
-  only so an installed build that decodes `hasScore` does not lose its score pane the day the server
-  renames the field — which is the same silence the `scoreGone` fix in that function was written for.
-  **Remove `hasScore` from `ScoreFields` and from both test files once every device in use runs app
-  `3f9a0a8` or later** — that build reads `hasScorePhotos` first and falls back, so it is safe under
-  either server. Today that is the founder's iPhone and one colleague's; check both, then delete. Until
-  then the wire carries two names for one field, and that ambiguity is the debt being tracked here.

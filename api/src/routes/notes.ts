@@ -159,14 +159,12 @@ function strippedForStudent(note: NoteRow): Pick<NoteRow, (typeof STUDENT_NOTE_K
 
 interface ScoreFields {
   hasScorePhotos: boolean;
-  // Sent beside the new name until every installed build reads that one; dropping it early makes the pane vanish on an old app, which is the silence this function was fixed for.
-  hasScore: boolean;
   scorePageCount: number | null;
   scoreGone: boolean;
 }
 
 function scoreFields(photos: boolean, pageCount: number | null, gone: boolean): ScoreFields {
-  return { hasScorePhotos: photos, hasScore: photos, scorePageCount: pageCount, scoreGone: gone };
+  return { hasScorePhotos: photos, scorePageCount: pageCount, scoreGone: gone };
 }
 
 // Resolved from the scan row, never from the pointer alone — a client must never render a viewer over bytes the image route would then refuse.
