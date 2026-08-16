@@ -1670,13 +1670,13 @@ describe("POST /v1/lessons — the score photographed at the start of the lesson
     expect(res.body.error).toBe("not_found");
   });
 
-  it("refuses a scan whose pages are still uploading", async () => {
+  it("takes a scan whose pages are still uploading, as the note patch does", async () => {
     const scan = await seedScan({ ownerId: teacher.id, status: "created" });
 
     const res = await createLesson(teacher.token, { scoreScanId: scan.id });
 
-    expect(res.status).toBe(409);
-    expect(res.body.error).toBe("scan_not_ready");
+    expect(res.status).toBe(201);
+    expect(res.body.lesson.scoreScanId).toBe(scan.id);
   });
 
   it("refuses a scan that was taken down", async () => {

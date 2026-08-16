@@ -145,11 +145,11 @@ type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
 
 type ScanCheck =
   | { kind: "ok"; id: string | null }
-  | { kind: "miss" }
-  | { kind: "not_ready" };
+  | { kind: "miss" };
 
 // A scan someone else owns, or one taken down, is not an error to explain — it is a scan that does not exist for this caller.
-async function ownedReadyScan(db: Orm, ownerId: string, value: unknown): Promise<ScanCheck> {
+// Readiness is deliberately NOT required: a scan has its id before its first page uploads, and PATCH /v1/notes/:id accepts one too.
+async function ownedScan(db: Orm, ownerId: string, value: unknown): Promise<ScanCheck> {
   if (value === null || value === undefined) return { kind: "ok", id: null };
   if (!isUuid(value)) return { kind: "miss" };
   const [scan] = await db
@@ -158,7 +158,6 @@ async function ownedReadyScan(db: Orm, ownerId: string, value: unknown): Promise
     .where(and(eq(scoreScans.id, value), eq(scoreScans.ownerId, ownerId)))
     .limit(1);
   if (!scan || scan.status === "taken_down") return { kind: "miss" };
-  if (scan.status !== "ready") return { kind: "not_ready" };
   return { kind: "ok", id: scan.id };
 }
 
@@ -325,13 +324,9 @@ export function lessonsRouter(deps: Deps): Router {
           return;
         }
       }
-      const scan = await ownedReadyScan(db, me.id, body.scoreScanId);
+      const scan = await ownedScan(db, me.id, body.scoreScanId);
       if (scan.kind === "miss") {
         res.status(404).json({ error: "not_found" });
-        return;
-      }
-      if (scan.kind === "not_ready") {
-        res.status(409).json({ error: "scan_not_ready" });
         return;
       }
       if (scan.id && pieceId) {
