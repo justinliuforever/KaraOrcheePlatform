@@ -11,6 +11,7 @@ import {
   type OpsLogsResponse,
 } from "../api";
 import { ErrorNote, PageHeader } from "../components/ui";
+import { getStalledScans } from "../api";
 import { Button } from "@/components/ui-kit/button";
 import { Card } from "@/components/ui-kit/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui-kit/tabs";
@@ -39,12 +40,14 @@ export default function OpsPage() {
   const state = useMemo(() => parseOpsState(params), [params]);
   // notes-jobs is a self-contained lane, not an OpsState view — read straight off params.
   const isNotesJobs = params.get("view") === "notes-jobs";
-  const activeTab = isNotesJobs ? "notes-jobs" : state.view;
+  const isStalledScans = params.get("view") === "stalled-scans";
+  const activeTab = isNotesJobs ? "notes-jobs" : isStalledScans ? "stalled-scans" : state.view;
 
   // Tabs are state seeds: switching rewrites the query string to that view's defaults.
   const switchView = (v: string) => {
     if (v === activeTab) return;
     if (v === "notes-jobs") setParams({ view: "notes-jobs" });
+    else if (v === "stalled-scans") setParams({ view: "stalled-scans", hours: "6" });
     else if (v === "queue") setParams({ view: "queue" });
     else if (v === "errors") setParams({ view: "errors", severity: "error", range: "24h" });
     else setParams({ view: "logs", range: "1h" });
@@ -54,8 +57,8 @@ export default function OpsPage() {
     <>
       <PageHeader
         title="Ops"
-        subtitle="Logs, request timelines, queue health, and notes jobs"
-        right={isNotesJobs ? undefined : <SavedViews />}
+        subtitle="Logs, request timelines, queue health, notes jobs, and uploads that stopped"
+        right={isNotesJobs || isStalledScans ? undefined : <SavedViews />}
       />
       <div className="mb-4">
         <Tabs value={activeTab} onValueChange={switchView}>
@@ -64,10 +67,13 @@ export default function OpsPage() {
             <TabsTrigger value="errors">Errors</TabsTrigger>
             <TabsTrigger value="queue">Queue</TabsTrigger>
             <TabsTrigger value="notes-jobs">Notes Jobs</TabsTrigger>
+            <TabsTrigger value="stalled-scans">Stalled Scans</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
-      {isNotesJobs ? (
+      {isStalledScans ? (
+        <StalledScansView params={params} setParams={setParams} />
+      ) : isNotesJobs ? (
         <NotesJobsView />
       ) : state.view === "queue" ? (
         <QueuePanel />
@@ -75,6 +81,59 @@ export default function OpsPage() {
         <LogsView state={state} params={params} setParams={setParams} />
       )}
     </>
+  );
+}
+
+/** A scan whose pages may already be in storage but whose commit never ran: the one failure in this
+ * feature that is silent on the server as well as on the phone. */
+function StalledScansView({ params, setParams }: { params: URLSearchParams; setParams: SetURLSearchParams }) {
+  const hours = Number(params.get("hours") ?? 6) || 6;
+  const q = useQuery({
+    queryKey: ["stalled-scans", hours],
+    queryFn: () => getStalledScans(hours),
+    placeholderData: keepPreviousData,
+  });
+  return (
+    <Card className="p-4">
+      <div className="flex items-center gap-3 mb-3">
+        <span className="text-[11px] text-ink-faint">Not committed for at least</span>
+        {[1, 6, 24, 72].map((h) => (
+          <button key={h}
+            className={cn("text-[11px] underline", h === hours ? "font-semibold" : "text-ink-faint")}
+            onClick={() => setParams({ view: "stalled-scans", hours: String(h) })}>
+            {h}h
+          </button>
+        ))}
+      </div>
+      {q.isError && <ErrorNote message={(q.error as Error).message} />}
+      {q.data && q.data.scans.length === 0 && (
+        <p className="text-[11px] text-ink-faint">
+          Nothing has stopped short of its commit in that window.
+        </p>
+      )}
+      {q.data && q.data.scans.length > 0 && (
+        <table className="w-full text-xs">
+          <thead className="text-ink-faint">
+            <tr className="text-left">
+              <th className="py-1">Owner</th><th>Title</th><th>Pages</th>
+              <th>Started</th><th>Last moved</th><th>Bytes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {q.data.scans.map((s) => (
+              <tr key={s.id} className="border-t border-line">
+                <td className="py-1">{s.ownerEmail ?? s.ownerId}</td>
+                <td>{s.title}</td>
+                <td className="tabular-nums">{s.pageCount}</td>
+                <td className="tabular-nums">{new Date(s.createdAt).toLocaleString()}</td>
+                <td className="tabular-nums">{new Date(s.updatedAt).toLocaleString()}</td>
+                <td>{s.hasBytes ? "some" : "none"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Card>
   );
 }
 

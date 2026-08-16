@@ -1026,6 +1026,23 @@ export function getNotesActivity(userId: string): Promise<NotesActivity> {
   return api(`/admin/users/${userId}/notes-activity`);
 }
 
+export interface StalledScan {
+  id: string;
+  ownerId: string;
+  ownerEmail: string | null;
+  title: string;
+  status: string;
+  pageCount: number;
+  createdAt: string;
+  updatedAt: string;
+  hasBytes: boolean;
+  referencedBy: number;
+}
+
+export function getStalledScans(hours: number): Promise<{ hours: number; scans: StalledScan[] }> {
+  return api(`/admin/score-scans/stalled?hours=${hours}`);
+}
+
 export function takeDownScoreScan(id: string, reason: string): Promise<{ ok: true; notesDetached: number }> {
   return api(`/admin/score-scans/${id}/takedown`, { method: "POST", body: JSON.stringify({ reason }) });
 }

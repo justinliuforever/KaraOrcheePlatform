@@ -1142,3 +1142,67 @@ describe("score scans on the user activity surface", () => {
     expect(res.body.scoreScans[0].takenDownAt).not.toBeNull();
   });
 });
+
+describe("the scans nothing else would ever surface", () => {
+  async function seed(over: Partial<typeof scoreScans.$inferInsert>, agedHours: number) {
+    const owner = await mkUser();
+    const [row] = await db.orm.insert(scoreScans).values({
+      ownerId: owner.id, title: "Op. 599", pageCount: 3, status: "created", ...over,
+    }).returning();
+    await db.orm.update(scoreScans)
+      .set({ updatedAt: new Date(Date.now() - agedHours * 3600_000) })
+      .where(eq(scoreScans.id, row.id));
+    return row;
+  }
+  const ids = async (hours?: number) => {
+    const res = await request(app())
+      .get(`/admin/score-scans/stalled${hours ? `?hours=${hours}` : ""}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    return (res.body.scans as { id: string }[]).map((s) => s.id);
+  };
+
+  it("finds a scan that stopped before its commit and stayed there", async () => {
+    const stuck = await seed({}, 9);
+    expect(await ids()).toContain(stuck.id);
+  });
+
+  it("leaves an upload that is merely in progress alone", async () => {
+    const fresh = await seed({}, 1);
+    expect(await ids()).not.toContain(fresh.id);
+  });
+
+  it("says nothing about the scans that finished", async () => {
+    const done = await seed({ status: "ready", blobPath: "score-scans/x/" }, 48);
+    expect(await ids()).not.toContain(done.id);
+  });
+
+  it("says nothing about a scan an operator took down", async () => {
+    const gone = await seed({ status: "taken_down", blobPath: null }, 48);
+    expect(await ids()).not.toContain(gone.id);
+  });
+
+  it("takes the window from the caller and refuses a nonsense one", async () => {
+    const old = await seed({}, 30);
+    expect(await ids(24)).toContain(old.id);
+    expect(await ids(48)).not.toContain(old.id);
+    const res = await request(app()).get("/admin/score-scans/stalled?hours=-5")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.body.hours).toBe(6);
+  });
+
+  it("names the owner, because a stalled scan is a person to go and ask", async () => {
+    const stuck = await seed({}, 9);
+    const res = await request(app()).get("/admin/score-scans/stalled")
+      .set("Authorization", `Bearer ${adminToken}`);
+    const row = (res.body.scans as { id: string; ownerEmail: string | null }[])
+      .find((s) => s.id === stuck.id)!;
+    expect(row.ownerEmail).toBeTruthy();
+  });
+
+  it("refuses an account that is not an admin", async () => {
+    const res = await request(app()).get("/admin/score-scans/stalled")
+      .set("Authorization", `Bearer ${plainToken}`);
+    expect(res.status).toBe(403);
+  });
+});

@@ -585,6 +585,39 @@ export function adminNotesRouter(deps: Deps): Router {
 
   // A rights complaint stops the serving; it does not destroy the owner's row, and §13 rules out any
   // admin path that would read the pages.
+  // A scan whose pages uploaded but whose commit never ran is a normal row, not an error: nothing logs
+  // it, nothing alerts, and the first person to notice is the student with no score. This is the query
+  // that makes it visible.
+  router.get(
+    "/admin/score-scans/stalled",
+    wrap(async (req, res) => {
+      const db = deps.db!.orm;
+      const raw = Number(req.query.hours);
+      const hours = Number.isFinite(raw) && raw > 0 && raw <= 720 ? raw : 6;
+      const rows = await db
+        .select({
+          id: scoreScans.id,
+          ownerId: scoreScans.ownerId,
+          ownerEmail: users.email,
+          title: scoreScans.title,
+          status: scoreScans.status,
+          pageCount: scoreScans.pageCount,
+          createdAt: scoreScans.createdAt,
+          updatedAt: scoreScans.updatedAt,
+          hasBytes: sql<boolean>`${scoreScans.blobPath} IS NOT NULL`,
+          referencedBy: sql<number>`(SELECT count(*)::int FROM notes n WHERE n.score_scan_id = score_scans.id)`,
+        })
+        .from(scoreScans)
+        .leftJoin(users, eq(users.id, scoreScans.ownerId))
+        .where(and(
+          eq(scoreScans.status, "created"),
+          sql`${scoreScans.updatedAt} < now() - make_interval(hours => ${hours})`,
+        ))
+        .orderBy(desc(scoreScans.createdAt));
+      res.json({ hours, scans: rows });
+    }),
+  );
+
   router.post(
     "/admin/score-scans/:id/takedown",
     wrap(async (req, res) => {
