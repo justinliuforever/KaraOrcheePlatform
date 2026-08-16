@@ -1078,12 +1078,17 @@ describe("admin takedown of a score scan", () => {
     expect((rows[0].detail as Record<string, unknown>).reason).toBe("rights complaint from the publisher");
   });
 
-  it("refuses to take the same scan down twice", async () => {
+  it("re-purges a scan already taken down rather than refusing, because the bytes are the complaint", async () => {
     const owner = await mkUser();
     const scan = await seedScan(owner.id, { status: "taken_down" });
     const res = await request(takedownApp()).post(`/admin/score-scans/${scan.id}/takedown`)
-      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "rights complaint from the publisher" });
-    expect(res.status).toBe(409);
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "the blobs did not go the first time" });
+    expect(res.status).toBe(200);
+    expect(res.body.repurged).toBe(true);
+    expect(deleted).toEqual([
+      `score-scans/${owner.id}/${scan.id}/`,
+      `score-scans/${owner.id}/${scan.id}/incoming/`,
+    ]);
   });
 
   it("answers 404 for a scan that does not exist", async () => {
@@ -1204,5 +1209,83 @@ describe("the scans nothing else would ever surface", () => {
     const res = await request(app()).get("/admin/score-scans/stalled")
       .set("Authorization", `Bearer ${plainToken}`);
     expect(res.status).toBe(403);
+  });
+});
+
+describe("what a takedown must and must not tell a reader", () => {
+  const failing = { ...{} } as Record<string, never>;
+  void failing;
+
+  it("says nothing to a note whose scan never finished uploading", async () => {
+    const teacher = await mkUser({ isTeacher: true });
+    const student = await mkUser({ isStudent: true });
+    const [scan] = await db.orm.insert(scoreScans).values({
+      ownerId: teacher.id, title: "Never committed", pageCount: 2, status: "created", blobPath: null,
+    }).returning();
+    const [note] = await db.orm.insert(notes).values({
+      teacherId: teacher.id, studentId: student.id, status: "sent", sentAt: new Date(),
+      readAt: new Date(), scoreScanId: scan.id, content: {}, contentOriginal: {},
+    } as never).returning();
+
+    const fake = {
+      incomingPath: () => "", incomingPrefix: (o: string, s: string) => `score-scans/${o}/${s}/incoming/`,
+      blobPath: () => "", blobPrefix: (o: string, s: string) => `score-scans/${o}/${s}/`,
+      uploadUrl: () => "", pageProps: async () => null, readHead: async () => null,
+      promote: async () => {}, readUrl: () => "", deletePrefix: async () => {},
+    };
+    await request(app({ scans: fake as never })).post(`/admin/score-scans/${scan.id}/takedown`)
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "rights complaint from the publisher" });
+
+    const [after] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect(after.scoreScanDetachedAt).toBeNull();
+  });
+
+  it("still tells a note whose reader had the pages in front of them", async () => {
+    const teacher = await mkUser({ isTeacher: true });
+    const student = await mkUser({ isStudent: true });
+    const [scan] = await db.orm.insert(scoreScans).values({
+      ownerId: teacher.id, title: "Was ready", pageCount: 2, status: "ready",
+      blobPath: `score-scans/${teacher.id}/z/`,
+    }).returning();
+    const [note] = await db.orm.insert(notes).values({
+      teacherId: teacher.id, studentId: student.id, status: "sent", sentAt: new Date(),
+      readAt: new Date(), scoreScanId: scan.id, content: {}, contentOriginal: {},
+    } as never).returning();
+
+    const fake = {
+      incomingPath: () => "", incomingPrefix: (o: string, s: string) => `score-scans/${o}/${s}/incoming/`,
+      blobPath: () => "", blobPrefix: (o: string, s: string) => `score-scans/${o}/${s}/`,
+      uploadUrl: () => "", pageProps: async () => null, readHead: async () => null,
+      promote: async () => {}, readUrl: () => "", deletePrefix: async () => {},
+    };
+    await request(app({ scans: fake as never })).post(`/admin/score-scans/${scan.id}/takedown`)
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "rights complaint from the publisher" });
+
+    const [after] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect(after.scoreScanDetachedAt).not.toBeNull();
+  });
+
+  it("keeps trying when the blobs refuse to go, and lets the operator try again after", async () => {
+    const owner = await mkUser();
+    const [scan] = await db.orm.insert(scoreScans).values({
+      ownerId: owner.id, title: "Stubborn", pageCount: 1, status: "ready",
+      blobPath: `score-scans/${owner.id}/w/`,
+    }).returning();
+    let attempts = 0;
+    const failing = {
+      incomingPath: () => "", incomingPrefix: (o: string, s: string) => `score-scans/${o}/${s}/incoming/`,
+      blobPath: () => "", blobPrefix: (o: string, s: string) => `score-scans/${o}/${s}/`,
+      uploadUrl: () => "", pageProps: async () => null, readHead: async () => null,
+      promote: async () => {}, readUrl: () => "",
+      deletePrefix: async () => { attempts += 1; throw new Error("blob down"); },
+    };
+    const first = await request(app({ scans: failing as never })).post(`/admin/score-scans/${scan.id}/takedown`)
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "rights complaint from the publisher" });
+    expect(first.status).toBe(200);
+    expect(attempts).toBeGreaterThan(1);
+
+    const retry = await request(app({ scans: failing as never })).post(`/admin/score-scans/${scan.id}/takedown`)
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "the blobs did not go the first time" });
+    expect(retry.status).toBe(200);
   });
 });

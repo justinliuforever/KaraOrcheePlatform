@@ -50,7 +50,10 @@ export interface TakenDownScan {
 // The row SURVIVES, unlike an owner delete: the owner is entitled to find out on their own shelf what happened to their file. One statement, for the same reason as above.
 export async function takeDownScan(tx: Tx, scanId: string): Promise<TakenDownScan | null> {
   const result = await tx.execute(sql`
-    WITH taken AS (
+    WITH pre AS (
+      SELECT ${scoreScans.id} AS id, ${scoreScans.status} AS status
+      FROM ${scoreScans} WHERE ${scoreScans.id} = ${scanId}
+    ), taken AS (
       UPDATE ${scoreScans}
       SET status = 'taken_down', taken_down_at = now(), blob_prefix = NULL, updated_at = now()
       WHERE ${scoreScans.id} = ${scanId} AND ${scoreScans.status} <> 'taken_down'
@@ -58,8 +61,10 @@ export async function takeDownScan(tx: Tx, scanId: string): Promise<TakenDownSca
     ), detached AS (
       UPDATE ${notes}
       SET score_scan_id = NULL,
+          -- Same guard as stampAndDeleteScans: a scan that never finished uploading was never in front of anyone.
           score_scan_detached_at = CASE
             WHEN ${notes.readAt} IS NOT NULL AND ${notes.status} IN ('sent', 'retracted')
+              AND EXISTS (SELECT 1 FROM pre WHERE pre.status <> 'created')
             THEN now() ELSE ${notes.scoreScanDetachedAt} END,
           updated_at = now()
       WHERE ${notes.scoreScanId} IN (SELECT id FROM taken)

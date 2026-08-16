@@ -116,7 +116,7 @@ function StalledScansView({ params, setParams }: { params: URLSearchParams; setP
           <thead className="text-ink-faint">
             <tr className="text-left">
               <th className="py-1">Owner</th><th>Title</th><th>Pages</th>
-              <th>Started</th><th>Last moved</th><th>Bytes</th>
+              <th>Started</th><th>Last moved</th><th>Notes</th>
             </tr>
           </thead>
           <tbody>
@@ -127,7 +127,7 @@ function StalledScansView({ params, setParams }: { params: URLSearchParams; setP
                 <td className="tabular-nums">{s.pageCount}</td>
                 <td className="tabular-nums">{new Date(s.createdAt).toLocaleString()}</td>
                 <td className="tabular-nums">{new Date(s.updatedAt).toLocaleString()}</td>
-                <td>{s.hasBytes ? "some" : "none"}</td>
+                <td className="tabular-nums">{s.referencedBy}</td>
               </tr>
             ))}
           </tbody>

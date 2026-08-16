@@ -193,7 +193,7 @@ export default function NotesActivitySheet({ userId, onClose }: { userId: string
                         {s.status !== "taken_down" && (
                           <button
                             className="text-[11px] text-bad underline"
-                            onClick={() => { setTakingDown(s.id); setReason(""); }}
+                            onClick={() => { takedown.reset(); setTakingDown(s.id); setReason(""); }}
                           >
                             Take down…
                           </button>
@@ -225,7 +225,7 @@ export default function NotesActivitySheet({ userId, onClose }: { userId: string
                           >
                             {takedown.isPending ? "Taking down…" : "Take down these pages"}
                           </button>
-                          <button className="text-[11px] underline" onClick={() => setTakingDown(null)}>
+                          <button className="text-[11px] underline" onClick={() => { takedown.reset(); setTakingDown(null); }}>
                             Cancel
                           </button>
                         </div>

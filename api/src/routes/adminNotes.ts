@@ -19,6 +19,7 @@ import {
   users,
 } from "../db/schema";
 import { scanPurgePrefixes, takeDownScan } from "../notes/scan_delete";
+import { purgeRunner } from "../notes/purge";
 
 const MONETIZATION_KEY = "monetization_live_at";
 const ENTITLEMENT_SOURCES = ["trial", "apple_iap", "admin_grant", "org"];
@@ -632,28 +633,23 @@ export function adminNotesRouter(deps: Deps): Router {
         res.status(503).json({ error: "storage_not_configured" });
         return;
       }
-      const [scan] = await db.select({ id: scoreScans.id, status: scoreScans.status })
+      const [scan] = await db.select({ id: scoreScans.id, status: scoreScans.status, ownerId: scoreScans.ownerId })
         .from(scoreScans).where(eq(scoreScans.id, id)).limit(1);
       if (!scan) {
         res.status(404).json({ error: "not_found" });
         return;
       }
-      if (scan.status === "taken_down") {
-        res.status(409).json({ error: "already_taken_down" });
-        return;
-      }
       // Audited before acting, so a takedown that dies half way is still on the record.
       await audit(deps, req, "score_scan.takedown", { type: "score_scan", id }, { reason });
       const taken = await db.transaction((tx) => takeDownScan(tx, id));
-      if (!taken) {
-        res.status(409).json({ error: "already_taken_down" });
-        return;
-      }
+      // A row already taken down is re-purged rather than refused: the bytes are what the complaint is about, and a first attempt that failed to delete them must be repeatable.
+      const ownerId = taken?.ownerId ?? scan.ownerId;
       const store = deps.scans;
-      for (const prefix of scanPurgePrefixes(store, taken.ownerId, [{ id: taken.id }])) {
-        await store.deletePrefix(prefix);
+      const purge = purgeRunner({ op: "score_scan.takedown", userId: ownerId, reqId: req.reqId ?? null });
+      for (const prefix of scanPurgePrefixes(store, ownerId, [{ id }])) {
+        await purge("scan", prefix, () => store.deletePrefix(prefix));
       }
-      res.json({ ok: true, notesDetached: taken.notesDetached });
+      res.json({ ok: true, notesDetached: taken?.notesDetached ?? 0, repurged: taken === null });
     }),
   );
 
