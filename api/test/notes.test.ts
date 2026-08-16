@@ -3221,7 +3221,7 @@ describe("wire key sets the shipped app decodes", () => {
   const LESSON_ROW = [
     "attested", "audioBytes", "audioPath", "clientLessonId", "createdAt", "customPieceId", "durationSec",
     "endedAt", "id", "language", "ownerRole", "pieceId", "pieceLabel", "pieceSource", "pieceUpdatedAt",
-    "startedAt", "status", "studentId", "teacherId", "updatedAt",
+    "scoreScanId", "startedAt", "status", "studentId", "teacherId", "updatedAt",
   ];
   const keys = (o: unknown) => Object.keys(o as object).sort();
 

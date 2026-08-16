@@ -372,6 +372,18 @@ def rebound_annotations(annotations: list[dict], measure_count: int | None) -> l
     return out
 
 
+def hold_scan(cur, scan_id: str | None) -> str | None:
+    """Lock the scan the note is about to reference, or answer None. Taken down is
+    excluded like a delete: those bytes can never be served again, so the note would
+    be born pointing at a score no reader can open."""
+    if scan_id is None:
+        return None
+    # Locked here, or a delete arriving before the insert fails the whole job on the foreign key.
+    cur.execute("SELECT id FROM score_scans WHERE id = %s AND status <> 'taken_down' FOR UPDATE",
+                (scan_id,))
+    return scan_id if cur.fetchone() is not None else None
+
+
 def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: dict,
                   annotations: list[dict]) -> str | None:
     """Idempotent output. Teacher lessons: a redelivered job wipes its own draft and
@@ -396,7 +408,8 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         # piece join is the nullable side and must not be locked.)
         cur.execute(
             """SELECT l.status, l.teacher_id, l.student_id, l.piece_id, l.piece_label,
-                      l.custom_piece_id, l.owner_role, p.published_version, p.facts
+                      l.custom_piece_id, l.score_scan_id, l.owner_role,
+                      p.published_version, p.facts
                FROM lesson_sessions l
                LEFT JOIN pieces p ON p.id = l.piece_id
                WHERE l.id = %s FOR UPDATE OF l""",
@@ -405,8 +418,8 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         if row is None:
             conn.commit()
             return None
-        (status, teacher_id, student_id, piece_id, piece_label, custom_piece_id, owner_role,
-         piece_version, piece_facts) = row
+        (status, teacher_id, student_id, piece_id, piece_label, custom_piece_id,
+         lesson_scan_id, owner_role, piece_version, piece_facts) = row
         if status == "canceled":
             conn.commit()
             return None
@@ -423,15 +436,18 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
             if existing:
                 conn.commit()
                 return existing[0]
+            scan_id = hold_scan(cur, None if piece_id is not None else lesson_scan_id)
             try:
                 cur.execute(
                     """INSERT INTO notes (note_job_id, lesson_session_id, teacher_id, student_id,
-                                          piece_id, piece_label, custom_piece_id, piece_version,
+                                          piece_id, piece_label, custom_piece_id, score_scan_id,
+                                          piece_version,
                                           origin, status, sent_at, content_original, content)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'self', 'sent', now(), %s, %s)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'self', 'sent', now(), %s, %s)
                        RETURNING id""",
                     (job_id, lesson_id, teacher_id, teacher_id, piece_id, piece_label,
-                     custom_piece_id, piece_version, json.dumps(original), json.dumps(content)))
+                     custom_piece_id, scan_id, piece_version,
+                     json.dumps(original), json.dumps(content)))
             except psycopg.errors.UniqueViolation:
                 # uq_note_self_per_job race loser (concurrent delivery via deploy
                 # drain / redelivery): the winner's note IS the note — converge as
@@ -456,12 +472,9 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
                      AND score_scan_id IS NOT NULL LIMIT 1""",
                 (job_id,))
             carried_scan = cur.fetchone()
-            scan_id = carried_scan[0] if carried_scan and piece_id is None else None
-            if scan_id is not None:
-                # Locked here, or a delete arriving before the insert fails the whole job on the foreign key.
-                cur.execute("SELECT id FROM score_scans WHERE id = %s FOR UPDATE", (scan_id,))
-                if cur.fetchone() is None:
-                    scan_id = None
+            # The draft's own reference wins: it is the teacher's review-time choice, and the lesson's is only where it started.
+            scan_id = hold_scan(cur, None if piece_id is not None else (
+                carried_scan[0] if carried_scan else lesson_scan_id))
             cur.execute(
                 """DELETE FROM note_annotations WHERE note_id IN
                    (SELECT id FROM notes WHERE note_job_id = %s AND status = 'draft')""",

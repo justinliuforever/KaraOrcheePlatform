@@ -211,6 +211,13 @@
       "when": 1786589737070,
       "tag": "0029_late_ogun",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1786922462895,
+      "tag": "0030_lesson_score_scan",
+      "breakpoints": true
     }
   ]
 }

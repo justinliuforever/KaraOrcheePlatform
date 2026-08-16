@@ -18,6 +18,12 @@ The runtime image carries `drizzle/` and `dist/`, so **`cd /app && node dist/db/
 
 **Both former operator actions are done (2026-08-13).** The count ran first, on revision `0000060`, before the repair could erase the evidence: **0 violating rows of 8 notes**. `ck_note_piece_excludes_scan` then landed as migration `0029` on revision `0000061`, verified by reading `pg_constraint` back. The invariant is no longer a promise made by seven statements.
 
+## Migration 0030 is written but NOT applied to dev (2026-08-16)
+
+`0030_lesson_score_scan.sql` adds `lesson_sessions.score_scan_id` (FK → `score_scans`, `ON DELETE SET NULL`) plus `ck_lesson_piece_excludes_scan`, so the score a teacher photographs at "Start class" reaches the note the recording produces. It is applied only in the test databases: this machine cannot reach `pg-karaorchee-app-dev`, and the in-cluster route above runs the DEPLOYED image's `drizzle/`, which does not contain an uncommitted migration.
+
+**Law 7 therefore has a live trap here.** The API selects the whole `lesson_sessions` row on every lesson route; ship an image built from this tree without running 0030 first and every one of them 500s, exactly as the missed 0007 did in July. Order: commit → build → `db:migrate` from inside the new revision → then route traffic. The column is nullable and additive and every existing row satisfies the check trivially, so applying it early is free.
+
 ## The note screen loses its body at phone landscape + AX5 (found 2026-08-13)
 
 **Every note, not just a scanned one, and it predates the scan work.** On iPhone in landscape at the

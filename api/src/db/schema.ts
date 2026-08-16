@@ -285,6 +285,8 @@ export const lessonSessions = pgTable("lesson_sessions", {
   pieceSource: text("piece_source"),
   // ON DELETE SET NULL, not CASCADE — the lesson row survives its custom_piece being deleted, keeping the frozen piece_label.
   customPieceId: uuid("custom_piece_id").references(() => customPieces.id, { onDelete: "set null" }),
+  // ON DELETE SET NULL for the same reason as custom_piece_id — a deleted scan must not take the recording with it.
+  scoreScanId: uuid("score_scan_id").references(() => scoreScans.id, { onDelete: "set null" }),
   // Stamped only when the piece value actually changes (never by a student assignment) — updated_at bumps on every PATCH.
   pieceUpdatedAt: timestamp("piece_updated_at", { withTimezone: true }),
   startedAt: timestamp("started_at", { withTimezone: true }),
@@ -302,6 +304,8 @@ export const lessonSessions = pgTable("lesson_sessions", {
   unique("uq_lesson_client_id").on(t.teacherId, t.clientLessonId),
   check("ck_lesson_owner_role", sql`${t.ownerRole} IN ('teacher', 'student')`),
   check("ck_lesson_piece_source", sql`${t.pieceSource} IS NULL OR ${t.pieceSource} IN ('catalog', 'vendored', 'typed')`),
+  // Mirrors ck_note_piece_excludes_scan on the far side; the create/PATCH guards are check-then-write, so only this closes the race.
+  check("ck_lesson_piece_excludes_scan", sql`${t.pieceId} IS NULL OR ${t.scoreScanId} IS NULL`),
   index("ix_lesson_sessions_teacher_student_started").on(t.teacherId, t.studentId, t.startedAt),
 ]);
 

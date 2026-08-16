@@ -24,6 +24,7 @@ import {
 } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { ScanStore } from "../src/notes/scans_store";
+import type { LessonStore } from "../src/notes/lessons_store";
 
 const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
 const AUDIENCE = "api://karaorchee";
@@ -99,8 +100,19 @@ function makeFakeScans(): FakeScans {
 
 let scans: FakeScans;
 
+function makeFakeLessons(): LessonStore {
+  return {
+    blobPath: (t, l) => `${t}/${l}.m4a`,
+    uploadUrl: (p) => `https://fake/lesson-audio/${p}?write`,
+    async audioProps() {
+      return { bytes: 1000 };
+    },
+    async deleteAudio() {},
+  };
+}
+
 function makeApp() {
-  return createServer({ db, auth: verifier, scans });
+  return createServer({ db, auth: verifier, scans, lessons: makeFakeLessons() });
 }
 
 function makeAppWithoutScans() {
@@ -794,6 +806,32 @@ describe("naming a piece detaches the scan — the invariant at every writer of 
     expect(after.scanId).toBeNull();
     expect(after.detachedAt).toBeNull();
     expect((await libraryRow(scan.id))!.status).toBe("ready");
+  });
+
+  it("detaches the lesson too when the piece-suggestion chip is confirmed", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const note = await seedNote({ teacherId: teacher.id, scoreScanId: scan.id });
+    await db.orm
+      .update(lessonSessions)
+      .set({ scoreScanId: scan.id })
+      .where(eq(lessonSessions.id, note.lessonSessionId!));
+    await db.orm
+      .update(noteJobs)
+      .set({ pieceMentions: ["Practical Method, Op. 599"] })
+      .where(eq(noteJobs.id, note.noteJobId!));
+
+    const res = await request(makeApp())
+      .post(`/v1/notes/${note.id}/piece-suggestion`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ action: "confirm", pieceId: "seed_piece" });
+
+    expect(res.status).toBe(200);
+    const [lesson] = await db.orm
+      .select()
+      .from(lessonSessions)
+      .where(eq(lessonSessions.id, note.lessonSessionId!));
+    expect(lesson!.pieceId).toBe("seed_piece");
+    expect(lesson!.scoreScanId).toBeNull();
   });
 
   it("detaches when the lesson's piece cascades onto the draft", async () => {
@@ -1588,5 +1626,194 @@ describe("attach, send, read, delete — the whole chain through the shipped rou
     expect(after.body.note).toMatchObject({ hasScorePhotos: false, scorePageCount: null, scoreGone: false });
     const pages = await getScoreScan(note.id, quietStudent.token);
     expect(pages.status).toBe(404);
+  });
+});
+
+describe("POST /v1/lessons — the score photographed at the start of the lesson", () => {
+  const createLesson = (token: string, body: Record<string, unknown>) =>
+    request(makeApp()).post("/v1/lessons").set("Authorization", `Bearer ${token}`).send(body);
+
+  const patchLesson = (id: string, token: string, body: Record<string, unknown>) =>
+    request(makeApp()).patch(`/v1/lessons/${id}`).set("Authorization", `Bearer ${token}`).send(body);
+
+  async function lessonRow(id: string) {
+    const [row] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, id));
+    return row ?? null;
+  }
+
+  it("stores the scan on the lesson and returns it on the wire", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+
+    const res = await createLesson(teacher.token, { scoreScanId: scan.id, studentId: student.id });
+
+    expect(res.status).toBe(201);
+    expect(res.body.lesson.scoreScanId).toBe(scan.id);
+    expect((await lessonRow(res.body.lesson.id))!.scoreScanId).toBe(scan.id);
+  });
+
+  it("refuses a scan another account owns with the 404 of one that never existed", async () => {
+    const scan = await seedScan({ ownerId: otherTeacher.id });
+
+    const res = await createLesson(teacher.token, { scoreScanId: scan.id });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("not_found");
+    expect(await lessonRow(scan.id)).toBeNull();
+  });
+
+  it("refuses an id that names no scan at all", async () => {
+    const res = await createLesson(teacher.token, {
+      scoreScanId: "00000000-0000-4000-8000-000000000000",
+    });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("not_found");
+  });
+
+  it("refuses a scan whose pages are still uploading", async () => {
+    const scan = await seedScan({ ownerId: teacher.id, status: "created" });
+
+    const res = await createLesson(teacher.token, { scoreScanId: scan.id });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("scan_not_ready");
+  });
+
+  it("refuses a scan that was taken down", async () => {
+    const scan = await seedScan({ ownerId: teacher.id, status: "taken_down" });
+
+    const res = await createLesson(teacher.token, { scoreScanId: scan.id });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("not_found");
+  });
+
+  it("refuses a lesson that names a library piece and photographed pages at once", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+
+    const res = await createLesson(teacher.token, { scoreScanId: scan.id, pieceId: "seed_piece" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("note_names_piece");
+    expect(res.body.message).toBe("A note that names a piece from the library can't carry score photos.");
+  });
+
+  it("carries a student's own photographed score onto their solo recording", async () => {
+    const scan = await seedScan({ ownerId: student.id });
+
+    const res = await createLesson(student.token, { scoreScanId: scan.id, attested: true });
+
+    expect(res.status).toBe(201);
+    expect(res.body.lesson.ownerRole).toBe("student");
+    expect(res.body.lesson.scoreScanId).toBe(scan.id);
+  });
+
+  it("leaves a lesson created without a scan carrying none", async () => {
+    const res = await createLesson(teacher.token, { pieceId: "seed_piece", studentId: student.id });
+
+    expect(res.status).toBe(201);
+    expect(res.body.lesson.scoreScanId).toBeNull();
+    expect((await lessonRow(res.body.lesson.id))!.scoreScanId).toBeNull();
+  });
+
+  it("leaves the lesson alive carrying nothing once the scan is deleted", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const created = await createLesson(teacher.token, { scoreScanId: scan.id });
+    const lessonId = created.body.lesson.id as string;
+
+    const deleted = await request(makeApp())
+      .delete(`/v1/score-scans/${scan.id}`)
+      .set("Authorization", `Bearer ${teacher.token}`);
+
+    expect(deleted.status).toBe(200);
+    const row = await lessonRow(lessonId);
+    expect(row).not.toBeNull();
+    expect(row!.scoreScanId).toBeNull();
+    expect(row!.status).toBe("created");
+  });
+
+  it("refuses a library piece named onto a lesson that carries photographed pages", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const created = await createLesson(teacher.token, { scoreScanId: scan.id });
+
+    const res = await patchLesson(created.body.lesson.id, teacher.token, { pieceId: "seed_piece" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("note_names_piece");
+    expect(res.body.message).toBe("A note that names a piece from the library can't carry score photos.");
+    expect((await lessonRow(created.body.lesson.id))!.scoreScanId).toBe(scan.id);
+  });
+
+  it("names a piece on a lesson that carries no scan", async () => {
+    const created = await createLesson(teacher.token, {});
+
+    const res = await patchLesson(created.body.lesson.id, teacher.token, { pieceId: "seed_piece" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.lesson.pieceId).toBe("seed_piece");
+  });
+
+  it("clears the scan a typed label leaves behind without touching it", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const created = await createLesson(teacher.token, { scoreScanId: scan.id });
+
+    const res = await patchLesson(created.body.lesson.id, teacher.token, {
+      pieceLabel: "Book 2, page 14",
+      pieceSource: "typed",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.lesson.scoreScanId).toBe(scan.id);
+  });
+});
+
+describe("ck_lesson_piece_excludes_scan — the strap under the lesson's check-then-write guards", () => {
+  it("refuses a row that names a piece while holding a scan", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+
+    const refusal = await refusalMessageChain(() =>
+      db.orm.insert(lessonSessions).values({
+        teacherId: teacher.id,
+        pieceId: "seed_piece",
+        scoreScanId: scan.id,
+      }));
+
+    expect(refusal).toMatch(/ck_lesson_piece_excludes_scan/);
+  });
+
+  it("refuses a row that reaches the forbidden pair by UPDATE, not by INSERT", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const [row] = await db.orm
+      .insert(lessonSessions)
+      .values({ teacherId: teacher.id, scoreScanId: scan.id })
+      .returning();
+
+    const refusal = await refusalMessageChain(() =>
+      db.orm.update(lessonSessions).set({ pieceId: "seed_piece" }).where(eq(lessonSessions.id, row!.id)));
+
+    expect(refusal).toMatch(/ck_lesson_piece_excludes_scan/);
+  });
+
+  it("admits a piece alone, a scan alone, and neither", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const [withPiece] = await db.orm
+      .insert(lessonSessions)
+      .values({ teacherId: teacher.id, pieceId: "seed_piece" })
+      .returning();
+    const [withScan] = await db.orm
+      .insert(lessonSessions)
+      .values({ teacherId: teacher.id, scoreScanId: scan.id })
+      .returning();
+    const [withNeither] = await db.orm
+      .insert(lessonSessions)
+      .values({ teacherId: teacher.id })
+      .returning();
+
+    expect(withPiece!.pieceId).toBe("seed_piece");
+    expect(withPiece!.scoreScanId).toBeNull();
+    expect(withScan!.scoreScanId).toBe(scan.id);
+    expect(withScan!.pieceId).toBeNull();
+    expect(withNeither!.pieceId).toBeNull();
+    expect(withNeither!.scoreScanId).toBeNull();
   });
 });

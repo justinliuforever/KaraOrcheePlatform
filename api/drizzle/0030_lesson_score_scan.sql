@@ -1,0 +1,3 @@
+ALTER TABLE "lesson_sessions" ADD COLUMN "score_scan_id" uuid;--> statement-breakpoint
+ALTER TABLE "lesson_sessions" ADD CONSTRAINT "lesson_sessions_score_scan_id_score_scans_id_fk" FOREIGN KEY ("score_scan_id") REFERENCES "public"."score_scans"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "lesson_sessions" ADD CONSTRAINT "ck_lesson_piece_excludes_scan" CHECK ("lesson_sessions"."piece_id" IS NULL OR "lesson_sessions"."score_scan_id" IS NULL);

@@ -7,6 +7,7 @@ import { requireUser, userAudit } from "../notes/user";
 import { upsertCustomPiece } from "./customPieces";
 import { notesAccess } from "../notes/entitlement";
 import { narrationPrefix } from "../notes/narration";
+import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import {
   lessonSessions,
@@ -14,6 +15,7 @@ import {
   noteJobs,
   notes,
   pieces,
+  scoreScans,
   teacherStudentLinks,
 } from "../db/schema";
 
@@ -24,6 +26,8 @@ const MAX_AUDIO_BYTES = 320 * 1024 * 1024;
 const MSG_SOLO_NO_STUDENT = "A recording you made yourself is your own — there is no student to send it to.";
 const MSG_UNKNOWN_PIECE = "That piece isn't in the library. Choose another piece, or type its name instead.";
 const MSG_NOT_YOUR_STUDENT = "That student isn't on your roster anymore. Invite them again, then choose them.";
+// Lives here rather than in notes.ts because notes.ts already imports from this file; the reverse would be a cycle.
+export const MSG_NOTE_NAMES_PIECE = "A note that names a piece from the library can't carry score photos.";
 
 // ── Discard / retry policy ────────────────────────────────────────────────────
 // Pure and shared: the same function computes both the route's decision and the *Allowed flag on the wire, so they cannot drift apart.
@@ -139,6 +143,25 @@ export function readPieceSource(raw: unknown): PieceSource | null {
 
 type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
 
+type ScanCheck =
+  | { kind: "ok"; id: string | null }
+  | { kind: "miss" }
+  | { kind: "not_ready" };
+
+// A scan someone else owns, or one taken down, is not an error to explain — it is a scan that does not exist for this caller.
+async function ownedReadyScan(db: Orm, ownerId: string, value: unknown): Promise<ScanCheck> {
+  if (value === null || value === undefined) return { kind: "ok", id: null };
+  if (!isUuid(value)) return { kind: "miss" };
+  const [scan] = await db
+    .select({ id: scoreScans.id, status: scoreScans.status })
+    .from(scoreScans)
+    .where(and(eq(scoreScans.id, value), eq(scoreScans.ownerId, ownerId)))
+    .limit(1);
+  if (!scan || scan.status === "taken_down") return { kind: "miss" };
+  if (scan.status !== "ready") return { kind: "not_ready" };
+  return { kind: "ok", id: scan.id };
+}
+
 // Must throw, not return — returning here would COMMIT the CAS despite the revoked permission.
 class DiscardRaced extends Error {}
 
@@ -178,6 +201,7 @@ function lessonWire(row: typeof lessonSessions.$inferSelect) {
     pieceSource: row.pieceSource,
     pieceUpdatedAt: row.pieceUpdatedAt,
     customPieceId: row.customPieceId,
+    scoreScanId: row.scoreScanId,
     language: row.language,
     attested: row.attested,
     audioPath: row.audioPath,
@@ -301,6 +325,19 @@ export function lessonsRouter(deps: Deps): Router {
           return;
         }
       }
+      const scan = await ownedReadyScan(db, me.id, body.scoreScanId);
+      if (scan.kind === "miss") {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (scan.kind === "not_ready") {
+        res.status(409).json({ error: "scan_not_ready" });
+        return;
+      }
+      if (scan.id && pieceId) {
+        res.status(409).json({ error: "note_names_piece", message: MSG_NOTE_NAMES_PIECE });
+        return;
+      }
 
       const startedAt = body.startedAt ? new Date(body.startedAt) : null;
       const endedAt = body.endedAt ? new Date(body.endedAt) : null;
@@ -320,6 +357,7 @@ export function lessonsRouter(deps: Deps): Router {
             pieceLabel,
             pieceSource,
             customPieceId,
+            scoreScanId: scan.id,
             startedAt: startedAt && !Number.isNaN(startedAt.getTime()) ? startedAt : null,
             endedAt: endedAt && !Number.isNaN(endedAt.getTime()) ? endedAt : null,
             durationSec: Number.isFinite(body.durationSec) ? Math.round(body.durationSec) : null,
@@ -626,6 +664,11 @@ export function lessonsRouter(deps: Deps): Router {
           .limit(1);
         if (!piece) {
           res.status(400).json({ error: "unknown_piece", message: MSG_UNKNOWN_PIECE });
+          return;
+        }
+        // Refused, never traded: the photographed pages are what the student is already reading off.
+        if (lesson.scoreScanId) {
+          res.status(409).json({ error: "note_names_piece", message: MSG_NOTE_NAMES_PIECE });
           return;
         }
         const m = (piece.facts as { measures?: unknown } | null)?.measures;

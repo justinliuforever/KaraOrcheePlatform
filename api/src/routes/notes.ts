@@ -15,7 +15,7 @@ import {
   narrationPrefix,
 } from "../notes/narration";
 import { notifyNoteSent } from "../notes/push";
-import { REGROUND_HINT } from "./lessons";
+import { MSG_NOTE_NAMES_PIECE, REGROUND_HINT } from "./lessons";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import { normalizeLabel, upsertCustomPiece } from "./customPieces";
@@ -203,8 +203,6 @@ async function ownedScanId(deps: Deps, ownerId: string, value: unknown): Promise
     .limit(1);
   return scan ? scan.id : "miss";
 }
-
-const MSG_NOTE_NAMES_PIECE = "A note that names a piece from the library can't carry score photos.";
 
 // Scoping by teacherId alone leaks a dual-role account's own self-notes into the teacher-side routes.
 const teacherOwned = (teacherId: string) =>
@@ -624,6 +622,8 @@ export function notesRouter(deps: Deps): Router {
               pieceId,
               pieceSource: "catalog",
               customPieceId: null,
+              // Traded away, like the note's own reference below — ck_lesson_piece_excludes_scan refuses the pair outright.
+              scoreScanId: null,
               pieceUpdatedAt: sql`now()`,
               updatedAt: sql`now()`,
             })

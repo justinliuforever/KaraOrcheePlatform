@@ -108,16 +108,16 @@ def note_insert(conn) -> dict:
 
 
 def teacher_lock(status="submitted", student_id="student-4", piece_id="piece-1",
-                 piece_label="Etude No. 3", custom_piece_id=None, published_version=3,
-                 facts=None):
+                 piece_label="Etude No. 3", custom_piece_id=None, score_scan_id=None,
+                 published_version=3, facts=None):
     return (status, "teacher-7", student_id, piece_id, piece_label, custom_piece_id,
-            "teacher", published_version, facts)
+            score_scan_id, "teacher", published_version, facts)
 
 
 def solo_lock(status="submitted", piece_id="piece-1", piece_label="Etude No. 3",
-              custom_piece_id=None, published_version=7, facts=None):
-    return (status, "owner-9", None, piece_id, piece_label, custom_piece_id, "student",
-            published_version, facts)
+              custom_piece_id=None, score_scan_id=None, published_version=7, facts=None):
+    return (status, "owner-9", None, piece_id, piece_label, custom_piece_id, score_scan_id,
+            "student", published_version, facts)
 
 
 def test_teacher_path_wipes_draft_then_inserts_teacher_origin():
@@ -589,21 +589,64 @@ def test_the_carried_scan_is_locked_before_the_draft_is_deleted():
     assert held < min(i for i, s in enumerate(sqls) if s.startswith("DELETE"))
 
 
-def test_the_solo_path_carries_no_scan_because_it_never_wipes_a_note():
+def test_the_solo_path_reads_no_draft_because_it_never_wipes_a_note():
     resumed = FakeConn({LOCK: solo_lock(),
                         "SELECT id FROM notes WHERE note_job_id": ("existing-note",)})
     assert main.replace_draft(
         resumed, "job-4", "lesson-1", CONTENT, ORIGINAL, ANNS) == "existing-note"
-    assert not any(s.startswith("DELETE") or s.startswith(CARRY)
+    assert not any(s.startswith("DELETE") or s.startswith(CARRY) or s.startswith(SCAN_LOCK)
                    for s, _ in resumed.executed)
 
     fresh = FakeConn({LOCK: solo_lock(),
                       "SELECT id FROM notes WHERE note_job_id": None,
                       "INSERT INTO notes": ("note-5",)})
     main.replace_draft(fresh, "job-5", "lesson-1", CONTENT, ORIGINAL, ANNS)
-    insert = next(s for s, _ in fresh.executed if s.startswith("INSERT INTO notes"))
-    assert "score_scan" not in insert
+    assert note_insert(fresh)["score_scan_id"] is None
     assert not any(s.startswith(CARRY) for s, _ in fresh.executed)
+
+
+def test_a_solo_lesson_photographed_at_the_start_reaches_the_note_it_produces():
+    conn = FakeConn({LOCK: solo_lock(piece_id=None, score_scan_id="scan-8"),
+                     "SELECT id FROM notes WHERE note_job_id": None,
+                     SCAN_LOCK: ("scan-8",), "INSERT INTO notes": ("note-6",)})
+    main.replace_draft(conn, "job-6", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    assert note_insert(conn)["score_scan_id"] == "scan-8"
+
+
+def test_a_solo_lesson_that_names_a_piece_carries_no_scan():
+    conn = FakeConn({LOCK: solo_lock(piece_id="piece-1", score_scan_id="scan-8"),
+                     "SELECT id FROM notes WHERE note_job_id": None,
+                     SCAN_LOCK: ("scan-8",), "INSERT INTO notes": ("note-7",)})
+    main.replace_draft(conn, "job-7", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    assert note_insert(conn)["score_scan_id"] is None
+    assert not any(s.startswith(SCAN_LOCK) for s, _ in conn.executed)
+
+
+def test_a_lesson_photographed_at_the_start_reaches_the_teacher_draft():
+    conn = FakeConn({LOCK: teacher_lock(piece_id=None, score_scan_id="scan-9"),
+                     CARRY: None, SCAN_LOCK: ("scan-9",),
+                     "INSERT INTO notes": ("note-8",)})
+    main.replace_draft(conn, "job-8", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    assert note_insert(conn)["score_scan_id"] == "scan-9"
+
+
+def test_the_scan_the_teacher_attached_at_review_outranks_the_lessons_own():
+    conn = FakeConn({LOCK: teacher_lock(piece_id=None, score_scan_id="scan-lesson"),
+                     CARRY: ("scan-review",), SCAN_LOCK: ("scan-review",),
+                     "INSERT INTO notes": ("note-9",)})
+    main.replace_draft(conn, "job-9", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    assert note_insert(conn)["score_scan_id"] == "scan-review"
+    held = next(p for s, p in conn.executed if s.startswith(SCAN_LOCK))
+    assert held == ("scan-review",)
+
+
+def test_a_lesson_whose_scan_was_taken_down_produces_a_note_without_it():
+    conn = FakeConn({LOCK: teacher_lock(piece_id=None, score_scan_id="scan-10"),
+                     CARRY: None, SCAN_LOCK: None, "INSERT INTO notes": ("note-10",)})
+    main.replace_draft(conn, "job-10", "lesson-1", CONTENT, ORIGINAL, ANNS)
+    assert note_insert(conn)["score_scan_id"] is None
+    held = next(s for s, _ in conn.executed if s.startswith(SCAN_LOCK))
+    assert "status <> 'taken_down'" in held
 
 
 def _job_mentions(conn):
