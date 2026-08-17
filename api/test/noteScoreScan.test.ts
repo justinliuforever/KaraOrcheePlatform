@@ -1651,23 +1651,33 @@ describe("POST /v1/lessons — the score photographed at the start of the lesson
     expect((await lessonRow(res.body.lesson.id))!.scoreScanId).toBe(scan.id);
   });
 
-  it("refuses a scan another account owns with the 404 of one that never existed", async () => {
+  it("keeps the recording and drops a scan another account owns", async () => {
     const scan = await seedScan({ ownerId: otherTeacher.id });
 
     const res = await createLesson(teacher.token, { scoreScanId: scan.id });
 
-    expect(res.status).toBe(404);
-    expect(res.body.error).toBe("not_found");
-    expect(await lessonRow(scan.id)).toBeNull();
+    expect(res.status).toBe(201);
+    expect(res.body.lesson.scoreScanId).toBeNull();
+    expect((await lessonRow(res.body.lesson.id))!.scoreScanId).toBeNull();
   });
 
-  it("refuses an id that names no scan at all", async () => {
+  it("keeps the recording when the id names no scan at all", async () => {
     const res = await createLesson(teacher.token, {
       scoreScanId: "00000000-0000-4000-8000-000000000000",
     });
 
-    expect(res.status).toBe(404);
-    expect(res.body.error).toBe("not_found");
+    expect(res.status).toBe(201);
+    expect(res.body.lesson.scoreScanId).toBeNull();
+  });
+
+  it("keeps the recording when the scan was deleted between the lesson and its upload", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    await db.orm.delete(scoreScans).where(eq(scoreScans.id, scan.id));
+
+    const res = await createLesson(teacher.token, { scoreScanId: scan.id });
+
+    expect(res.status).toBe(201);
+    expect(res.body.lesson.scoreScanId).toBeNull();
   });
 
   it("takes a scan whose pages are still uploading, as the note patch does", async () => {
@@ -1679,13 +1689,13 @@ describe("POST /v1/lessons — the score photographed at the start of the lesson
     expect(res.body.lesson.scoreScanId).toBe(scan.id);
   });
 
-  it("refuses a scan that was taken down", async () => {
+  it("keeps the recording and drops a scan that was taken down", async () => {
     const scan = await seedScan({ ownerId: teacher.id, status: "taken_down" });
 
     const res = await createLesson(teacher.token, { scoreScanId: scan.id });
 
-    expect(res.status).toBe(404);
-    expect(res.body.error).toBe("not_found");
+    expect(res.status).toBe(201);
+    expect(res.body.lesson.scoreScanId).toBeNull();
   });
 
   it("refuses a lesson that names a library piece and photographed pages at once", async () => {

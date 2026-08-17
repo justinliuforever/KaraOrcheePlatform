@@ -324,12 +324,10 @@ export function lessonsRouter(deps: Deps): Router {
           return;
         }
       }
+      // The recording is the irreplaceable half: a scan deleted between the lesson and its upload costs the score, never the lesson.
       const scan = await ownedScan(db, me.id, body.scoreScanId);
-      if (scan.kind === "miss") {
-        res.status(404).json({ error: "not_found" });
-        return;
-      }
-      if (scan.id && pieceId) {
+      const scoreScanId = scan.kind === "miss" ? null : scan.id;
+      if (scoreScanId && pieceId) {
         res.status(409).json({ error: "note_names_piece", message: MSG_NOTE_NAMES_PIECE });
         return;
       }
@@ -352,7 +350,7 @@ export function lessonsRouter(deps: Deps): Router {
             pieceLabel,
             pieceSource,
             customPieceId,
-            scoreScanId: scan.id,
+            scoreScanId,
             startedAt: startedAt && !Number.isNaN(startedAt.getTime()) ? startedAt : null,
             endedAt: endedAt && !Number.isNaN(endedAt.getTime()) ? endedAt : null,
             durationSec: Number.isFinite(body.durationSec) ? Math.round(body.durationSec) : null,
