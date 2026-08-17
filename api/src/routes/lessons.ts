@@ -676,6 +676,8 @@ export function lessonsRouter(deps: Deps): Router {
         updated: boolean;
         studentId: string | null;
         pieceId: string | null;
+        /// True when this PATCH is what took the photographed pages off — the client cannot see the pre-patch row and would otherwise report the loss to nobody.
+        scoreDetached?: boolean;
       }
 
       // One transaction: a lesson updated without its draft is worse than neither.
@@ -759,6 +761,7 @@ export function lessonsRouter(deps: Deps): Router {
             updated: true,
             studentId: u!.studentId,
             pieceId: u!.pieceId,
+            scoreDetached: n.scoreScanId !== null && u!.scoreScanId === null,
           });
         }
         return { lesson: updatedLesson!, notes: touched, regrounded, before, studentCascadedTo };

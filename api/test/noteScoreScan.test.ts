@@ -1680,6 +1680,32 @@ describe("POST /v1/lessons — the score photographed at the start of the lesson
     expect(res.body.lesson.scoreScanId).toBeNull();
   });
 
+  it("reports the detach when naming a piece takes the photographs off a note", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const note = await seedNote({ teacherId: teacher.id, studentId: student.id,
+                                  scoreScanId: scan.id });
+
+    const res = await request(makeApp()).patch(`/v1/lessons/${note.lessonSessionId}`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ pieceId: "seed_piece", pieceLabel: "Seed", pieceSource: "catalog" });
+
+    expect(res.status).toBe(200);
+    const touched = res.body.notes.find((n: { id: string }) => n.id === note.id);
+    expect(touched.scoreDetached).toBe(true);
+  });
+
+  it("does not claim a detach when there were no photographs to take off", async () => {
+    const note = await seedNote({ teacherId: teacher.id, studentId: student.id });
+
+    const res = await request(makeApp()).patch(`/v1/lessons/${note.lessonSessionId}`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ pieceId: "seed_piece", pieceLabel: "Seed", pieceSource: "catalog" });
+
+    expect(res.status).toBe(200);
+    const touched = res.body.notes.find((n: { id: string }) => n.id === note.id);
+    expect(touched.scoreDetached).toBe(false);
+  });
+
   it("takes a scan whose pages are still uploading, as the note patch does", async () => {
     const scan = await seedScan({ ownerId: teacher.id, status: "created" });
 
