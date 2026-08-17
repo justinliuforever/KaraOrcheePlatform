@@ -1,0 +1,1 @@
+CREATE INDEX "ix_lesson_sessions_score_scan" ON "lesson_sessions" USING btree ("score_scan_id") WHERE "lesson_sessions"."score_scan_id" IS NOT NULL;

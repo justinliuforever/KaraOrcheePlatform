@@ -1043,6 +1043,20 @@ describe("admin takedown of a score scan", () => {
     expect(res.status).toBe(403);
   });
 
+  it("unlinks the lesson that named the scan, so it can still be given a piece", async () => {
+    const owner = await mkUser();
+    const scan = await seedScan(owner.id);
+    const [lesson] = await db.orm.insert(lessonSessions)
+      .values({ teacherId: owner.id, scoreScanId: scan.id, status: "submitted" }).returning();
+
+    const res = await request(takedownApp()).post(`/admin/score-scans/${scan.id}/takedown`)
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "rights complaint from the publisher" });
+
+    expect(res.status).toBe(200);
+    const [after] = await db.orm.select().from(lessonSessions).where(eq(lessonSessions.id, lesson.id));
+    expect(after.scoreScanId).toBeNull();
+  });
+
   it("keeps the owner's row so their shelf can say what happened", async () => {
     const owner = await mkUser();
     const scan = await seedScan(owner.id);

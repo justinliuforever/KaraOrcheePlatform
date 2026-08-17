@@ -18,7 +18,25 @@ The runtime image carries `drizzle/` and `dist/`, so **`cd /app && node dist/db/
 
 **Both former operator actions are done (2026-08-13).** The count ran first, on revision `0000060`, before the repair could erase the evidence: **0 violating rows of 8 notes**. `ck_note_piece_excludes_scan` then landed as migration `0029` on revision `0000061`, verified by reading `pg_constraint` back. The invariant is no longer a promise made by seven statements.
 
-## Migration 0030 is written but NOT applied to dev (2026-08-16)
+## Rolling the API image back is a TWO-STEP once 0030 is live (2026-08-16)
+
+`ck_lesson_piece_excludes_scan` is not a constraint an older image knows about. Any lesson minted with a
+scan between the deploy and the rollback carries a non-null `score_scan_id`; the old code's lesson PATCH
+sets `piece_id` without clearing it, and the CHECK turns that into a 500 rather than a silent success.
+Before routing traffic back to a pre-0030 revision, run
+`UPDATE lesson_sessions SET score_scan_id = NULL WHERE score_scan_id IS NOT NULL` — losing the pointer is
+the cheap half; the recording and the scan both survive it.
+
+## The piece/scan rule is deliberately asymmetric, and a review keeps flagging it (2026-08-16)
+
+`PATCH /v1/lessons/:id` REFUSES a piece when the LESSON holds a scan (409 `note_names_piece`); the same
+request DETACHES when the scan lives on a NOTE that would inherit the piece. That asymmetry is not an
+oversight — `noteScoreScan.test.ts`'s "the invariant at every writer of notes.piece_id" block encodes the
+detach deliberately. Making both refuse breaks two of those tests. **Founder decision needed** before
+either side moves; until then leave it, and note that the app cannot yet warn before the detach (that
+warning is the v0.11 item).
+
+## Migration 0030 — APPLIED to dev 2026-08-16, verified by reading the schema back
 
 `0030_lesson_score_scan.sql` adds `lesson_sessions.score_scan_id` (FK → `score_scans`, `ON DELETE SET NULL`) plus `ck_lesson_piece_excludes_scan`, so the score a teacher photographs at "Start class" reaches the note the recording produces. It is applied only in the test databases: this machine cannot reach `pg-karaorchee-app-dev`, and the in-cluster route above runs the DEPLOYED image's `drizzle/`, which does not contain an uncommitted migration.
 

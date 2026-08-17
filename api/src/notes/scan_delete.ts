@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { Orm } from "../db/client";
-import { notes, scoreScans } from "../db/schema";
+import { lessonSessions, notes, scoreScans } from "../db/schema";
 import type { ScanStore } from "./scans_store";
 
 type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
@@ -23,6 +23,14 @@ export async function stampAndDeleteScans(
   const scoped = args.scanId
     ? sql`${scoreScans.ownerId} = ${args.ownerId} AND ${scoreScans.id} = ${args.scanId}`
     : sql`${scoreScans.ownerId} = ${args.ownerId}`;
+  // Lessons first, then the scan: the note worker takes them in that order, and 0030's ON DELETE SET NULL would otherwise have this route take them in the other.
+  await tx.execute(sql`
+    SELECT ${lessonSessions.id} FROM ${lessonSessions}
+    WHERE ${lessonSessions.scoreScanId} IN (
+      SELECT ${scoreScans.id} FROM ${scoreScans} WHERE ${scoped}
+    )
+    FOR UPDATE
+  `);
   const result = await tx.execute(sql`
     WITH deleted AS (
       DELETE FROM ${scoreScans}
@@ -69,8 +77,17 @@ export async function takeDownScan(tx: Tx, scanId: string): Promise<TakenDownSca
           updated_at = now()
       WHERE ${notes.scoreScanId} IN (SELECT id FROM taken)
       RETURNING ${notes.id} AS id
+    ), unlinked AS (
+      -- An owner delete gets this from ON DELETE SET NULL; a takedown keeps the row, so the lesson would hold a pointer that forbids it ever naming a piece.
+      UPDATE ${lessonSessions}
+      SET score_scan_id = NULL, updated_at = now()
+      WHERE ${lessonSessions.scoreScanId} IN (SELECT id FROM taken)
+      RETURNING ${lessonSessions.id} AS id
     )
-    SELECT taken.id, taken.owner_id, (SELECT count(*) FROM detached) AS notes_detached FROM taken
+    SELECT taken.id, taken.owner_id,
+           (SELECT count(*) FROM detached) AS notes_detached,
+           (SELECT count(*) FROM unlinked) AS lessons_unlinked
+    FROM taken
   `);
   const [row] = rowsOf(result);
   if (!row) return null;

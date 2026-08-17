@@ -307,6 +307,7 @@ export const lessonSessions = pgTable("lesson_sessions", {
   // Mirrors ck_note_piece_excludes_scan on the far side; the create/PATCH guards are check-then-write, so only this closes the race.
   check("ck_lesson_piece_excludes_scan", sql`${t.pieceId} IS NULL OR ${t.scoreScanId} IS NULL`),
   index("ix_lesson_sessions_teacher_student_started").on(t.teacherId, t.studentId, t.startedAt),
+  index("ix_lesson_sessions_score_scan").on(t.scoreScanId).where(sql`${t.scoreScanId} IS NOT NULL`),
 ]);
 
 // SB message is {jobId, reqId} only — this row is the source of truth for idempotent redelivery, not the message.

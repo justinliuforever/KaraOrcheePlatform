@@ -659,7 +659,7 @@ export function lessonsRouter(deps: Deps): Router {
           res.status(400).json({ error: "unknown_piece", message: MSG_UNKNOWN_PIECE });
           return;
         }
-        // Refused, never traded: the photographed pages are what the student is already reading off.
+        // Refused, never traded: the photographed pages are what the student is already reading off. A scan attached during review lives on the NOTE, and that writer deliberately detaches instead — see noteScoreScan.test.ts's invariant block.
         if (lesson.scoreScanId) {
           res.status(409).json({ error: "note_names_piece", message: MSG_NOTE_NAMES_PIECE });
           return;
