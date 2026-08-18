@@ -5,7 +5,7 @@ import { wrap } from "../deps";
 import { requireAuth } from "../auth";
 import { requireUser, userAudit } from "../notes/user";
 import { isUuid } from "../ids";
-import { notes, scoreScans, users, type ScoreScan } from "../db/schema";
+import { lessonSessions, notes, scoreScans, users, type ScoreScan } from "../db/schema";
 import { ASSET_READ_SAS_MINUTES } from "../notes/assets_store";
 import type { ScanStore } from "../notes/scans_store";
 import { ScanChangedError } from "../notes/scans_store";
@@ -405,6 +405,12 @@ export function scansRouter(deps: Deps): Router {
         ...row,
         recipientDeleted: recipientStatus === "deleted",
       }));
+      // A lesson can hold the scan for the whole ASR+LLM window before any note exists; without this the dialog says "No note is showing them" over pages a note is about to carry.
+      const [heldByLesson] = await db
+        .select({ id: lessonSessions.id })
+        .from(lessonSessions)
+        .where(eq(lessonSessions.scoreScanId, scan.id))
+        .limit(1);
       res.set("Cache-Control", "no-store");
       res.json({
         scan: scanWire(scan),
@@ -414,6 +420,7 @@ export function scansRouter(deps: Deps): Router {
         })),
         expiresAt: sasExpiresAt(),
         usedBy,
+        heldByLesson: Boolean(heldByLesson),
       });
     }),
   );
