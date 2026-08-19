@@ -246,7 +246,8 @@ export function notesRouter(deps: Deps): Router {
       const annotations = await db
         .select()
         .from(noteAnnotations)
-        .where(eq(noteAnnotations.noteId, note.id))
+        // The wire's annotations array is exactly the transcript rows; a plan row here renders as a marked spot.
+        .where(and(eq(noteAnnotations.noteId, note.id), eq(noteAnnotations.source, "transcript")))
         .orderBy(asc(noteAnnotations.idx));
       // Must stay computed at READ time, never cached — a catalog that grows or a dismissal has to apply immediately.
       res.json({ note, annotations, pieceSuggestion: await suggestionFor(deps, note) });
@@ -375,7 +376,17 @@ export function notesRouter(deps: Deps): Router {
               })
               .where(eq(noteAnnotations.id, row.id));
           }
-          const drop = existing.filter((a) => !keep.has(a.id)).map((a) => a.id);
+          // Scoped to the sources the payload actually carries: an old binary sends only transcript
+          // rows, and an unscoped sweep reads every plan row's absence as a deletion.
+          const sent = new Set(
+            (body.annotations as Record<string, unknown>[])
+              .map((a) => (typeof a.id === "string" ? byId.get(a.id)?.source : undefined))
+              .filter((v): v is string => typeof v === "string"),
+          );
+          if (!sent.size) sent.add("transcript");
+          const drop = existing
+            .filter((a) => sent.has(a.source) && !keep.has(a.id))
+            .map((a) => a.id);
           if (drop.length) await tx.delete(noteAnnotations).where(inArray(noteAnnotations.id, drop));
           dropped = drop;
         }
@@ -400,7 +411,8 @@ export function notesRouter(deps: Deps): Router {
       const annotations = await db
         .select()
         .from(noteAnnotations)
-        .where(eq(noteAnnotations.noteId, note.id))
+        // The wire's annotations array is exactly the transcript rows; a plan row here renders as a marked spot.
+        .where(and(eq(noteAnnotations.noteId, note.id), eq(noteAnnotations.source, "transcript")))
         .orderBy(asc(noteAnnotations.idx));
       res.json({ note: updated, annotations });
     }),
@@ -747,7 +759,8 @@ export function notesRouter(deps: Deps): Router {
       const annotations = await db
         .select()
         .from(noteAnnotations)
-        .where(eq(noteAnnotations.noteId, note.id))
+        // The wire's annotations array is exactly the transcript rows; a plan row here renders as a marked spot.
+        .where(and(eq(noteAnnotations.noteId, note.id), eq(noteAnnotations.source, "transcript")))
         .orderBy(asc(noteAnnotations.idx));
       // Insert + annotations + supersededBy must stay one transaction — a copy without its annotations is worse than no copy.
       const { copy, clipIdByIdx } = await db.transaction(async (tx) => {
@@ -852,7 +865,7 @@ export function notesRouter(deps: Deps): Router {
               done: sql<number>`count(${noteAnnotations.doneAt})::int`,
             })
             .from(noteAnnotations)
-            .where(inArray(noteAnnotations.noteId, noteIds))
+            .where(and(inArray(noteAnnotations.noteId, noteIds), eq(noteAnnotations.source, "transcript")))
             .groupBy(noteAnnotations.noteId)
         : [];
       const countByNote = new Map(counts.map((c) => [c.noteId, c]));
@@ -909,7 +922,8 @@ export function notesRouter(deps: Deps): Router {
       const annotations = await db
         .select()
         .from(noteAnnotations)
-        .where(eq(noteAnnotations.noteId, note.id))
+        // The wire's annotations array is exactly the transcript rows; a plan row here renders as a marked spot.
+        .where(and(eq(noteAnnotations.noteId, note.id), eq(noteAnnotations.source, "transcript")))
         .orderBy(asc(noteAnnotations.idx));
       const [teacher] = note.origin === "self"
         ? [null]

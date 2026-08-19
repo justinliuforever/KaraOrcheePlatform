@@ -356,3 +356,45 @@ describe("the contract itself", () => {
     );
   });
 });
+
+describe("a practice-plan row never leaks into the reader's marked spots", () => {
+  it("stays out of the annotations array, the counts, and the PATCH sweep", async () => {
+    const note = await seedNote({ status: "sent", sentAt: new Date(), pieceId: "frozen_piece" });
+    await db.orm.insert(noteAnnotations).values({
+      noteId: note.id, idx: 9, category: "practice_strategy",
+      instruction: "Hands separate at 60", quote: null,
+      source: "plan", groupLabel: "Evenness", target: "Four clean runs",
+    });
+    const app = makeApp();
+
+    const teacher_ = await request(app).get(`/v1/notes/${note.id}`).set("Authorization", `Bearer ${teacher.token}`);
+    expect(teacher_.body.annotations.every((a: { instruction: string }) => a.instruction !== "Hands separate at 60")).toBe(true);
+
+    const student_ = await request(app).get(`/v1/me/notes/${note.id}`).set("Authorization", `Bearer ${student.token}`);
+    expect(student_.body.annotations).toHaveLength(REAL_ANNOTATIONS.length);
+
+    const list = await request(app).get("/v1/me/notes").set("Authorization", `Bearer ${student.token}`);
+    const row = (list.body.items as { id: string; annotationCount: number }[]).find((r) => r.id === note.id);
+    expect(row!.annotationCount).toBe(REAL_ANNOTATIONS.length);
+  });
+
+  it("survives an old binary saving a draft, which sends only the transcript rows", async () => {
+    const note = await seedNote({ pieceId: "frozen_piece" });
+    await db.orm.insert(noteAnnotations).values({
+      noteId: note.id, idx: 9, category: "practice_strategy",
+      instruction: "Five slow reps", quote: null, source: "plan",
+    });
+    const detail = await request(makeApp())
+      .get(`/v1/notes/${note.id}`)
+      .set("Authorization", `Bearer ${teacher.token}`);
+
+    const save = await request(makeApp())
+      .patch(`/v1/notes/${note.id}`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ annotations: detail.body.annotations });
+
+    expect(save.status).toBe(200);
+    const left = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, note.id));
+    expect(left.filter((a) => a.source === "plan")).toHaveLength(1);
+  });
+});
