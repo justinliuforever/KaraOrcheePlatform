@@ -1192,7 +1192,8 @@ export function notesRouter(deps: Deps): Router {
       const annotations = await db
         .select({ id: noteAnnotations.id })
         .from(noteAnnotations)
-        .where(eq(noteAnnotations.noteId, note.id))
+        // Must match narration.py's own filter exactly — a clip the worker never planned reads here as one that failed to arrive.
+        .where(and(eq(noteAnnotations.noteId, note.id), eq(noteAnnotations.source, "transcript")))
         .orderBy(asc(noteAnnotations.idx));
       const rows = await db
         .select()

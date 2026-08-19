@@ -347,7 +347,12 @@ def build_synthesizer() -> Synthesizer | None:
 
 def load_note(conn, note_id: str):
     """Returns (summary, is_self_origin, annotations) or None when there is nothing
-    narratable — no such note, or one already retracted."""
+    narratable — no such note, or one already retracted.
+
+    Only source='transcript' rows are spoken. A plan row entering this list would
+    renumber every step and change the count the overview clip states, which
+    invalidates every stored text_hash and drops the reader to the device voice
+    with nothing reported."""
     with conn.cursor() as cur:
         # ::uuid throughout — the on-demand trigger carries noteId as a JSON string.
         cur.execute("SELECT content, origin, status FROM notes WHERE id = %s::uuid", (note_id,))
@@ -360,7 +365,7 @@ def load_note(conn, note_id: str):
             content = json.loads(content)
         cur.execute(
             """SELECT id, instruction, quote, location FROM note_annotations
-               WHERE note_id = %s::uuid ORDER BY idx""", (note_id,))
+               WHERE note_id = %s::uuid AND source = 'transcript' ORDER BY idx""", (note_id,))
         annotations = [{"id": r[0], "instruction": r[1], "quote": r[2],
                         "location": json.loads(r[3]) if isinstance(r[3], str) else r[3]}
                        for r in cur.fetchall()]

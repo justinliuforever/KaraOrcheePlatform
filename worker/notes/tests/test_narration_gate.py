@@ -27,8 +27,11 @@ class FakeCursor:
         elif "FROM notes WHERE id" in text:
             self._rows = [(json.dumps(self.db.content), self.db.origin, self.db.status)]
         elif "FROM note_annotations" in text:
+            rows = self.db.annotations
+            if "source = 'transcript'" in text:
+                rows = [a for a in rows if a.get("source", "transcript") == "transcript"]
             self._rows = [(a["id"], a["instruction"], a["quote"], json.dumps(a["location"]))
-                          for a in self.db.annotations]
+                          for a in rows]
         else:
             raise AssertionError(f"unexpected sql: {text}")
 
@@ -170,3 +173,28 @@ def test_snapshot_round_trips_through_compare():
 
     assert before["checked"] == after["checked"] == 2
     assert problems and all("new mismatch" in p for p in problems)
+
+
+def test_a_plan_row_is_never_spoken_and_moves_no_hash():
+    db = seeded()
+    before = snapshot(audit_all(db))
+
+    # What the worker will start writing: a practice-plan step living beside the
+    # transcript rows in the same table.
+    db.annotations.insert(1, {**annotation("bbbbbbbb-0000-0000-0000-000000000001", "Hands separate at 60"),
+                              "source": "plan"})
+
+    report = audit_all(db)
+
+    assert report.clean, report.mismatches
+    assert snapshot(report) == before, "a plan row must not renumber or re-hash a single clip"
+
+
+def test_the_gate_would_still_catch_a_transcript_row_arriving():
+    db = seeded()
+    before = snapshot(audit_all(db))
+    db.annotations.insert(1, annotation("cccccccc-0000-0000-0000-000000000001", "A real new instruction"))
+
+    problems = compare(before, snapshot(audit_all(db)))
+
+    assert problems, "the filter must not blind the gate to a real change"

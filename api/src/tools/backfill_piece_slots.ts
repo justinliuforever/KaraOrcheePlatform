@@ -16,7 +16,7 @@ async function main(): Promise<number> {
     return 0;
   }
   const result = await writeSlotBackfill(db.orm);
-  console.log(`\nwrote ${result.lessonSlots} lesson slots, ${result.noteSlots} note slots, stamped ${result.itemsStamped} items`);
+  console.log(`\nwrote ${result.lessonSlots} lesson slots, ${result.noteSlots} note slots, stamped ${result.itemsStamped} items, ${result.planRows} plan rows`);
   const after = await planSlotBackfill(db.orm);
   console.log(`remaining: ${after.lessons.length} lessons, ${after.notes.length} notes, ` +
               `${after.unstampedNotes.length} notes with unstamped items`);

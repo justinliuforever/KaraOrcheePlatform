@@ -698,3 +698,42 @@ def test_a_model_that_volunteers_mentions_while_the_flag_is_off_stores_none(monk
         **ORIGINAL, "piece_mentions": ["plenty of lesson talk"]})
     main.process(conn, FakeBlobService(), "cs", "job-9")
     assert _job_mentions(conn) == []
+
+
+def test_plan_rows_land_beside_the_transcript_rows_without_disturbing_them():
+    conn = FakeConn({LOCK: teacher_lock(), "INSERT INTO notes": ("note-1",)})
+    content = {"lessonSummary": "s", "practicePlan": [
+        {"focus": "Evenness", "steps": ["Hands separate at 60", "Add the pedal last"], "target": "Four clean runs"},
+    ]}
+    main.replace_draft(conn, "job-1", "lesson-1", content, ORIGINAL, ANNS)
+
+    inserts = [(s, p) for s, p in conn.executed if s.startswith("INSERT INTO note_annotations")]
+    transcript = [p for s, p in inserts if "'plan'" not in s]
+    plan = [p for s, p in inserts if "'plan'" in s]
+    assert len(transcript) == len(ANNS)
+    assert len(plan) == 2
+    # idx continues past the transcript rows so the two orderings never interleave.
+    assert [p[1] for p in transcript] == [0, 1]
+    assert [p[1] for p in plan] == [2, 3]
+    assert plan[0][2] == "Hands separate at 60"
+    assert plan[0][3] == "Evenness" and plan[0][4] == "Four clean runs"
+
+
+def test_a_plan_entry_with_no_steps_still_keeps_its_words():
+    conn = FakeConn({LOCK: teacher_lock(), "INSERT INTO notes": ("note-1",)})
+    content = {"lessonSummary": "s", "practicePlan": [
+        {"focus": "Sight-reading every day", "steps": [], "target": ""},
+    ]}
+    main.replace_draft(conn, "job-1", "lesson-1", content, ORIGINAL, ANNS)
+
+    plan = [p for s, p in conn.executed if s.startswith("INSERT INTO note_annotations") and "'plan'" in s]
+    assert len(plan) == 1
+    assert plan[0][2] == "Sight-reading every day"
+
+
+def test_no_plan_means_no_plan_rows():
+    conn = FakeConn({LOCK: teacher_lock(), "INSERT INTO notes": ("note-1",)})
+    main.replace_draft(conn, "job-1", "lesson-1", {"lessonSummary": "s", "practicePlan": []}, ORIGINAL, ANNS)
+
+    plan = [s for s, _ in conn.executed if s.startswith("INSERT INTO note_annotations") and "'plan'" in s]
+    assert plan == []

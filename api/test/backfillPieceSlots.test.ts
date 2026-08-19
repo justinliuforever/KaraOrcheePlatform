@@ -117,7 +117,7 @@ describe("backfilling the first piece slot", () => {
     const second = await writeSlotBackfill(db.orm);
 
     expect(first.lessonSlots + first.noteSlots).toBeGreaterThan(0);
-    expect(second).toEqual({ lessonSlots: 0, noteSlots: 0, itemsStamped: 0 });
+    expect(second).toEqual({ lessonSlots: 0, noteSlots: 0, itemsStamped: 0, planRows: 0 });
     const slots = await db.orm.select().from(notedPieces).where(eq(notedPieces.noteId, note.id));
     expect(slots).toHaveLength(1);
     expect(slots[0]!.id).toBe(slotAfterFirst!.id);
@@ -149,5 +149,43 @@ describe("backfilling the first piece slot", () => {
     expect(result.itemsStamped).toBe(2);
     const items = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, note.id));
     expect(items.every((i) => i.notePieceId !== null)).toBe(true);
+  });
+
+  it("materialises an existing practice plan as rows without touching the json", async () => {
+    const note = await seedNote({ pieceId: "bf_piece", quotes: 2 });
+    const content = {
+      lessonSummary: "Good line today.",
+      practicePlan: [
+        { focus: "Evenness", steps: ["Hands separate at 60", "Add the pedal last"], target: "Four clean runs" },
+        { focus: "Sight-reading every day", steps: [], target: "" },
+      ],
+    };
+    await db.orm.update(notes).set({ content }).where(eq(notes.id, note.id));
+
+    const result = await writeSlotBackfill(db.orm);
+
+    expect(result.planRows).toBe(3);
+    const items = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, note.id));
+    const plan = items.filter((i) => i.source === "plan");
+    expect(plan).toHaveLength(3);
+    expect(plan.map((p) => p.instruction)).toContain("Sight-reading every day");
+    expect(plan.every((p) => p.quote === null)).toBe(true);
+    // The transcript rows keep the low indexes, so nothing renumbers under narration.
+    expect(items.filter((i) => i.source === "transcript").every((i) => i.idx < 2)).toBe(true);
+    const [after] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect(after!.content).toEqual(content);
+  });
+
+  it("does not re-materialise a plan it already wrote", async () => {
+    const note = await seedNote({ pieceId: "bf_piece" });
+    await db.orm.update(notes).set({
+      content: { lessonSummary: "s", practicePlan: [{ focus: "F", steps: ["one"], target: "t" }] },
+    }).where(eq(notes.id, note.id));
+    const first = await writeSlotBackfill(db.orm);
+
+    const second = await writeSlotBackfill(db.orm);
+
+    expect(first.planRows).toBe(1);
+    expect(second.planRows).toBe(0);
   });
 });

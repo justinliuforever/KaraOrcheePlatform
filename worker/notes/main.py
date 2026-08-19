@@ -384,6 +384,26 @@ def hold_scan(cur, scan_id: str | None) -> str | None:
     return scan_id if cur.fetchone() is not None else None
 
 
+
+def plan_rows(content) -> list[dict]:
+    """content.practicePlan flattened to one row per step. An entry whose steps list
+    is empty still yields a row from its focus — dropping it would lose the only
+    words that entry carried."""
+    out = []
+    for entry in (content or {}).get("practicePlan") or []:
+        if not isinstance(entry, dict):
+            continue
+        focus = entry.get("focus") if isinstance(entry.get("focus"), str) else ""
+        target = entry.get("target") if isinstance(entry.get("target"), str) else ""
+        steps = [s for s in entry.get("steps") or [] if isinstance(s, str) and s.strip()]
+        if not steps and focus.strip():
+            out.append({"instruction": focus.strip(), "group_label": focus.strip(), "target": target})
+            continue
+        for s in steps:
+            out.append({"instruction": s.strip(), "group_label": focus, "target": target})
+    return out
+
+
 def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: dict,
                   annotations: list[dict]) -> str | None:
     """Idempotent output. Teacher lessons: a redelivered job wipes its own draft and
@@ -508,6 +528,18 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                 (note_id, idx, a["category"], a["instruction"], a["quote"],
                  json.dumps(a["location"]), slot_id, slot_id))
+        # The plan as rows, ALONGSIDE content.practicePlan, which stays the truth and the wire.
+        # idx continues past the transcript rows so the two never interleave; narration reads
+        # only source='transcript', so none of this is ever spoken.
+        for idx, step in enumerate(plan_rows(content), start=len(annotations)):
+            cur.execute(
+                """INSERT INTO note_annotations (note_id, idx, category, instruction, quote, location,
+                                                 source, group_label, target,
+                                                 note_piece_id, grounded_piece_id)
+                   VALUES (%s, %s, 'practice_strategy', %s, NULL, '{}'::jsonb,
+                           'plan', %s, %s, %s, %s)""",
+                (note_id, idx, step["instruction"], step["group_label"], step["target"],
+                 slot_id, slot_id))
     conn.commit()
     return note_id
 
