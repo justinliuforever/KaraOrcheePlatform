@@ -225,6 +225,13 @@
       "when": 1786932891883,
       "tag": "0031_lesson_score_scan_index",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1787107677315,
+      "tag": "0032_multipiece_spine",
+      "breakpoints": true
     }
   ]
 }
