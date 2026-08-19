@@ -406,7 +406,7 @@ export const noteAnnotations = pgTable("note_annotations", {
   // A transcript row without its quote is an unsourced instruction, which this product may never mint.
   check("ck_practice_item_transcript_quoted", sql`${t.source} <> 'transcript' OR ${t.quote} IS NOT NULL`),
   index("ix_note_annotations_piece").on(t.notePieceId).where(sql`${t.notePieceId} IS NOT NULL`),
-  // Composite, so a slot reference can only ever name a slot on THIS note; the column list is what keeps note_id out of the SET NULL.
+  // Composite, so a slot reference can only ever name a slot on THIS note. Drizzle cannot express the SET NULL column list, so 0034 rewrites these two by hand — a plain SET NULL nulls note_id, which is NOT NULL, and every slot delete 500s.
   foreignKey({ columns: [t.noteId, t.notePieceId], foreignColumns: [notedPieces.noteId, notedPieces.id] })
     .onDelete("set null"),
   foreignKey({ columns: [t.noteId, t.groundedPieceId], foreignColumns: [notedPieces.noteId, notedPieces.id] })

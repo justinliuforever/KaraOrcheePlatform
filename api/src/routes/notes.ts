@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { Response } from "express";
 import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Deps } from "../deps";
 import { wrap } from "../deps";
@@ -19,6 +20,7 @@ import { MSG_NOTE_NAMES_PIECE } from "./lessons";
 import { REGROUND_HINT, reground } from "../notes/reground";
 import { syncLessonSlot, syncNoteSlot } from "../notes/slot_sync";
 import { notePieceWire, notePieces, studentPieceWire } from "../notes/pieces_wire";
+import { applyBinding, MAX_SLOTS, moveSlot, nextSortIndex, slotsOf, type SlotFacts } from "../notes/slot_crud";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import { normalizeLabel, upsertCustomPiece } from "./customPieces";
@@ -1253,6 +1255,178 @@ export function notesRouter(deps: Deps): Router {
         clips,
         pending,
       });
+    }),
+  );
+
+  // ── Piece slots ───────────────────────────────────────────────────────────────
+
+  async function editableTeacherNote(db: Orm, noteId: string, meId: string, res: Response) {
+    if (!isUuid(noteId)) {
+      res.status(404).json({ error: "not_found" });
+      return null;
+    }
+    const [note] = await db.select().from(notes).where(teacherNote(noteId, meId)).limit(1);
+    if (!note) {
+      res.status(404).json({ error: "not_found" });
+      return null;
+    }
+    if (note.status !== "draft") {
+      res.status(409).json({ error: "not_editable", message: "Sent notes can't be edited — retract, fix, and resend." });
+      return null;
+    }
+    return note;
+  }
+
+  router.post(
+    "/v1/notes/:id/pieces",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      if (!requireTeacher(me, res)) return;
+      const note = await editableTeacherNote(db, String(req.params.id), me.id, res);
+      if (!note) return;
+      const body = req.body ?? {};
+
+      const pieceId = typeof body.pieceId === "string" ? body.pieceId : null;
+      if (pieceId) {
+        const [piece] = await db.select({ id: pieces.id }).from(pieces).where(eq(pieces.id, pieceId)).limit(1);
+        if (!piece) {
+          res.status(400).json({ error: "unknown_piece" });
+          return;
+        }
+      }
+      const scanId = "scoreScanId" in body ? await ownedScanId(deps, me.id, body.scoreScanId) : null;
+      if (scanId === "miss") {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (pieceId && scanId) {
+        res.status(409).json({ error: "note_names_piece", message: MSG_NOTE_NAMES_PIECE });
+        return;
+      }
+
+      const created = await db.transaction(async (tx) => {
+        const existing = await slotsOf(tx, note.id);
+        if (existing.length >= MAX_SLOTS) return "full" as const;
+        const [row] = await tx
+          .insert(notedPieces)
+          .values({
+            noteId: note.id,
+            sortIndex: await nextSortIndex(tx, note.id),
+            pieceId,
+            pieceLabel: typeof body.pieceLabel === "string" && body.pieceLabel.trim()
+              ? body.pieceLabel.trim()
+              : null,
+            scoreScanId: scanId,
+          })
+          .returning();
+        return row!;
+      });
+      if (created === "full") {
+        res.status(409).json({
+          error: "too_many_pieces",
+          message: `A lesson can hold up to ${MAX_SLOTS} pieces.`,
+        });
+        return;
+      }
+      await userAudit(deps, req, "note.piece_add", { type: "note", id: note.id }, { slotId: created.id });
+      res.status(201).json({ piece: notePieceWire(created) });
+    }),
+  );
+
+  router.patch(
+    "/v1/notes/:id/pieces/:slotId",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      if (!requireTeacher(me, res)) return;
+      const note = await editableTeacherNote(db, String(req.params.id), me.id, res);
+      if (!note) return;
+      const slotId = String(req.params.slotId);
+      const body = req.body ?? {};
+
+      if ("pieceId" in body && typeof body.pieceId === "string") {
+        const [piece] = await db.select({ id: pieces.id }).from(pieces).where(eq(pieces.id, body.pieceId)).limit(1);
+        if (!piece) {
+          res.status(400).json({ error: "unknown_piece" });
+          return;
+        }
+      }
+      let scanId: string | null | "miss" = null;
+      if ("scoreScanId" in body) {
+        scanId = await ownedScanId(deps, me.id, body.scoreScanId);
+        if (scanId === "miss") {
+          res.status(404).json({ error: "not_found" });
+          return;
+        }
+      }
+
+      const out = await db.transaction(async (tx) => {
+        const [slot] = await tx
+          .select()
+          .from(notedPieces)
+          .where(and(eq(notedPieces.id, slotId), eq(notedPieces.noteId, note.id)))
+          .for("update")
+          .limit(1);
+        if (!slot) return "gone" as const;
+        const facts: SlotFacts = {};
+        if ("pieceId" in body) facts.pieceId = typeof body.pieceId === "string" ? body.pieceId : null;
+        if ("pieceLabel" in body) {
+          facts.pieceLabel = typeof body.pieceLabel === "string" && body.pieceLabel.trim()
+            ? body.pieceLabel.trim()
+            : null;
+        }
+        if ("scoreScanId" in body) facts.scoreScanId = scanId as string | null;
+        const decided = applyBinding(facts, slot);
+        if (decided.refused) return "refused" as const;
+        if (typeof body.sortIndex === "number" && Number.isInteger(body.sortIndex)) {
+          await moveSlot(tx, note.id, slot.id, body.sortIndex);
+        }
+        if (Object.keys(decided.values).length) {
+          await tx
+            .update(notedPieces)
+            .set({ ...decided.values, updatedAt: sql`now()` })
+            .where(eq(notedPieces.id, slot.id));
+        }
+        const [after] = await tx.select().from(notedPieces).where(eq(notedPieces.id, slot.id)).limit(1);
+        return { row: after!, scoreDetached: decided.scoreDetached };
+      });
+      if (out === "gone") {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (out === "refused") {
+        res.status(409).json({ error: "note_names_piece", message: MSG_NOTE_NAMES_PIECE });
+        return;
+      }
+      res.json({ piece: notePieceWire(out.row), scoreDetached: out.scoreDetached });
+    }),
+  );
+
+  router.delete(
+    "/v1/notes/:id/pieces/:slotId",
+    ...guards,
+    wrap(async (req, res) => {
+      const me = req.notesUser!;
+      const db = deps.db!.orm;
+      if (!requireTeacher(me, res)) return;
+      const note = await editableTeacherNote(db, String(req.params.id), me.id, res);
+      if (!note) return;
+
+      // The items survive in General: deleting a card must never take a teacher's words with it.
+      const gone = await db
+        .delete(notedPieces)
+        .where(and(eq(notedPieces.id, String(req.params.slotId)), eq(notedPieces.noteId, note.id)))
+        .returning({ id: notedPieces.id });
+      if (!gone.length) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      await userAudit(deps, req, "note.piece_remove", { type: "note", id: note.id },
+                      { slotId: String(req.params.slotId) });
+      res.json({ ok: true });
     }),
   );
 

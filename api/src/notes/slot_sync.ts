@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { lessonPieces, lessonSessions, noteAnnotations, notedPieces, notes } from "../db/schema";
 import type { Orm } from "../db/client";
 
@@ -21,10 +21,12 @@ export async function syncLessonSlot(tx: Writer, lesson: typeof lessonSessions.$
     customPieceId: lesson.customPieceId,
     scoreScanId: lesson.scoreScanId,
   };
+  // The LOWEST slot, not literally index 0 — once slots can be reordered or inserted before, the mirror is whichever comes first.
   const [existing] = await tx
     .select({ id: lessonPieces.id })
     .from(lessonPieces)
-    .where(and(eq(lessonPieces.lessonSessionId, lesson.id), eq(lessonPieces.sortIndex, FIRST_SLOT)))
+    .where(eq(lessonPieces.lessonSessionId, lesson.id))
+    .orderBy(asc(lessonPieces.sortIndex))
     .limit(1);
   if (existing) {
     await tx.update(lessonPieces).set({ ...values, updatedAt: sql`now()` }).where(eq(lessonPieces.id, existing.id));
@@ -50,7 +52,8 @@ export async function syncNoteSlot(tx: Writer, note: typeof notes.$inferSelect):
   const [existing] = await tx
     .select({ id: notedPieces.id })
     .from(notedPieces)
-    .where(and(eq(notedPieces.noteId, note.id), eq(notedPieces.sortIndex, FIRST_SLOT)))
+    .where(eq(notedPieces.noteId, note.id))
+    .orderBy(asc(notedPieces.sortIndex))
     .limit(1);
   if (existing) {
     await tx.update(notedPieces).set({ ...values, updatedAt: sql`now()` }).where(eq(notedPieces.id, existing.id));
