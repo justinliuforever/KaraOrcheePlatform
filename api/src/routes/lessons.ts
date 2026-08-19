@@ -9,6 +9,7 @@ import { notesAccess } from "../notes/entitlement";
 import { narrationPrefix } from "../notes/narration";
 import { REGROUND_HINT, reground } from "../notes/reground";
 import { syncLessonSlot, syncNoteSlot } from "../notes/slot_sync";
+import { lessonPieceWire, lessonPiecesFor } from "../notes/pieces_wire";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import {
@@ -639,6 +640,8 @@ export function lessonsRouter(deps: Deps): Router {
           ...lessonWire(lesson),
           discardAllowed: discardAllowed({ lessonStatus: lesson.status, job, notes: noteRows }),
         },
+        // Additive beside the singular projection above; empty only when the lesson names nothing.
+        pieces: (await lessonPiecesFor(db, lesson)).map(lessonPieceWire),
         job: job
           ? {
               ...job,

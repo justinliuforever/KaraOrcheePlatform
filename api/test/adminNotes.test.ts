@@ -550,6 +550,9 @@ describe("note-jobs monitoring", () => {
       .get(`/admin/note-jobs/${readyJob}`)
       .set("Authorization", `Bearer ${adminToken}`);
     assertFrozen(frozenAdminJobDetailLesson, detail.body.lesson, "GET /admin/note-jobs/:id lesson");
+    // The console must be able to see a lesson holding more than one piece.
+    expect(Array.isArray(detail.body.lesson.pieces)).toBe(true);
+    expect(detail.body.lesson.pieces[0].pieceLabel).toBe("Minuet in G");
   });
 
   it("filters by status", async () => {

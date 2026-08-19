@@ -4,6 +4,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Deps } from "../deps";
 import { wrap } from "../deps";
 import { requireAuth } from "../auth";
+import { lessonPieceWire, lessonPiecesFor } from "../notes/pieces_wire";
 import { requireAdmin, audit } from "../admin";
 import { notesAccess } from "../notes/entitlement";
 import { DEFAULT_RETRY_CAP, RETRY_CAPS, retryDecision } from "./lessons";
@@ -573,6 +574,8 @@ export function adminNotesRouter(deps: Deps): Router {
               student: studentRow ?? null,
               pieceId: lesson.pieceId,
               pieceLabel: lesson.pieceLabel,
+              // The console is a typed client too, and a multi-piece lesson rendered from the singular fields shows one arbitrary piece.
+              pieces: (await lessonPiecesFor(db, lesson)).map(lessonPieceWire),
               durationSec: lesson.durationSec,
               language: lesson.language,
               createdAt: lesson.createdAt,

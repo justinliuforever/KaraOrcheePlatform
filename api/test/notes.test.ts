@@ -3251,7 +3251,8 @@ describe("wire key sets the shipped app decodes", () => {
 
     const detail = await request(makeApp())
       .get(`/v1/lessons/${created.body.lesson.id}`).set("Authorization", `Bearer ${teacher.token}`);
-    expect(keys(detail.body)).toEqual(["job", "lesson", "notes"]);
+    // "pieces" is the plural shape, added beside the singular projection the shipped app reads.
+    expect(keys(detail.body)).toEqual(["job", "lesson", "notes", "pieces"]);
     expect(keys(detail.body.lesson)).toEqual([...LESSON_ROW, "discardAllowed"].sort());
   });
 

@@ -14,6 +14,9 @@ export const frozenAnnotation = z.object({
   category: z.string().min(1),
   instruction: z.string().min(1),
   location: frozenLocation,
+  // Already on the wire because these routes return the row; pinned so a later projection cannot drop them silently.
+  source: z.enum(["transcript", "plan"]),
+  notePieceId: z.string().nullable(),
 });
 
 export const frozenPracticePlanItem = z.object({

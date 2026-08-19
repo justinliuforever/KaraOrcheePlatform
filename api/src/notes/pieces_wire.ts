@@ -80,11 +80,29 @@ export async function notePieces(
   }];
 }
 
-export async function lessonPiecesFor(db: Reader, lessonIds: string[]) {
-  if (!lessonIds.length) return [];
-  return await db
+/// Synthesised like the note side, and for the same reason: a plural view that reads empty while the singular columns name a piece is a trap.
+export async function lessonPiecesFor(
+  db: Reader,
+  lesson: { id: string; pieceId: string | null; pieceLabel: string | null; pieceSource: string | null;
+            scoreScanId: string | null },
+): Promise<(typeof lessonPieces.$inferSelect)[]> {
+  const rows = await db
     .select()
     .from(lessonPieces)
-    .where(inArray(lessonPieces.lessonSessionId, lessonIds))
+    .where(inArray(lessonPieces.lessonSessionId, [lesson.id]))
     .orderBy(asc(lessonPieces.sortIndex));
+  if (rows.length) return rows;
+  if (!lesson.pieceId && !lesson.pieceLabel && !lesson.scoreScanId) return [];
+  return [{
+    id: `pending:${lesson.id}`,
+    lessonSessionId: lesson.id,
+    sortIndex: 0,
+    pieceId: lesson.pieceId,
+    pieceLabel: lesson.pieceLabel,
+    pieceSource: lesson.pieceSource,
+    customPieceId: null,
+    scoreScanId: lesson.scoreScanId,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }];
 }
