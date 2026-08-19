@@ -161,6 +161,58 @@ async function ownedScan(db: Orm, ownerId: string, value: unknown): Promise<Scan
   return { kind: "ok", id: scan.id };
 }
 
+// Drizzle wraps the driver error, so the SQLSTATE is on a cause several links down.
+function isUniqueViolation(err: unknown): boolean {
+  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
+    if (typeof e === "object" && (e as { code?: unknown }).code === "23505") return true;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+type ReplayFacts = {
+  studentId: string | null;
+  pieceId: string | null;
+  pieceLabel: string | null;
+  pieceSource: string | null;
+  scoreScanId: string | null;
+};
+
+// A retry whose first response never reached the client carries facts the row never received; fill only what is still null, so a deliberate later edit is never undone by a stale replay.
+async function adoptMissingFacts(
+  db: Orm,
+  ownerId: string,
+  row: typeof lessonSessions.$inferSelect,
+  facts: ReplayFacts,
+): Promise<typeof lessonSessions.$inferSelect> {
+  const patch: Record<string, unknown> = {};
+  if (row.studentId === null && facts.studentId !== null) patch.studentId = facts.studentId;
+  const holdsScan = row.scoreScanId !== null;
+  const holdsPiece = row.pieceId !== null;
+  if (row.pieceId === null && facts.pieceId !== null && !holdsScan) patch.pieceId = facts.pieceId;
+  if (row.pieceLabel === null && facts.pieceLabel !== null) patch.pieceLabel = facts.pieceLabel;
+  if (row.pieceSource === null && facts.pieceSource !== null) patch.pieceSource = facts.pieceSource;
+  if (row.scoreScanId === null && facts.scoreScanId !== null && !holdsPiece && patch.pieceId === undefined) {
+    patch.scoreScanId = facts.scoreScanId;
+  }
+  if (patch.pieceId !== undefined || patch.pieceLabel !== undefined || patch.scoreScanId !== undefined) {
+    patch.pieceUpdatedAt = sql`now()`;
+  }
+  if (Object.keys(patch).length === 0) return row;
+  return await db.transaction(async (tx) => {
+    // Only when the label itself was adopted — minting from a label this row rejected would hang a stranger's words off the lesson.
+    if (patch.pieceLabel !== undefined && row.customPieceId === null && facts.pieceSource === "typed") {
+      patch.customPieceId = await upsertCustomPiece(tx, ownerId, facts.pieceLabel!);
+    }
+    const [updated] = await tx
+      .update(lessonSessions)
+      .set({ ...patch, updatedAt: sql`now()` })
+      .where(eq(lessonSessions.id, row.id))
+      .returning();
+    return updated ?? row;
+  });
+}
+
 // Must throw, not return — returning here would COMMIT the CAS despite the revoked permission.
 class DiscardRaced extends Error {}
 
@@ -259,49 +311,11 @@ export function lessonsRouter(deps: Deps): Router {
         ownerRole = requested;
       }
 
-      // Idempotency check must run before any gate — a retried POST for an existing row must return it even if the trial lapsed since.
-      if (clientLessonId) {
-        const [dup] = await db
-          .select()
-          .from(lessonSessions)
-          .where(and(
-            eq(lessonSessions.teacherId, me.id),
-            eq(lessonSessions.clientLessonId, clientLessonId),
-            sql`${lessonSessions.status} <> 'canceled'`,
-          ))
-          .limit(1);
-        if (dup) {
-          // audioPath must never be null in the response — the client's fielded decoder treats uploadUrl as non-optional.
-          let audioPath = dup.audioPath;
-          if (!audioPath) {
-            audioPath = deps.lessons.blobPath(me.id, dup.id);
-            await db.update(lessonSessions).set({ audioPath, updatedAt: sql`now()` }).where(eq(lessonSessions.id, dup.id));
-          }
-          res.status(200).json({
-            lesson: { ...dup, audioPath },
-            uploadUrl: deps.lessons.uploadUrl(audioPath),
-          });
-          return;
-        }
+      // Validity gates run BEFORE the idempotency shortcut: a replay that adopts facts must not become a way around the checks a fresh create makes.
+      if (ownerRole === "student" && studentId) {
+        res.status(400).json({ error: "solo_lesson_no_student", message: MSG_SOLO_NO_STUDENT });
+        return;
       }
-
-      if (ownerRole === "student") {
-        // Create-time entitlement check is UX only; submit is the real cost guard (trial can lapse in between).
-        if (studentId) {
-          res.status(400).json({ error: "solo_lesson_no_student", message: MSG_SOLO_NO_STUDENT });
-          return;
-        }
-        if (body.attested !== true) {
-          res.status(400).json({ error: "attestation_required", message: "Confirm your teacher knows this lesson is being recorded." });
-          return;
-        }
-        const access = await notesAccess(deps, me);
-        if (access.status === "lapsed") {
-          res.status(402).json({ error: "entitlement_required", access });
-          return;
-        }
-      }
-
       if (pieceId) {
         const [piece] = await db.select({ id: pieces.id }).from(pieces).where(eq(pieces.id, pieceId)).limit(1);
         if (!piece) {
@@ -332,33 +346,104 @@ export function lessonsRouter(deps: Deps): Router {
         return;
       }
 
-      const startedAt = body.startedAt ? new Date(body.startedAt) : null;
-      const endedAt = body.endedAt ? new Date(body.endedAt) : null;
-      // One transaction — an entity that mints without its lesson (or vice versa) is worse than neither existing.
-      const row = await db.transaction(async (tx) => {
-        const customPieceId = pieceSource === "typed" && pieceLabel
-          ? await upsertCustomPiece(tx, me.id, pieceLabel)
-          : null;
-        const [inserted] = await tx
-          .insert(lessonSessions)
-          .values({
-            teacherId: me.id,
-            ownerRole,
-            clientLessonId,
+      // The entitlement gate stays BELOW this — a retried POST for an existing row must return it even if the trial lapsed since.
+      if (clientLessonId) {
+        const [dup] = await db
+          .select()
+          .from(lessonSessions)
+          .where(and(
+            eq(lessonSessions.teacherId, me.id),
+            eq(lessonSessions.clientLessonId, clientLessonId),
+            sql`${lessonSessions.status} <> 'canceled'`,
+          ))
+          .limit(1);
+        if (dup) {
+          const adopted = await adoptMissingFacts(db, me.id, dup, {
             studentId,
             pieceId,
             pieceLabel,
             pieceSource,
-            customPieceId,
             scoreScanId,
-            startedAt: startedAt && !Number.isNaN(startedAt.getTime()) ? startedAt : null,
-            endedAt: endedAt && !Number.isNaN(endedAt.getTime()) ? endedAt : null,
-            durationSec: Number.isFinite(body.durationSec) ? Math.round(body.durationSec) : null,
-            attested: body.attested === true,
-          })
-          .returning();
-        return inserted;
-      });
+          });
+          // audioPath must never be null in the response — the client's fielded decoder treats uploadUrl as non-optional.
+          let audioPath = adopted.audioPath;
+          if (!audioPath) {
+            audioPath = deps.lessons.blobPath(me.id, adopted.id);
+            await db.update(lessonSessions).set({ audioPath, updatedAt: sql`now()` }).where(eq(lessonSessions.id, adopted.id));
+          }
+          res.status(200).json({
+            lesson: { ...adopted, audioPath },
+            uploadUrl: deps.lessons.uploadUrl(audioPath),
+          });
+          return;
+        }
+      }
+
+      if (ownerRole === "student") {
+        if (body.attested !== true) {
+          res.status(400).json({ error: "attestation_required", message: "Confirm your teacher knows this lesson is being recorded." });
+          return;
+        }
+        // Create-time entitlement check is UX only; submit is the real cost guard (trial can lapse in between).
+        const access = await notesAccess(deps, me);
+        if (access.status === "lapsed") {
+          res.status(402).json({ error: "entitlement_required", access });
+          return;
+        }
+      }
+
+      const startedAt = body.startedAt ? new Date(body.startedAt) : null;
+      const endedAt = body.endedAt ? new Date(body.endedAt) : null;
+      // One transaction — an entity that mints without its lesson (or vice versa) is worse than neither existing.
+      let row: typeof lessonSessions.$inferSelect | undefined;
+      try {
+        row = await db.transaction(async (tx) => {
+          const customPieceId = pieceSource === "typed" && pieceLabel
+            ? await upsertCustomPiece(tx, me.id, pieceLabel)
+            : null;
+          const [inserted] = await tx
+            .insert(lessonSessions)
+            .values({
+              teacherId: me.id,
+              ownerRole,
+              clientLessonId,
+              studentId,
+              pieceId,
+              pieceLabel,
+              pieceSource,
+              customPieceId,
+              scoreScanId,
+              startedAt: startedAt && !Number.isNaN(startedAt.getTime()) ? startedAt : null,
+              endedAt: endedAt && !Number.isNaN(endedAt.getTime()) ? endedAt : null,
+              durationSec: Number.isFinite(body.durationSec) ? Math.round(body.durationSec) : null,
+              attested: body.attested === true,
+            })
+            .returning();
+          return inserted;
+        });
+      } catch (err) {
+        // Two retries in flight at once: the loser must be handed the winner, not a 500 that costs the recording.
+        if (!clientLessonId || !isUniqueViolation(err)) throw err;
+        const [winner] = await db
+          .select()
+          .from(lessonSessions)
+          .where(and(
+            eq(lessonSessions.teacherId, me.id),
+            eq(lessonSessions.clientLessonId, clientLessonId),
+          ))
+          .limit(1);
+        if (!winner) throw err;
+        let audioPath = winner.audioPath;
+        if (!audioPath) {
+          audioPath = deps.lessons.blobPath(me.id, winner.id);
+          await db.update(lessonSessions).set({ audioPath, updatedAt: sql`now()` }).where(eq(lessonSessions.id, winner.id));
+        }
+        res.status(200).json({
+          lesson: { ...winner, audioPath },
+          uploadUrl: deps.lessons.uploadUrl(audioPath),
+        });
+        return;
+      }
       const path = deps.lessons.blobPath(me.id, row!.id);
       await db.update(lessonSessions).set({ audioPath: path }).where(eq(lessonSessions.id, row!.id));
       await userAudit(deps, req, "lesson.create", { type: "lesson", id: row!.id });
