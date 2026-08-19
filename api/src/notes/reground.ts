@@ -6,6 +6,14 @@ type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
 
 export const REGROUND_HINT = "This pointed past the end of the piece — place it on the score.";
 
+export const MOVED_HINT = "This moved to another piece — place it on the score.";
+
+/// The one shape an ungrounded location takes: the bar numbers and whoever placed them are gone, not kept alongside a false flag.
+export function ungrounded(loc: Record<string, unknown>, hint: string) {
+  const { measureStart: _s, measureEnd: _e, pinnedBy: _p, ...rest } = loc;
+  return { ...rest, grounded: false, hint };
+}
+
 /// A bar number survives only while the score it was written against is still this slot's score; `bound === null` means there is no engraving to check it against, so nothing grounded survives.
 export async function reground(tx: Tx, noteId: string, bound: number | null): Promise<number> {
   const rows = await tx.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, noteId));
@@ -22,10 +30,9 @@ export async function reground(tx: Tx, noteId: string, bound: number | null): Pr
           : null;
       if (end === null || end <= bound) continue;
     }
-    const { measureStart: _s, measureEnd: _e, pinnedBy: _p, ...rest } = loc;
     await tx
       .update(noteAnnotations)
-      .set({ location: { ...rest, grounded: false, hint: REGROUND_HINT }, updatedAt: sql`now()` })
+      .set({ location: ungrounded(loc, REGROUND_HINT), updatedAt: sql`now()` })
       .where(eq(noteAnnotations.id, a.id));
     n++;
   }

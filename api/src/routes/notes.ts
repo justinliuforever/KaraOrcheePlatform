@@ -17,7 +17,7 @@ import {
 } from "../notes/narration";
 import { notifyNoteSent } from "../notes/push";
 import { MSG_NOTE_NAMES_PIECE } from "./lessons";
-import { REGROUND_HINT, reground } from "../notes/reground";
+import { MOVED_HINT, REGROUND_HINT, reground, ungrounded } from "../notes/reground";
 import { syncLessonSlot, syncNoteSlot } from "../notes/slot_sync";
 import { notePieceWire, notePieces, studentPieceWire } from "../notes/pieces_wire";
 import { applyBinding, MAX_SLOTS, moveSlot, nextSortIndex, slotsOf, type SlotFacts } from "../notes/slot_crud";
@@ -197,6 +197,9 @@ const teacherOwned = (teacherId: string) =>
 const teacherNote = (id: string, teacherId: string) =>
   and(eq(notes.id, id), teacherOwned(teacherId));
 
+/// Thrown inside the edit transaction so a bad slot id rolls the whole edit back rather than committing half of it.
+class UnknownSlot extends Error {}
+
 export function notesRouter(deps: Deps): Router {
   const router = Router();
   const guards = [requireAuth(deps.auth), requireUser(deps)];
@@ -349,58 +352,94 @@ export function notesRouter(deps: Deps): Router {
       const cameFromPhotographs = scoreChanged && note.scoreScanId !== null;
       // One transaction, CAS on draft — a racing send must never lose an edit, and quote (verbatim provenance) is never alterable via this payload.
       let dropped: string[] = [];
-      const updated = await db.transaction(async (tx) => {
-        const [u] = await tx
-          .update(notes)
-          .set(patch)
-          .where(and(eq(notes.id, note.id), eq(notes.status, "draft")))
-          .returning();
-        if (!u) return null;
-        await syncNoteSlot(tx, u);
+      let updated;
+      try {
+        updated = await db.transaction(async (tx) => {
+          const [u] = await tx
+            .update(notes)
+            .set(patch)
+            .where(and(eq(notes.id, note.id), eq(notes.status, "draft")))
+            .returning();
+          if (!u) return null;
+          await syncNoteSlot(tx, u);
 
-        // A number spoken while the teacher read photographed pages is a coordinate in THAT edition — landing in range against ours is coincidence, so nothing survives the swap.
-        if (scoreChanged) await reground(tx, note.id, cameFromPhotographs ? null : newPieceMeasures);
+          // A number spoken while the teacher read photographed pages is a coordinate in THAT edition — landing in range against ours is coincidence, so nothing survives the swap.
+          if (scoreChanged) await reground(tx, note.id, cameFromPhotographs ? null : newPieceMeasures);
 
-        if (Array.isArray(body.annotations)) {
-          const existing = await tx
-            .select()
-            .from(noteAnnotations)
-            .where(eq(noteAnnotations.noteId, note.id));
-          const byId = new Map(existing.map((a) => [a.id, a]));
-          const keep = new Set<string>();
-          let idx = 0;
-          for (const a of body.annotations as Record<string, unknown>[]) {
-            const id = typeof a.id === "string" ? a.id : null;
-            const row = id ? byId.get(id) : undefined;
-            if (!row) continue;  // no id / unknown id: cannot mint an unsourced annotation
-            keep.add(row.id);
-            await tx
-              .update(noteAnnotations)
-              .set({
-                idx: idx++,
-                category: typeof a.category === "string" ? a.category : row.category,
-                instruction: typeof a.instruction === "string" ? a.instruction : row.instruction,
-                location: a.location && typeof a.location === "object" ? a.location : row.location,
-                updatedAt: sql`now()`,
-              })
-              .where(eq(noteAnnotations.id, row.id));
+          if (Array.isArray(body.annotations)) {
+            const existing = await tx
+              .select()
+              .from(noteAnnotations)
+              .where(eq(noteAnnotations.noteId, note.id));
+            const byId = new Map(existing.map((a) => [a.id, a]));
+            const keep = new Set<string>();
+            const items = body.annotations as Record<string, unknown>[];
+            // Read after the slot sync above, so the row minted from the singular columns is already there.
+            const slots = items.some((a) => "notePieceId" in a) ? await slotsOf(tx, note.id) : [];
+            const slotIds = new Set(slots.map((s) => s.id));
+            const synthesised = `pending:${note.id}`;
+            const resolve = (v: unknown): string | null => {
+              if (typeof v !== "string") return null;
+              if (v === synthesised) return slots[0]?.id ?? null;
+              if (!slotIds.has(v)) throw new UnknownSlot();
+              return v;
+            };
+            let idx = 0;
+            for (const a of items) {
+              const id = typeof a.id === "string" ? a.id : null;
+              const row = id ? byId.get(id) : undefined;
+              if (!row) continue;  // no id / unknown id: cannot mint an unsourced annotation
+              keep.add(row.id);
+              const piece = "notePieceId" in a ? resolve(a.notePieceId) : row.notePieceId;
+              const sent = a.location && typeof a.location === "object" ? (a.location as Record<string, unknown>) : null;
+              let loc = (sent ?? row.location ?? {}) as Record<string, unknown>;
+              let grounding = row.groundedPieceId;
+              if (loc.grounded === true) {
+                // Compared field by field, never as whole objects: jsonb hands the stored copy back with its keys in another order.
+                const was = (row.location ?? {}) as Record<string, unknown>;
+                const replaced = was.grounded !== true
+                  || loc.measureStart !== was.measureStart
+                  || loc.measureEnd !== was.measureEnd;
+                if (replaced) grounding = piece;
+                // A bar number holds only for the score it was written against, so carrying one to another piece is the same lie as carrying it across a score swap.
+                else if (piece !== row.groundedPieceId) { loc = ungrounded(loc, MOVED_HINT); grounding = null; }
+              } else {
+                grounding = null;
+              }
+              await tx
+                .update(noteAnnotations)
+                .set({
+                  idx: idx++,
+                  category: typeof a.category === "string" ? a.category : row.category,
+                  instruction: typeof a.instruction === "string" ? a.instruction : row.instruction,
+                  location: loc,
+                  notePieceId: piece,
+                  groundedPieceId: grounding,
+                  updatedAt: sql`now()`,
+                })
+                .where(eq(noteAnnotations.id, row.id));
+            }
+            // Scoped to the sources the payload actually carries: an old binary sends only transcript
+            // rows, and an unscoped sweep reads every plan row's absence as a deletion.
+            const sentSources = new Set(
+              items
+                .map((a) => (typeof a.id === "string" ? byId.get(a.id)?.source : undefined))
+                .filter((v): v is string => typeof v === "string"),
+            );
+            if (!sentSources.size) sentSources.add("transcript");
+            const drop = existing
+              .filter((a) => sentSources.has(a.source) && !keep.has(a.id))
+              .map((a) => a.id);
+            if (drop.length) await tx.delete(noteAnnotations).where(inArray(noteAnnotations.id, drop));
+            dropped = drop;
           }
-          // Scoped to the sources the payload actually carries: an old binary sends only transcript
-          // rows, and an unscoped sweep reads every plan row's absence as a deletion.
-          const sent = new Set(
-            (body.annotations as Record<string, unknown>[])
-              .map((a) => (typeof a.id === "string" ? byId.get(a.id)?.source : undefined))
-              .filter((v): v is string => typeof v === "string"),
-          );
-          if (!sent.size) sent.add("transcript");
-          const drop = existing
-            .filter((a) => sent.has(a.source) && !keep.has(a.id))
-            .map((a) => a.id);
-          if (drop.length) await tx.delete(noteAnnotations).where(inArray(noteAnnotations.id, drop));
-          dropped = drop;
-        }
-        return u;
-      });
+          return u;
+        });
+      } catch (err) {
+        if (!(err instanceof UnknownSlot)) throw err;
+        res.status(400).json({ error: "unknown_note_piece" });
+        return;
+      }
       if (!updated) {
         res.status(409).json({ error: "not_editable", message: "Sent notes can't be edited — retract, fix, and resend." });
         return;

@@ -10,6 +10,7 @@ import { narrationPrefix } from "../notes/narration";
 import { REGROUND_HINT, reground } from "../notes/reground";
 import { syncLessonSlot, syncNoteSlot } from "../notes/slot_sync";
 import { lessonPieceWire, lessonPiecesFor } from "../notes/pieces_wire";
+import { pgErrorCode } from "../db/pgerror";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import {
@@ -165,13 +166,6 @@ async function ownedScan(db: Orm, ownerId: string, value: unknown): Promise<Scan
 }
 
 // Drizzle wraps the driver error, so the SQLSTATE is on a cause several links down.
-function isUniqueViolation(err: unknown): boolean {
-  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
-    if (typeof e === "object" && (e as { code?: unknown }).code === "23505") return true;
-    e = (e as { cause?: unknown }).cause;
-  }
-  return false;
-}
 
 type ReplayFacts = {
   studentId: string | null;
@@ -405,7 +399,7 @@ export function lessonsRouter(deps: Deps): Router {
         });
       } catch (err) {
         // Two retries in flight at once: the loser must be handed the winner, not a 500 that costs the recording.
-        if (!clientLessonId || !isUniqueViolation(err)) throw err;
+        if (!clientLessonId || pgErrorCode(err) !== "23505") throw err;
         const [winner] = await db
           .select()
           .from(lessonSessions)
