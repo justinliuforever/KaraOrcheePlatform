@@ -17,6 +17,7 @@ import {
 import { notifyNoteSent } from "../notes/push";
 import { MSG_NOTE_NAMES_PIECE } from "./lessons";
 import { REGROUND_HINT, reground } from "../notes/reground";
+import { syncNoteSlot } from "../notes/slot_sync";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import { normalizeLabel, upsertCustomPiece } from "./customPieces";
@@ -31,6 +32,7 @@ import {
   devices,
   lessonSessions,
   noteAnnotations,
+  notedPieces,
   noteJobs,
   noteNarrationClips,
   notes,
@@ -344,6 +346,7 @@ export function notesRouter(deps: Deps): Router {
           .where(and(eq(notes.id, note.id), eq(notes.status, "draft")))
           .returning();
         if (!u) return null;
+        await syncNoteSlot(tx, u);
 
         // A number spoken while the teacher read photographed pages is a coordinate in THAT edition — landing in range against ours is coincidence, so nothing survives the swap.
         if (scoreChanged) await reground(tx, note.id, cameFromPhotographs ? null : newPieceMeasures);
@@ -484,7 +487,10 @@ export function notesRouter(deps: Deps): Router {
           })
           .where(and(eq(notes.id, note.id), eq(notes.status, "draft")))
           .returning();
-        if (row) await clearPieceMentions(tx, note.noteJobId);
+        if (row) {
+          await syncNoteSlot(tx, row);
+          await clearPieceMentions(tx, note.noteJobId);
+        }
         return row;
       });
       if (!updated) {
@@ -568,10 +574,12 @@ export function notesRouter(deps: Deps): Router {
         }
         await db.transaction(async (tx) => {
           const dismissed = [...new Set([...asStringArray(note.pieceSuggestionDismissed), pieceId])];
-          await tx
+          const [dismissedRow] = await tx
             .update(notes)
             .set({ pieceSuggestionDismissed: dismissed, updatedAt: sql`now()` })
-            .where(eq(notes.id, note.id));
+            .where(eq(notes.id, note.id))
+            .returning();
+          if (dismissedRow) await syncNoteSlot(tx, dismissedRow);
           const customId = note.customPieceId ?? lesson?.customPieceId ?? null;
           if (customId) {
             const [entity] = await tx.select().from(customPieces).where(eq(customPieces.id, customId)).limit(1);
@@ -625,10 +633,12 @@ export function notesRouter(deps: Deps): Router {
             })
             .where(eq(lessonSessions.id, lesson.id));
         }
-        await tx
+        const [confirmedRow] = await tx
           .update(notes)
           .set({ pieceId, scoreScanId: null, updatedAt: sql`now()` })
-          .where(eq(notes.id, note.id));
+          .where(eq(notes.id, note.id))
+          .returning();
+        if (confirmedRow) await syncNoteSlot(tx, confirmedRow);
         if (measureCount !== null) await reground(tx, note.id, measureCount);
         // Only fresh.source === "library" (exact name match) may set linkedPieceId — a mention-based match isn't proof enough.
         const customId = note.customPieceId ?? lesson?.customPieceId ?? null;
@@ -752,6 +762,31 @@ export function notesRouter(deps: Deps): Router {
             content: note.content,
           })
           .returning();
+        // Slots first: the items below carry pointers into them, and a copy pointing at the source note's slots is a note whose pieces belong to another note.
+        const sourceSlots = await tx
+          .select()
+          .from(notedPieces)
+          .where(eq(notedPieces.noteId, note.id))
+          .orderBy(asc(notedPieces.sortIndex));
+        const slotIdBySource = new Map<string, string>();
+        for (const slot of sourceSlots) {
+          const [copied] = await tx
+            .insert(notedPieces)
+            .values({
+              noteId: c!.id,
+              sortIndex: slot.sortIndex,
+              practiceSubjectId: slot.practiceSubjectId,
+              pieceId: slot.pieceId,
+              pieceLabel: slot.pieceLabel,
+              pieceSource: slot.pieceSource,
+              customPieceId: slot.customPieceId,
+              scoreScanId: slot.pieceId ? null : slot.scoreScanId,
+              pieceVersion: slot.pieceVersion,
+              summary: slot.summary,
+            })
+            .returning({ id: notedPieces.id });
+          if (copied) slotIdBySource.set(slot.id, copied.id);
+        }
         const made = annotations.length
           ? await tx
               .insert(noteAnnotations)
@@ -763,6 +798,11 @@ export function notesRouter(deps: Deps): Router {
                   instruction: a.instruction,
                   quote: a.quote,
                   location: a.location,
+                  source: a.source,
+                  groupLabel: a.groupLabel,
+                  target: a.target,
+                  notePieceId: a.notePieceId ? slotIdBySource.get(a.notePieceId) ?? null : null,
+                  groundedPieceId: a.groundedPieceId ? slotIdBySource.get(a.groundedPieceId) ?? null : null,
                 })),
               )
               .returning({ id: noteAnnotations.id, idx: noteAnnotations.idx })
@@ -933,6 +973,7 @@ export function notesRouter(deps: Deps): Router {
         })
         .where(eq(notes.id, note.id))
         .returning();
+      await syncNoteSlot(db, updated!);
       res.json(await scoreFieldsFor(deps, updated!));
     }),
   );

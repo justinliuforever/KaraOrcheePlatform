@@ -8,6 +8,7 @@ import { upsertCustomPiece } from "./customPieces";
 import { notesAccess } from "../notes/entitlement";
 import { narrationPrefix } from "../notes/narration";
 import { REGROUND_HINT, reground } from "../notes/reground";
+import { syncLessonSlot, syncNoteSlot } from "../notes/slot_sync";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import {
@@ -397,6 +398,7 @@ export function lessonsRouter(deps: Deps): Router {
               attested: body.attested === true,
             })
             .returning();
+          await syncLessonSlot(tx, inserted!);
           return inserted;
         });
       } catch (err) {
@@ -776,6 +778,7 @@ export function lessonsRouter(deps: Deps): Router {
           .set(patch)
           .where(and(eq(lessonSessions.id, locked.id), eq(lessonSessions.teacherId, me.id)))
           .returning();
+        await syncLessonSlot(tx, updatedLesson!);
 
         // Reground fires because unpieced measures were accepted unbounded — naming the piece late is what can make a number go out of range.
         const shouldReground = pieceId !== undefined && pieceId !== null && pieceId !== before.pieceId && newPieceMeasures !== null;
@@ -811,6 +814,7 @@ export function lessonsRouter(deps: Deps): Router {
           }
           np.updatedAt = sql`now()`;
           const [u] = await tx.update(notes).set(np).where(eq(notes.id, n.id)).returning();
+          await syncNoteSlot(tx, u!);
           if ("studentId" in np) studentCascadedTo = u!.id;
           if (shouldReground && "pieceId" in np) {
             regrounded += await reground(tx, n.id, newPieceMeasures!);

@@ -2043,3 +2043,92 @@ describe("the piece slots the multi-piece spine added", () => {
     expect(after!.scoreScanDetachedAt).toBeNull();
   });
 });
+
+describe("dual-write: slot 0 follows the singular columns", () => {
+  it("mints a slot when a lesson is created with a piece", async () => {
+    const created = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ pieceId: "seed_piece" });
+
+    const slots = await db.orm
+      .select()
+      .from(lessonPieces)
+      .where(eq(lessonPieces.lessonSessionId, created.body.lesson.id));
+    expect(slots).toHaveLength(1);
+    expect(slots[0]!.sortIndex).toBe(0);
+    expect(slots[0]!.pieceId).toBe("seed_piece");
+  });
+
+  it("mints no slot for a lesson that names nothing", async () => {
+    const created = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({});
+
+    const slots = await db.orm
+      .select()
+      .from(lessonPieces)
+      .where(eq(lessonPieces.lessonSessionId, created.body.lesson.id));
+    expect(slots).toHaveLength(0);
+  });
+
+  it("follows a lesson patch, including the detach it performs", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const created = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ scoreScanId: scan.id });
+    await request(makeApp())
+      .patch(`/v1/lessons/${created.body.lesson.id}`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ pieceId: "seed_piece" });
+
+    const [slot] = await db.orm
+      .select()
+      .from(lessonPieces)
+      .where(eq(lessonPieces.lessonSessionId, created.body.lesson.id));
+    expect(slot!.pieceId).toBe("seed_piece");
+    expect(slot!.scoreScanId).toBeNull();
+  });
+
+  it("follows a note patch onto the note's own slot", async () => {
+    const note = await seedNote({ teacherId: teacher.id, studentId: student.id, status: "draft" });
+
+    await attach(note.id, teacher.token, { pieceId: "seed_piece" });
+
+    const [slot] = await db.orm.select().from(notedPieces).where(eq(notedPieces.noteId, note.id));
+    expect(slot!.pieceId).toBe("seed_piece");
+  });
+
+  it("gives a duplicate its OWN slots, and repoints its items at them", async () => {
+    const note = await seedNote({ teacherId: teacher.id, studentId: student.id, status: "draft" });
+    await attach(note.id, teacher.token, { pieceId: "seed_piece" });
+    const [sourceSlot] = await db.orm.select().from(notedPieces).where(eq(notedPieces.noteId, note.id));
+    const [item] = await db.orm
+      .insert(noteAnnotations)
+      .values({ noteId: note.id, idx: 0, category: "rhythm", instruction: "Even it out",
+                quote: "those bars", notePieceId: sourceSlot!.id, groundedPieceId: sourceSlot!.id })
+      .returning();
+    expect(item).toBeTruthy();
+
+    const copy = await request(makeApp())
+      .post(`/v1/notes/${note.id}/duplicate`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({});
+    expect(copy.status).toBe(201);
+
+    const copySlots = await db.orm.select().from(notedPieces).where(eq(notedPieces.noteId, copy.body.id));
+    expect(copySlots).toHaveLength(1);
+    expect(copySlots[0]!.id).not.toBe(sourceSlot!.id);
+    const copied = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, copy.body.id));
+    expect(copied.length).toBeGreaterThan(0);
+    for (const row of copied) {
+      expect(row.notePieceId).not.toBe(sourceSlot!.id);
+      expect(row.groundedPieceId).not.toBe(sourceSlot!.id);
+    }
+    const repointed = copied.filter((r) => r.notePieceId === copySlots[0]!.id);
+    expect(repointed).toHaveLength(1);
+    expect(repointed[0]!.groundedPieceId).toBe(copySlots[0]!.id);
+  });
+});
