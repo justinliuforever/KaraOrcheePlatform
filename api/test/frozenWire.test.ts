@@ -24,6 +24,7 @@ import {
   frozenTeacherNote,
   frozenRetractedStub,
   frozenScanDetail,
+  frozenNotePiece,
 } from "./frozenWire.contract";
 
 const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
@@ -396,5 +397,51 @@ describe("a practice-plan row never leaks into the reader's marked spots", () =>
     expect(save.status).toBe(200);
     const left = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, note.id));
     expect(left.filter((a) => a.source === "plan")).toHaveLength(1);
+  });
+});
+
+describe("the plural shape, added without disturbing the singular one", () => {
+  it("gives the teacher a slot per piece and still every singular field", async () => {
+    const note = await seedNote({ pieceId: "frozen_piece" });
+
+    const res = await request(makeApp())
+      .get(`/v1/notes/${note.id}`)
+      .set("Authorization", `Bearer ${teacher.token}`);
+
+    assertFrozen(frozenTeacherNote, res.body.note, "teacher note still singular");
+    expect(res.body.pieces).toHaveLength(1);
+    const slot = assertFrozen(frozenNotePiece, res.body.pieces[0], "teacher pieces[0]");
+    expect(slot.kind).toBe("engraved");
+    expect(slot.pieceId).toBe("frozen_piece");
+  });
+
+  it("never tells the student a scan id, in the plural shape either", async () => {
+    const [scan] = await db.orm
+      .insert(scoreScans)
+      .values({ ownerId: teacher.id, title: "Photographed", pageCount: 1, status: "ready", bytes: 8 })
+      .returning();
+    await db.orm
+      .update(scoreScans)
+      .set({ blobPath: `${teacher.id}/${scan!.id}/` })
+      .where(eq(scoreScans.id, scan!.id));
+    const note = await seedNote({ status: "sent", sentAt: new Date(), scoreScanId: scan!.id });
+
+    const res = await request(makeApp())
+      .get(`/v1/me/notes/${note.id}`)
+      .set("Authorization", `Bearer ${student.token}`);
+
+    expect(res.body.pieces).toHaveLength(1);
+    expect(res.body.pieces[0].kind).toBe("scanned");
+    expect(res.body.pieces[0]).not.toHaveProperty("scoreScanId");
+  });
+
+  it("reports a slot that names nothing as such rather than omitting it", async () => {
+    const note = await seedNote({ pieceLabel: "Only a typed title" });
+
+    const res = await request(makeApp())
+      .get(`/v1/notes/${note.id}`)
+      .set("Authorization", `Bearer ${teacher.token}`);
+
+    expect(res.body.pieces[0].kind).toBe("titled");
   });
 });

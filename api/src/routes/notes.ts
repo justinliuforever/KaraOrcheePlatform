@@ -18,6 +18,7 @@ import { notifyNoteSent } from "../notes/push";
 import { MSG_NOTE_NAMES_PIECE } from "./lessons";
 import { REGROUND_HINT, reground } from "../notes/reground";
 import { syncLessonSlot, syncNoteSlot } from "../notes/slot_sync";
+import { notePieceWire, notePieces, studentPieceWire } from "../notes/pieces_wire";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import { normalizeLabel, upsertCustomPiece } from "./customPieces";
@@ -250,7 +251,13 @@ export function notesRouter(deps: Deps): Router {
         .where(and(eq(noteAnnotations.noteId, note.id), eq(noteAnnotations.source, "transcript")))
         .orderBy(asc(noteAnnotations.idx));
       // Must stay computed at READ time, never cached — a catalog that grows or a dismissal has to apply immediately.
-      res.json({ note, annotations, pieceSuggestion: await suggestionFor(deps, note) });
+      res.json({
+        note,
+        annotations,
+        // Additive: the singular projection above is untouched and remains what an installed binary reads.
+        pieces: (await notePieces(db, note)).map(notePieceWire),
+        pieceSuggestion: await suggestionFor(deps, note),
+      });
     }),
   );
 
@@ -937,6 +944,7 @@ export function notesRouter(deps: Deps): Router {
           ...(await scoreFieldsFor(deps, note)),
         },
         annotations,
+        pieces: (await notePieces(db, note)).map(studentPieceWire),
         teacher: { id: note.teacherId, displayName: teacher?.displayName ?? null },
       });
     }),

@@ -119,3 +119,13 @@ export const frozenAdminJobDetailLesson = z.object({
   studentId: z.string().nullable(),
   createdAt: z.string().min(1),
 });
+
+export const frozenNotePiece = z.object({
+  id: z.string().min(1),
+  sortIndex: z.number().int(),
+  kind: z.enum(["engraved", "scanned", "titled", "none"]),
+  pieceId: z.string().nullable(),
+  pieceLabel: z.string().nullable(),
+  pieceVersion: z.number().int().nullable(),
+  summary: z.string().nullable(),
+});
