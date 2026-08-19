@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { Orm } from "../db/client";
-import { lessonSessions, notes, scoreScans } from "../db/schema";
+import { lessonPieces, lessonSessions, notedPieces, notes, scoreScans } from "../db/schema";
 import type { ScanStore } from "./scans_store";
 
 type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
@@ -31,6 +31,13 @@ export async function stampAndDeleteScans(
     )
     FOR UPDATE
   `);
+  await tx.execute(sql`
+    SELECT ${lessonPieces.id} FROM ${lessonPieces}
+    WHERE ${lessonPieces.scoreScanId} IN (
+      SELECT ${scoreScans.id} FROM ${scoreScans} WHERE ${scoped}
+    )
+    FOR UPDATE
+  `);
   const result = await tx.execute(sql`
     WITH deleted AS (
       DELETE FROM ${scoreScans}
@@ -43,6 +50,17 @@ export async function stampAndDeleteScans(
         AND ${notes.readAt} IS NOT NULL
         AND ${notes.status} IN ('sent', 'retracted')
       RETURNING ${notes.id} AS id
+    ), stamped_slots AS (
+      UPDATE ${notedPieces}
+      SET score_scan_detached_at = now(), updated_at = now()
+      WHERE ${notedPieces.scoreScanId} IN (SELECT id FROM deleted WHERE status <> 'created')
+        AND EXISTS (
+          SELECT 1 FROM ${notes}
+          WHERE ${notes.id} = ${notedPieces.noteId}
+            AND ${notes.readAt} IS NOT NULL
+            AND ${notes.status} IN ('sent', 'retracted')
+        )
+      RETURNING ${notedPieces.id} AS id
     )
     SELECT id FROM deleted
   `);
@@ -61,6 +79,11 @@ export async function takeDownScan(tx: Tx, scanId: string): Promise<TakenDownSca
   await tx.execute(sql`
     SELECT ${lessonSessions.id} FROM ${lessonSessions}
     WHERE ${lessonSessions.scoreScanId} = ${scanId}
+    FOR UPDATE
+  `);
+  await tx.execute(sql`
+    SELECT ${lessonPieces.id} FROM ${lessonPieces}
+    WHERE ${lessonPieces.scoreScanId} = ${scanId}
     FOR UPDATE
   `);
   const result = await tx.execute(sql`
@@ -89,6 +112,26 @@ export async function takeDownScan(tx: Tx, scanId: string): Promise<TakenDownSca
       SET score_scan_id = NULL, updated_at = now()
       WHERE ${lessonSessions.scoreScanId} IN (SELECT id FROM taken)
       RETURNING ${lessonSessions.id} AS id
+    ), unlinked_lesson_slots AS (
+      UPDATE ${lessonPieces}
+      SET score_scan_id = NULL, updated_at = now()
+      WHERE ${lessonPieces.scoreScanId} IN (SELECT id FROM taken)
+      RETURNING ${lessonPieces.id} AS id
+    ), detached_slots AS (
+      UPDATE ${notedPieces}
+      SET score_scan_id = NULL,
+          score_scan_detached_at = CASE
+            WHEN EXISTS (SELECT 1 FROM pre WHERE pre.status <> 'created')
+              AND EXISTS (
+                SELECT 1 FROM ${notes}
+                WHERE ${notes.id} = ${notedPieces.noteId}
+                  AND ${notes.readAt} IS NOT NULL
+                  AND ${notes.status} IN ('sent', 'retracted')
+              )
+            THEN now() ELSE ${notedPieces.scoreScanDetachedAt} END,
+          updated_at = now()
+      WHERE ${notedPieces.scoreScanId} IN (SELECT id FROM taken)
+      RETURNING ${notedPieces.id} AS id
     )
     SELECT taken.id, taken.owner_id,
            (SELECT count(*) FROM detached) AS notes_detached,

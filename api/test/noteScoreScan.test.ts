@@ -19,9 +19,12 @@ import {
   noteJobs,
   notes,
   noteAnnotations,
+  notedPieces,
+  lessonPieces,
   platformConfig,
   scoreScans,
 } from "../src/db/schema";
+import { stampAndDeleteScans, takeDownScan } from "../src/notes/scan_delete";
 import type { Db } from "../src/db/client";
 import type { ScanStore } from "../src/notes/scans_store";
 import type { LessonStore } from "../src/notes/lessons_store";
@@ -1970,5 +1973,73 @@ describe("a scan whose bytes can never be served again", () => {
 
     expect(res.status).toBe(201);
     expect(res.body.lesson.scoreScanId).toBeNull();
+  });
+});
+
+describe("the piece slots the multi-piece spine added", () => {
+  async function slotted(opts: { status?: "draft" | "sent"; readAt?: Date | null } = {}) {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const note = await seedNote({
+      teacherId: teacher.id, studentId: student.id,
+      status: opts.status ?? "sent",
+      sentAt: new Date(), readAt: opts.readAt === undefined ? new Date() : opts.readAt,
+    });
+    const [slot] = await db.orm
+      .insert(notedPieces)
+      .values({ noteId: note.id, sortIndex: 0, scoreScanId: scan.id })
+      .returning();
+    const [lessonSlot] = await db.orm
+      .insert(lessonPieces)
+      .values({ lessonSessionId: note.lessonSessionId!, sortIndex: 0, scoreScanId: scan.id })
+      .returning();
+    return { scan, note, slot: slot!, lessonSlot: lessonSlot! };
+  }
+
+  it("goes with the note when the note goes, without aborting the delete", async () => {
+    const { note, slot } = await slotted();
+
+    await db.orm.delete(noteAnnotations).where(eq(noteAnnotations.noteId, note.id));
+    await db.orm.delete(notes).where(eq(notes.id, note.id));
+
+    const left = await db.orm.select().from(notedPieces).where(eq(notedPieces.id, slot.id));
+    expect(left).toHaveLength(0);
+  });
+
+  it("loses its scan pointer and gains the marker when the owner deletes the scan", async () => {
+    const { scan, slot } = await slotted();
+
+    await db.orm.transaction(async (tx) => {
+      await stampAndDeleteScans(tx, { ownerId: teacher.id, scanId: scan.id });
+    });
+
+    const [after] = await db.orm.select().from(notedPieces).where(eq(notedPieces.id, slot.id));
+    expect(after!.scoreScanId).toBeNull();
+    expect(after!.scoreScanDetachedAt).not.toBeNull();
+  });
+
+  it("is unlinked on both sides by a takedown, which keeps the scan row", async () => {
+    const { scan, slot, lessonSlot } = await slotted();
+
+    await db.orm.transaction(async (tx) => {
+      await takeDownScan(tx, scan.id);
+    });
+
+    const [noteSlot] = await db.orm.select().from(notedPieces).where(eq(notedPieces.id, slot.id));
+    const [ls] = await db.orm.select().from(lessonPieces).where(eq(lessonPieces.id, lessonSlot.id));
+    expect(noteSlot!.scoreScanId).toBeNull();
+    expect(noteSlot!.scoreScanDetachedAt).not.toBeNull();
+    expect(ls!.scoreScanId).toBeNull();
+  });
+
+  it("gets no marker when nobody had read the note yet", async () => {
+    const { scan, slot } = await slotted({ status: "draft", readAt: null });
+
+    await db.orm.transaction(async (tx) => {
+      await takeDownScan(tx, scan.id);
+    });
+
+    const [after] = await db.orm.select().from(notedPieces).where(eq(notedPieces.id, slot.id));
+    expect(after!.scoreScanId).toBeNull();
+    expect(after!.scoreScanDetachedAt).toBeNull();
   });
 });
