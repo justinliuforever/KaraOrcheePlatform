@@ -331,6 +331,15 @@ beforeAll(async () => {
     status: "published",
     publishedVersion: 3,
   });
+  await db.orm.insert(pieces).values({
+    id: "eight_bar_piece",
+    title: "Eight bars and no more",
+    composer: "Carl Czerny",
+    rights: "public_domain",
+    status: "published",
+    publishedVersion: 1,
+    facts: { measures: 8 },
+  });
   teacher = await makeUser("nss-teacher", "teacher");
   student = await makeUser("nss-student", "student");
   otherTeacher = await makeUser("nss-other-teacher", "teacher");
@@ -1768,15 +1777,36 @@ describe("POST /v1/lessons — the score photographed at the start of the lesson
     expect(row!.status).toBe("created");
   });
 
-  it("refuses a library piece named onto a lesson that carries photographed pages", async () => {
+  it("puts the photographed pages away when a library piece is named, and says it did", async () => {
     const scan = await seedScan({ ownerId: teacher.id });
     const created = await createLesson(teacher.token, { scoreScanId: scan.id });
 
     const res = await patchLesson(created.body.lesson.id, teacher.token, { pieceId: "seed_piece" });
 
-    expect(res.status).toBe(409);
-    expect(res.body.error).toBe("note_names_piece");
-    expect(res.body.message).toBe("A note that names a piece from the library can't carry score photos.");
+    expect(res.status).toBe(200);
+    expect(res.body.lesson.pieceId).toBe("seed_piece");
+    expect(res.body.lesson.scoreScanId).toBeNull();
+    expect(res.body.scoreDetached).toBe(true);
+    expect((await lessonRow(created.body.lesson.id))!.scoreScanId).toBeNull();
+  });
+
+  it("reports no detach when the lesson was carrying no photographs", async () => {
+    const created = await createLesson(teacher.token, {});
+
+    const res = await patchLesson(created.body.lesson.id, teacher.token, { pieceId: "seed_piece" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.scoreDetached).toBe(false);
+  });
+
+  it("leaves the photographs alone when the piece is cleared rather than named", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const created = await createLesson(teacher.token, { scoreScanId: scan.id });
+
+    const res = await patchLesson(created.body.lesson.id, teacher.token, { pieceId: null });
+
+    expect(res.status).toBe(200);
+    expect(res.body.scoreDetached).toBe(false);
     expect((await lessonRow(created.body.lesson.id))!.scoreScanId).toBe(scan.id);
   });
 
@@ -1851,5 +1881,94 @@ describe("ck_lesson_piece_excludes_scan — the strap under the lesson's check-t
     expect(withScan!.pieceId).toBeNull();
     expect(withNeither!.pieceId).toBeNull();
     expect(withNeither!.scoreScanId).toBeNull();
+  });
+});
+
+describe("PATCH /v1/notes/:id — a bar number outlives only its own score", () => {
+  async function seedAnchored(opts: { scoreScanId?: string | null; pieceId?: string | null }) {
+    const note = await seedNote({
+      teacherId: teacher.id, studentId: student.id, status: "draft",
+      scoreScanId: opts.scoreScanId ?? null, pieceId: opts.pieceId ?? null,
+    });
+    const rows = await db.orm
+      .insert(noteAnnotations)
+      .values([
+        { noteId: note.id, idx: 0, category: "rhythm", instruction: "Past the end", quote: "bar eighty four",
+          location: { type: "absolute", raw: "bar 84", grounded: true, measureStart: 84, measureEnd: 84, pinnedBy: "auto" } },
+        { noteId: note.id, idx: 1, category: "rhythm", instruction: "Well inside", quote: "bar four",
+          location: { type: "absolute", raw: "bar 4", grounded: true, measureStart: 4, measureEnd: 4, pinnedBy: "auto" } },
+      ])
+      .returning();
+    return { note, rows };
+  }
+
+  async function locations(noteId: string) {
+    const rows = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, noteId));
+    return new Map(rows.map((r) => [r.idx, r.location as Record<string, unknown>]));
+  }
+
+  it("demotes what the new engraving cannot hold, and keeps what it can", async () => {
+    const { note } = await seedAnchored({});
+
+    const res = await attach(note.id, teacher.token, { pieceId: "eight_bar_piece" });
+
+    expect(res.status).toBe(200);
+    const loc = await locations(note.id);
+    expect(loc.get(0)!.grounded).toBe(false);
+    expect(loc.get(0)!.raw).toBe("bar 84");
+    expect(loc.get(1)!.grounded).toBe(true);
+  });
+
+  it("demotes everything when the outgoing score was photographs, in range or not", async () => {
+    const scan = await seedScan({ ownerId: teacher.id });
+    const { note } = await seedAnchored({ scoreScanId: scan.id });
+
+    const res = await attach(note.id, teacher.token, { pieceId: "eight_bar_piece" });
+
+    expect(res.status).toBe(200);
+    const loc = await locations(note.id);
+    expect(loc.get(0)!.grounded).toBe(false);
+    expect(loc.get(1)!.grounded).toBe(false);
+    expect(loc.get(1)!.raw).toBe("bar 4");
+  });
+
+  it("leaves the anchors alone when the score did not change", async () => {
+    const { note } = await seedAnchored({ pieceId: "eight_bar_piece" });
+
+    const res = await attach(note.id, teacher.token, { pieceLabel: "A new caption only" });
+
+    expect(res.status).toBe(200);
+    const loc = await locations(note.id);
+    expect(loc.get(1)!.grounded).toBe(true);
+  });
+});
+
+describe("a scan whose bytes can never be served again", () => {
+  async function purgedScan() {
+    const scan = await seedScan({ ownerId: teacher.id });
+    // What a completed purge leaves behind: still 'ready', but nothing left to serve.
+    await db.orm.update(scoreScans).set({ blobPath: null }).where(eq(scoreScans.id, scan.id));
+    return scan;
+  }
+
+  it("cannot be attached to a note", async () => {
+    const scan = await purgedScan();
+    const note = await seedNote({ teacherId: teacher.id, studentId: student.id, status: "draft" });
+
+    const res = await attach(note.id, teacher.token, { scoreScanId: scan.id });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("cannot be carried onto a new lesson either", async () => {
+    const scan = await purgedScan();
+
+    const res = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ scoreScanId: scan.id });
+
+    expect(res.status).toBe(201);
+    expect(res.body.lesson.scoreScanId).toBeNull();
   });
 });

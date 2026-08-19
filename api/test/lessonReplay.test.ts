@@ -171,6 +171,10 @@ describe("a create the client never heard the answer to", () => {
       .insert(scoreScans)
       .values({ ownerId: teacher.id, title: "Photographed", pageCount: 1, status: "ready", bytes: 10 })
       .returning();
+    await db.orm
+      .update(scoreScans)
+      .set({ blobPath: `${teacher.id}/${scan!.id}/` })
+      .where(eq(scoreScans.id, scan!.id));
     await post(teacher.token, { clientLessonId: key, scoreScanId: scan!.id });
 
     const retry = await post(teacher.token, { clientLessonId: key, pieceId: "replay_piece" });

@@ -15,7 +15,8 @@ import {
   narrationPrefix,
 } from "../notes/narration";
 import { notifyNoteSent } from "../notes/push";
-import { MSG_NOTE_NAMES_PIECE, REGROUND_HINT } from "./lessons";
+import { MSG_NOTE_NAMES_PIECE } from "./lessons";
+import { REGROUND_HINT, reground } from "../notes/reground";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import { normalizeLabel, upsertCustomPiece } from "./customPieces";
@@ -114,25 +115,6 @@ export async function clearPieceMentions(tx: Tx, jobId: string | null): Promise<
   await tx.update(noteJobs).set({ pieceMentions: [], updatedAt: sql`now()` }).where(eq(noteJobs.id, jobId));
 }
 
-async function reground(tx: Tx, noteId: string, measures: number): Promise<void> {
-  const rows = await tx.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, noteId));
-  for (const a of rows) {
-    const loc = (a.location ?? {}) as Record<string, unknown>;
-    if (loc.grounded !== true || loc.pinnedBy !== "auto") continue;
-    const end = typeof loc.measureEnd === "number"
-      ? loc.measureEnd
-      : typeof loc.measureStart === "number"
-        ? loc.measureStart
-        : null;
-    if (end === null || end <= measures) continue;
-    const { measureStart: _s, measureEnd: _e, pinnedBy: _p, ...rest } = loc;
-    await tx
-      .update(noteAnnotations)
-      .set({ location: { ...rest, grounded: false, hint: REGROUND_HINT }, updatedAt: sql`now()` })
-      .where(eq(noteAnnotations.id, a.id));
-  }
-}
-
 async function noteWithAnnotations(deps: Deps, noteId: string) {
   const db = deps.db!.orm;
   const [note] = await db.select().from(notes).where(eq(notes.id, noteId)).limit(1);
@@ -192,16 +174,15 @@ async function ownedScanId(deps: Deps, ownerId: string, value: unknown): Promise
   if (value === null) return null;
   if (!isUuid(value)) return "miss";
   const [scan] = await deps
-    .db!.orm.select({ id: scoreScans.id })
+    .db!.orm.select({ id: scoreScans.id, status: scoreScans.status, blobPath: scoreScans.blobPath })
     .from(scoreScans)
-    .where(and(
-      eq(scoreScans.id, value),
-      eq(scoreScans.ownerId, ownerId),
-      // A taken-down scan can never be served, so putting it in front of a reader would be a promise nothing can keep.
-      ne(scoreScans.status, "taken_down"),
-    ))
+    .where(and(eq(scoreScans.id, value), eq(scoreScans.ownerId, ownerId)))
     .limit(1);
-  return scan ? scan.id : "miss";
+  // Same two conditions the read path calls "gone": neither can ever be served again, so attaching one promises pages nothing can deliver.
+  if (!scan || scan.status === "taken_down" || (scan.status === "ready" && scan.blobPath === null)) {
+    return "miss";
+  }
+  return scan.id;
 }
 
 // Scoping by teacherId alone leaks a dual-role account's own self-notes into the teacher-side routes.
@@ -312,14 +293,22 @@ export function notesRouter(deps: Deps): Router {
         }
         patch.studentId = studentId;
       }
+      // null = there is no engraving to check bar numbers against, so nothing grounded may survive the change.
+      let newPieceMeasures: number | null = null;
       if ("pieceId" in body) {
         const pieceId = body.pieceId as string | null;
         if (pieceId) {
-          const [piece] = await db.select({ id: pieces.id }).from(pieces).where(eq(pieces.id, pieceId)).limit(1);
+          const [piece] = await db
+            .select({ id: pieces.id, facts: pieces.facts })
+            .from(pieces)
+            .where(eq(pieces.id, pieceId))
+            .limit(1);
           if (!piece) {
             res.status(400).json({ error: "unknown_piece" });
             return;
           }
+          const m = (piece.facts as { measures?: unknown } | null)?.measures;
+          newPieceMeasures = typeof m === "number" && Number.isInteger(m) && m > 0 ? m : null;
         }
         patch.pieceId = pieceId;
       }
@@ -342,6 +331,10 @@ export function notesRouter(deps: Deps): Router {
         res.status(409).json({ error: "note_names_piece", message: MSG_NOTE_NAMES_PIECE });
         return;
       }
+      const scoreChanged =
+        ("pieceId" in patch && patch.pieceId !== note.pieceId) ||
+        ("scoreScanId" in patch && patch.scoreScanId !== note.scoreScanId);
+      const cameFromPhotographs = scoreChanged && note.scoreScanId !== null;
       // One transaction, CAS on draft — a racing send must never lose an edit, and quote (verbatim provenance) is never alterable via this payload.
       let dropped: string[] = [];
       const updated = await db.transaction(async (tx) => {
@@ -351,6 +344,9 @@ export function notesRouter(deps: Deps): Router {
           .where(and(eq(notes.id, note.id), eq(notes.status, "draft")))
           .returning();
         if (!u) return null;
+
+        // A number spoken while the teacher read photographed pages is a coordinate in THAT edition — landing in range against ours is coincidence, so nothing survives the swap.
+        if (scoreChanged) await reground(tx, note.id, cameFromPhotographs ? null : newPieceMeasures);
 
         if (Array.isArray(body.annotations)) {
           const existing = await tx

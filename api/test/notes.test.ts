@@ -1402,7 +1402,7 @@ describe("lesson metadata lifecycle", () => {
     expect(row!.studentId).toBe(solo.id); // a self note's student is the owner, never rewritten
   });
 
-  it("re-grounds only the auto anchors that now point past the end of the piece", async () => {
+  it("re-grounds every anchor that now points past the end of the piece, whoever placed it", async () => {
     const lesson = await mkLesson({ studentId: mdS.id });
     const { note, annotations } = await mkNote(lesson.id, {
       studentId: mdS.id,
@@ -1427,7 +1427,7 @@ describe("lesson metadata lifecycle", () => {
     });
     const res = await patch(lesson.id, { pieceId: "short_piece" });
     expect(res.status).toBe(200);
-    expect(res.body.regrounded).toBe(1);
+    expect(res.body.regrounded).toBe(2);
 
     const rows = await db.orm
       .select()
@@ -1442,9 +1442,11 @@ describe("lesson metadata lifecycle", () => {
     expect(demoted.raw).toBe("bar 84"); // the words survive as the clue
     expect(typeof demoted.hint).toBe("string");
     expect(byId.get(annotations[1]!.id)!.grounded).toBe(true); // in range
+    // A teacher pin is placed against a 999 fallback when no piece is loaded, so it is no better checked than a spoken one.
     const human = byId.get(annotations[2]!.id)!;
-    expect(human.grounded).toBe(true); // a deliberate human placement is never touched
-    expect(human.measureStart).toBe(90);
+    expect(human.grounded).toBe(false);
+    expect(human.measureStart).toBeUndefined();
+    expect(human.raw).toBe("over there");
   });
 
   it("refuses a discarded lesson, an empty body, and someone else's lesson", async () => {

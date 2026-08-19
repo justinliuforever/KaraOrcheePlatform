@@ -7,6 +7,7 @@ import { requireUser, userAudit } from "../notes/user";
 import { upsertCustomPiece } from "./customPieces";
 import { notesAccess } from "../notes/entitlement";
 import { narrationPrefix } from "../notes/narration";
+import { REGROUND_HINT, reground } from "../notes/reground";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import {
@@ -128,9 +129,6 @@ export function retryAllowed(input: RetryInput): boolean {
   return retryDecision(input).kind === "allow";
 }
 
-// Wording must mirror the app's ungrounded copy — reads as "needs a location", never an error.
-export const REGROUND_HINT = "This pointed past the end of the piece — place it on the score.";
-
 export const PIECE_SOURCES = ["catalog", "vendored", "typed"] as const;
 export type PieceSource = (typeof PIECE_SOURCES)[number];
 
@@ -153,11 +151,14 @@ async function ownedScan(db: Orm, ownerId: string, value: unknown): Promise<Scan
   if (value === null || value === undefined) return { kind: "ok", id: null };
   if (!isUuid(value)) return { kind: "miss" };
   const [scan] = await db
-    .select({ id: scoreScans.id, status: scoreScans.status })
+    .select({ id: scoreScans.id, status: scoreScans.status, blobPath: scoreScans.blobPath })
     .from(scoreScans)
     .where(and(eq(scoreScans.id, value), eq(scoreScans.ownerId, ownerId)))
     .limit(1);
-  if (!scan || scan.status === "taken_down") return { kind: "miss" };
+  // Same two conditions the read path calls "gone" — a scan whose bytes can never be served again must not be attachable.
+  if (!scan || scan.status === "taken_down" || (scan.status === "ready" && scan.blobPath === null)) {
+    return { kind: "miss" };
+  }
   return { kind: "ok", id: scan.id };
 }
 
@@ -215,29 +216,6 @@ async function adoptMissingFacts(
 
 // Must throw, not return — returning here would COMMIT the CAS despite the revoked permission.
 class DiscardRaced extends Error {}
-
-// Result must match the worker's own unplaced-annotation shape (no measures, no pinnedBy) — that shape is what reopens it to a pin.
-async function reground(tx: Tx, noteId: string, measures: number): Promise<number> {
-  const rows = await tx.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, noteId));
-  let n = 0;
-  for (const a of rows) {
-    const loc = (a.location ?? {}) as Record<string, unknown>;
-    if (loc.grounded !== true || loc.pinnedBy !== "auto") continue;
-    const end = typeof loc.measureEnd === "number"
-      ? loc.measureEnd
-      : typeof loc.measureStart === "number"
-        ? loc.measureStart
-        : null;
-    if (end === null || end <= measures) continue;
-    const { measureStart: _s, measureEnd: _e, pinnedBy: _p, ...rest } = loc;
-    await tx
-      .update(noteAnnotations)
-      .set({ location: { ...rest, grounded: false, hint: REGROUND_HINT }, updatedAt: sql`now()` })
-      .where(eq(noteAnnotations.id, a.id));
-    n++;
-  }
-  return n;
-}
 
 /// This list is the wire contract, not the table's columns — a new lessonSessions column reaches the app only by being added here.
 function lessonWire(row: typeof lessonSessions.$inferSelect) {
@@ -744,11 +722,6 @@ export function lessonsRouter(deps: Deps): Router {
           res.status(400).json({ error: "unknown_piece", message: MSG_UNKNOWN_PIECE });
           return;
         }
-        // Refused, never traded: the photographed pages are what the student is already reading off. A scan attached during review lives on the NOTE, and that writer deliberately detaches instead — see noteScoreScan.test.ts's invariant block.
-        if (lesson.scoreScanId) {
-          res.status(409).json({ error: "note_names_piece", message: MSG_NOTE_NAMES_PIECE });
-          return;
-        }
         const m = (piece.facts as { measures?: unknown } | null)?.measures;
         newPieceMeasures = typeof m === "number" && Number.isInteger(m) && m > 0 ? m : null;
         newPieceVersion = piece.publishedVersion ?? null;
@@ -780,6 +753,9 @@ export function lessonsRouter(deps: Deps): Router {
         const patch: Record<string, unknown> = { updatedAt: sql`now()` };
         if (studentId !== undefined) patch.studentId = studentId;
         if (pieceId !== undefined) patch.pieceId = pieceId;
+        // Decided on the locked row, not the earlier read: naming a piece puts the photographs away here exactly as it already does on the note, and the caller is told which happened.
+        const lessonScoreDetached = pieceId != null && locked.scoreScanId !== null;
+        if (lessonScoreDetached) patch.scoreScanId = null;
         if (pieceLabel !== undefined) patch.pieceLabel = pieceLabel;
         if (pieceSource !== undefined) patch.pieceSource = pieceSource;
         // customPieceId must follow the resolved label (patch or existing), not just what this patch sent.
@@ -849,7 +825,8 @@ export function lessonsRouter(deps: Deps): Router {
             scoreDetached: n.scoreScanId !== null && u!.scoreScanId === null,
           });
         }
-        return { lesson: updatedLesson!, notes: touched, regrounded, before, studentCascadedTo };
+        return { lesson: updatedLesson!, notes: touched, regrounded, before, studentCascadedTo,
+                 lessonScoreDetached };
       });
       if (out === null) {
         res.status(404).json({ error: "not_found" });
@@ -905,6 +882,8 @@ export function lessonsRouter(deps: Deps): Router {
           : null,
         notes: out.notes,
         regrounded: out.regrounded,
+        // The caller cannot see the pre-patch row, so without this the photographs come off and nobody is told.
+        scoreDetached: out.lessonScoreDetached,
       });
     }),
   );

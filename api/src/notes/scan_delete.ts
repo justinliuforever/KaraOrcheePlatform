@@ -57,6 +57,12 @@ export interface TakenDownScan {
 
 // The row SURVIVES, unlike an owner delete: the owner is entitled to find out on their own shelf what happened to their file. One statement, for the same reason as above.
 export async function takeDownScan(tx: Tx, scanId: string): Promise<TakenDownScan | null> {
+  // Lessons first, as stampAndDeleteScans and the worker both do — the statement below reaches score_scans before lesson_sessions, which is the opposite order.
+  await tx.execute(sql`
+    SELECT ${lessonSessions.id} FROM ${lessonSessions}
+    WHERE ${lessonSessions.scoreScanId} = ${scanId}
+    FOR UPDATE
+  `);
   const result = await tx.execute(sql`
     WITH pre AS (
       SELECT ${scoreScans.id} AS id, ${scoreScans.status} AS status
