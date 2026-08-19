@@ -34,6 +34,43 @@ Substitute `ca-app-api-dev` / `rg-karaorchee-app-dev` for the environment you ar
 5. `az containerapp ingress traffic set -n <app> -g <rg> --revision-weight <NEW>=100 <OLD>=0`
 6. `az containerapp revision set-mode -n <app> -g <rg> --mode single`
 
+## The worker has no traffic weight, so it needs a different order
+
+Everything above uses ingress weight to hold a new revision at 0 % while its migration runs. **The
+notes worker has no ingress.** A new worker revision starts pulling Service Bus messages the moment it
+is healthy, so there is no equivalent of "up at 0 %" — the sequencing has to come from somewhere else.
+
+For any release where the worker's new image requires the new schema:
+
+1. Migrate first, from the API's new revision, following the six steps above.
+2. Only then `az containerapp update` the worker.
+
+The order is not symmetric and the asymmetry is the whole point. A new worker against an old schema
+fails on **every message it takes**, and it takes them: the crash is caught, the job is marked failed,
+and the message is **settled** — no redelivery, no dead-letter, no alert. The failure lands after ASR
+and the model have already been paid for, and the only recovery is the teacher tapping retry, which is
+capped at three. An old worker against a new
+schema is fine as long as the migration was additive, because its statements name no new column. So
+additive migrations may precede either image, and the worker image must never precede its migration.
+
+Check the direction before shipping: if the new worker writes a table or column the current database
+lacks, the migration is a prerequisite, not a companion.
+
+## Two preflights this release taught us to run
+
+**Count the rows a new CHECK would reject, before adding it.** Drizzle emits `ADD CONSTRAINT … CHECK`
+without `NOT VALID`, so the migration validates the whole table as it runs. A single row the constraint
+refuses aborts the deploy. Run the count, keep the number.
+
+**Snapshot the narration gate before and after any migration that touches `note_annotations`.**
+`worker/notes/narration_gate.py` exists for this and its compare mode is what makes "the same answer
+both times" a number rather than a claim. Under private networking the "before" has to be taken by
+exec'ing a revision, so take it before the new one exists.
+
+**Run any backfill only once the old worker's replica count reads zero.** A draining replica keeps
+consuming, and a backfill racing a writer is the one shape whose result nobody can reason about after
+the fact.
+
 ## Reaching a shell inside a revision
 
 `az containerapp exec` calls `tcgetattr` on **its own stdin**, so the pty has to wrap `az`, not a

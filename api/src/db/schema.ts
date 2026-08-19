@@ -12,6 +12,7 @@ import {
   unique,
   uniqueIndex,
   check,
+  foreignKey,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
@@ -390,9 +391,9 @@ export const noteAnnotations = pgTable("note_annotations", {
   doneAt: timestamp("done_at", { withTimezone: true }),
   practiceReceipt: jsonb("practice_receipt"),  // FOLLOW-session corroboration, additive
   // NULL = General. A slot deleted under an item leaves the item, in General, rather than taking it.
-  notePieceId: uuid("note_piece_id").references((): AnyPgColumn => notedPieces.id, { onDelete: "set null" }),
+  notePieceId: uuid("note_piece_id"),
   // Provenance, never display: which slot's score this row's bar numbers were written against.
-  groundedPieceId: uuid("grounded_piece_id").references((): AnyPgColumn => notedPieces.id, { onDelete: "set null" }),
+  groundedPieceId: uuid("grounded_piece_id"),
   // 'transcript' = verbatim-anchored, never mintable. 'plan' = a synthesized recipe step, freely creatable.
   source: text("source").notNull().default("transcript"),
   groupLabel: text("group_label"),
@@ -405,6 +406,11 @@ export const noteAnnotations = pgTable("note_annotations", {
   // A transcript row without its quote is an unsourced instruction, which this product may never mint.
   check("ck_practice_item_transcript_quoted", sql`${t.source} <> 'transcript' OR ${t.quote} IS NOT NULL`),
   index("ix_note_annotations_piece").on(t.notePieceId).where(sql`${t.notePieceId} IS NOT NULL`),
+  // Composite, so a slot reference can only ever name a slot on THIS note; the column list is what keeps note_id out of the SET NULL.
+  foreignKey({ columns: [t.noteId, t.notePieceId], foreignColumns: [notedPieces.noteId, notedPieces.id] })
+    .onDelete("set null"),
+  foreignKey({ columns: [t.noteId, t.groundedPieceId], foreignColumns: [notedPieces.noteId, notedPieces.id] })
+    .onDelete("set null"),
 ]);
 
 export const noteNarrationClips = pgTable("note_narration_clips", {
@@ -487,7 +493,7 @@ export const lessonPieces = pgTable("lesson_pieces", {
   id: uuid("id").primaryKey().defaultRandom(),
   lessonSessionId: uuid("lesson_session_id").notNull()
     .references(() => lessonSessions.id, { onDelete: "cascade" }),
-  // Sparse steps of 1000 — a reorder rewrites one row, not the whole list.
+  // Every writer today mints slot 0; Step 7 introduces real ordering and should space new slots so a reorder rewrites one row.
   sortIndex: integer("sort_index").notNull(),
   pieceId: text("piece_id").references(() => pieces.id),
   pieceLabel: text("piece_label"),
@@ -526,6 +532,8 @@ export const notedPieces = pgTable("note_pieces", {
   check("ck_note_piece_slot_excludes_scan", sql`${t.pieceId} IS NULL OR ${t.scoreScanId} IS NULL`),
   check("ck_note_piece_slot_source", sql`${t.pieceSource} IS NULL OR ${t.pieceSource} IN ('catalog', 'vendored', 'typed')`),
   uniqueIndex("uq_note_pieces_order").on(t.noteId, t.sortIndex),
+  // The target of the composite FK below: without it the database accepts an item pointing at a slot on somebody else's note.
+  unique("uq_note_pieces_note_id").on(t.noteId, t.id),
   index("ix_note_pieces_scan").on(t.scoreScanId).where(sql`${t.scoreScanId} IS NOT NULL`),
   index("ix_note_pieces_subject").on(t.practiceSubjectId).where(sql`${t.practiceSubjectId} IS NOT NULL`),
 ]);
@@ -538,7 +546,8 @@ export const practiceSubjects = pgTable("practice_subjects", {
   // The note's author; equal to studentId on a self-recorded note.
   teacherId: uuid("teacher_id").notNull().references(() => users.id),
   pieceId: text("piece_id").references(() => pieces.id),
-  customPieceId: uuid("custom_piece_id").references(() => customPieces.id, { onDelete: "set null" }),
+  // CASCADE, not SET NULL: nulling it leaves a row with no identity at all, which ck_practice_subject_identity refuses — and that abort lands inside account deletion.
+  customPieceId: uuid("custom_piece_id").references(() => customPieces.id, { onDelete: "cascade" }),
   currentScoreScanId: uuid("current_score_scan_id").references(() => scoreScans.id, { onDelete: "set null" }),
   currentScoreSetBy: text("current_score_set_by"),
   currentScoreSetAt: timestamp("current_score_set_at", { withTimezone: true }),

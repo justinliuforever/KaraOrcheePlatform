@@ -145,3 +145,45 @@ describe(MIGRATION, () => {
     expect(rows.rows[0]!.note_piece_id).toBeNull();
   });
 });
+
+describe("0033_multipiece_spine_repairs.sql", () => {
+  const REPAIRS = "0033_multipiece_spine_repairs.sql";
+
+  it("lets a custom piece be deleted without aborting on the subject's own CHECK", async () => {
+    const pglite = new PGlite();
+    await applyThrough(pglite, REPAIRS);
+    await seedNoteWithAnnotation(pglite);
+    await pglite.exec(`
+      INSERT INTO custom_pieces (id, teacher_id, display_label, normalized_label)
+        VALUES ('88888888-8888-8888-8888-888888888888', '11111111-1111-1111-1111-111111111111', 'Typed', 'typed');
+      INSERT INTO practice_subjects (student_id, teacher_id, custom_piece_id)
+        VALUES ('33333333-3333-3333-3333-333333333333', '11111111-1111-1111-1111-111111111111',
+                '88888888-8888-8888-8888-888888888888');
+    `);
+
+    await pglite.exec("DELETE FROM custom_pieces WHERE id = '88888888-8888-8888-8888-888888888888';");
+
+    const left = await pglite.query<{ count: number }>("SELECT count(*) AS count FROM practice_subjects");
+    expect(Number(left.rows[0]!.count)).toBe(0);
+  });
+
+  it("refuses an item pointing at a slot that belongs to a different note", async () => {
+    const pglite = new PGlite();
+    await applyThrough(pglite, REPAIRS);
+    await seedNoteWithAnnotation(pglite);
+    await pglite.exec(`
+      INSERT INTO notes (id, note_job_id, lesson_session_id, teacher_id, student_id, content_original, content)
+        VALUES ('99999999-9999-9999-9999-999999999999', '55555555-5555-5555-5555-555555555555',
+                '44444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111',
+                '33333333-3333-3333-3333-333333333333', '{}'::jsonb, '{}'::jsonb);
+    `);
+    const other = await pglite.query<{ id: string }>(`
+      INSERT INTO note_pieces (note_id, sort_index, piece_id)
+      VALUES ('99999999-9999-9999-9999-999999999999', 0, 'spine_piece') RETURNING id;
+    `);
+
+    await expect(pglite.exec(
+      `UPDATE note_annotations SET note_piece_id = '${other.rows[0]!.id}';`,
+    )).rejects.toThrow();
+  });
+});

@@ -2127,8 +2127,8 @@ describe("dual-write: slot 0 follows the singular columns", () => {
       expect(row.notePieceId).not.toBe(sourceSlot!.id);
       expect(row.groundedPieceId).not.toBe(sourceSlot!.id);
     }
-    const repointed = copied.filter((r) => r.notePieceId === copySlots[0]!.id);
-    expect(repointed).toHaveLength(1);
-    expect(repointed[0]!.groundedPieceId).toBe(copySlots[0]!.id);
+    // Every item the source had stamped is repointed; none is left naming a slot on the other note.
+    expect(copied.every((r) => r.notePieceId === copySlots[0]!.id)).toBe(true);
+    expect(copied.every((r) => r.groundedPieceId === copySlots[0]!.id)).toBe(true);
   });
 });

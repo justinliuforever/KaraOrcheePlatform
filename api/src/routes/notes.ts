@@ -17,7 +17,7 @@ import {
 import { notifyNoteSent } from "../notes/push";
 import { MSG_NOTE_NAMES_PIECE } from "./lessons";
 import { REGROUND_HINT, reground } from "../notes/reground";
-import { syncNoteSlot } from "../notes/slot_sync";
+import { syncLessonSlot, syncNoteSlot } from "../notes/slot_sync";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import { normalizeLabel, upsertCustomPiece } from "./customPieces";
@@ -631,7 +631,11 @@ export function notesRouter(deps: Deps): Router {
               pieceUpdatedAt: sql`now()`,
               updatedAt: sql`now()`,
             })
-            .where(eq(lessonSessions.id, lesson.id));
+            .where(eq(lessonSessions.id, lesson.id))
+            .returning()
+            .then(async ([confirmedLesson]) => {
+              if (confirmedLesson) await syncLessonSlot(tx, confirmedLesson);
+            });
         }
         const [confirmedRow] = await tx
           .update(notes)
@@ -963,17 +967,21 @@ export function notesRouter(deps: Deps): Router {
         res.status(409).json({ error: "note_names_piece", message: MSG_NOTE_NAMES_PIECE });
         return;
       }
-      const [updated] = await db
-        .update(notes)
-        .set({
-          scoreScanId: scanId,
-          // A note that has a score again must stop reporting the old one as gone.
-          scoreScanDetachedAt: scanId ? null : note.scoreScanDetachedAt,
-          updatedAt: sql`now()`,
-        })
-        .where(eq(notes.id, note.id))
-        .returning();
-      await syncNoteSlot(db, updated!);
+      // One transaction: the row and its mirror must not be observable apart, or a racing takedown lands between them.
+      const updated = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(notes)
+          .set({
+            scoreScanId: scanId,
+            // A note that has a score again must stop reporting the old one as gone.
+            scoreScanDetachedAt: scanId ? null : note.scoreScanDetachedAt,
+            updatedAt: sql`now()`,
+          })
+          .where(eq(notes.id, note.id))
+          .returning();
+        if (row) await syncNoteSlot(tx, row);
+        return row;
+      });
       res.json(await scoreFieldsFor(deps, updated!));
     }),
   );

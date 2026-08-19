@@ -5,7 +5,7 @@ import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT, type JWK } from
 import { createServer } from "../src/server";
 import { createJoseVerifier, type AuthVerifier } from "../src/auth";
 import { createTestDb } from "./testdb";
-import { pieces, lessonSessions, scoreScans, teacherStudentLinks } from "../src/db/schema";
+import { pieces, lessonSessions, lessonPieces, scoreScans, teacherStudentLinks } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { ScanStore } from "../src/notes/scans_store";
 
@@ -236,5 +236,20 @@ describe("a create the client never heard the answer to", () => {
     const row = (await rowFor(key))!;
     expect(row.pieceLabel).toBe("The real label");
     expect(row.customPieceId).toBeNull();
+  });
+
+  it("mirrors an adopted piece into the lesson's slot", async () => {
+    const key = "retry-syncs-slot";
+    await post(teacher.token, { clientLessonId: key });
+
+    await post(teacher.token, { clientLessonId: key, pieceId: "replay_piece" });
+
+    const row = (await rowFor(key))!;
+    const slots = await db.orm
+      .select()
+      .from(lessonPieces)
+      .where(eq(lessonPieces.lessonSessionId, row.id));
+    expect(slots).toHaveLength(1);
+    expect(slots[0]!.pieceId).toBe("replay_piece");
   });
 });

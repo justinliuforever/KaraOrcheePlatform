@@ -211,6 +211,7 @@ async function adoptMissingFacts(
       .set({ ...patch, updatedAt: sql`now()` })
       .where(eq(lessonSessions.id, row.id))
       .returning();
+    if (updated) await syncLessonSlot(tx, updated);
     return updated ?? row;
   });
 }

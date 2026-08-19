@@ -1,5 +1,5 @@
-import { and, eq } from "drizzle-orm";
-import { lessonPieces, lessonSessions, notedPieces, notes } from "../db/schema";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { lessonPieces, lessonSessions, noteAnnotations, notedPieces, notes } from "../db/schema";
 import type { Orm } from "../db/client";
 
 type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
@@ -27,7 +27,7 @@ export async function syncLessonSlot(tx: Writer, lesson: typeof lessonSessions.$
     .where(and(eq(lessonPieces.lessonSessionId, lesson.id), eq(lessonPieces.sortIndex, FIRST_SLOT)))
     .limit(1);
   if (existing) {
-    await tx.update(lessonPieces).set(values).where(eq(lessonPieces.id, existing.id));
+    await tx.update(lessonPieces).set({ ...values, updatedAt: sql`now()` }).where(eq(lessonPieces.id, existing.id));
     return;
   }
   if (!named(lesson)) return;
@@ -53,12 +53,20 @@ export async function syncNoteSlot(tx: Writer, note: typeof notes.$inferSelect):
     .where(and(eq(notedPieces.noteId, note.id), eq(notedPieces.sortIndex, FIRST_SLOT)))
     .limit(1);
   if (existing) {
-    await tx.update(notedPieces).set(values).where(eq(notedPieces.id, existing.id));
+    await tx.update(notedPieces).set({ ...values, updatedAt: sql`now()` }).where(eq(notedPieces.id, existing.id));
     return;
   }
   if (!named(note)) return;
-  await tx
+  const [minted] = await tx
     .insert(notedPieces)
     .values({ noteId: note.id, sortIndex: FIRST_SLOT, ...values })
-    .onConflictDoNothing();
+    .onConflictDoNothing()
+    .returning({ id: notedPieces.id });
+  if (!minted) return;
+  // The note's existing items belong to the piece it just named — leaving them unstamped strands them in General where no later backfill looks.
+  // Correct only while a note holds ONE slot: delete this when the review screen can create a second.
+  await tx
+    .update(noteAnnotations)
+    .set({ notePieceId: minted.id, groundedPieceId: sql`coalesce(${noteAnnotations.groundedPieceId}, ${minted.id})` })
+    .where(and(eq(noteAnnotations.noteId, note.id), isNull(noteAnnotations.notePieceId)));
 }

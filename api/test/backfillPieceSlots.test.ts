@@ -117,7 +117,7 @@ describe("backfilling the first piece slot", () => {
     const second = await writeSlotBackfill(db.orm);
 
     expect(first.lessonSlots + first.noteSlots).toBeGreaterThan(0);
-    expect(second).toEqual({ lessonSlots: 0, noteSlots: 0 });
+    expect(second).toEqual({ lessonSlots: 0, noteSlots: 0, itemsStamped: 0 });
     const slots = await db.orm.select().from(notedPieces).where(eq(notedPieces.noteId, note.id));
     expect(slots).toHaveLength(1);
     expect(slots[0]!.id).toBe(slotAfterFirst!.id);
@@ -134,5 +134,20 @@ describe("backfilling the first piece slot", () => {
     expect(plan.notes).toHaveLength(1);
     const written = await db.orm.select().from(notedPieces);
     expect(written).toHaveLength(0);
+  });
+
+  it("repairs a note whose slot arrived without its items being stamped", async () => {
+    const note = await seedNote({ pieceId: "bf_piece", quotes: 2 });
+    // Exactly what a crash between the insert and the stamp leaves, or a slot minted by the API.
+    await db.orm.insert(notedPieces).values({ noteId: note.id, sortIndex: 0, pieceId: "bf_piece" });
+
+    const plan = await planSlotBackfill(db.orm);
+    const result = await writeSlotBackfill(db.orm);
+
+    expect(plan.notes).toHaveLength(0);
+    expect(plan.unstampedNotes).toContain(note.id);
+    expect(result.itemsStamped).toBe(2);
+    const items = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, note.id));
+    expect(items.every((i) => i.notePieceId !== null)).toBe(true);
   });
 });
