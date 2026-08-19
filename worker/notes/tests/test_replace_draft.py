@@ -68,6 +68,9 @@ class FakeConn:
                 if isinstance(val, list):
                     return val.pop(0) if val else None
                 return val
+        # The database assigns slot ids; a test only scripts one when it asserts on it.
+        if "INSERT INTO note_pieces" in sql:
+            return ("slot-1",)
         return None
 
     def rowcount_for(self, sql):
@@ -132,8 +135,9 @@ def test_teacher_path_wipes_draft_then_inserts_teacher_origin():
     assert sqls[3] == "DELETE FROM notes WHERE note_job_id = %s AND status = 'draft'"
     assert sqls[4].startswith("INSERT INTO notes") and "'teacher'" in sqls[4]
     assert "'sent'" not in sqls[4] and "sent_at" not in sqls[4]
-    assert all("INSERT INTO note_annotations" in s for s in sqls[5:])
-    assert len(sqls) == 5 + len(ANNS)
+    assert "INSERT INTO note_pieces" in sqls[5], "the note's own slot is minted with it"
+    assert all("INSERT INTO note_annotations" in s for s in sqls[6:])
+    assert len(sqls) == 6 + len(ANNS)
     assert not any(s.startswith("SELECT published_version") or "origin = 'self'" in s
                    for s in sqls)
     w = note_insert(conn)
@@ -161,7 +165,9 @@ def test_solo_first_run_inserts_one_born_sent_note():
     assert w["teacher_id"] == "owner-9" and w["student_id"] == "owner-9"  # owner is both
     assert w["piece_version"] == 7                  # from published_version
     assert json.loads(w["content_original"]) == ORIGINAL and json.loads(w["content"]) == CONTENT
-    ann = conn.executed[3:]
+    slot = [s for s, _ in conn.executed if s.startswith("INSERT INTO note_pieces")]
+    assert len(slot) == 1, "the note's own slot is minted with it"
+    ann = [e for e in conn.executed if e[0].startswith("INSERT INTO note_annotations")]
     assert len(ann) == len(ANNS)
     assert all(s.startswith("INSERT INTO note_annotations") for s, _ in ann)
     assert all(params[0] == "note-2" for _, params in ann)

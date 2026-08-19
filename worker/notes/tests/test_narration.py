@@ -715,6 +715,7 @@ class JobConn:
             "FOR UPDATE OF l": ("submitted", "teacher-7", "student-4", "piece-1",
                                 "Etude No. 3", None, None, "teacher", 3, None),
             "INSERT INTO notes": ("note-9",),
+            "INSERT INTO note_pieces": ("slot-9",),
         }
         self.executed = []
         self.pending = None

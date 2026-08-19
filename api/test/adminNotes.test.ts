@@ -11,6 +11,7 @@ import {
 import { createServer } from "../src/server";
 import { createJoseVerifier, type AuthVerifier } from "../src/auth";
 import { createTestDb } from "./testdb";
+import { assertFrozen, frozenAdminJobRow, frozenAdminJobDetailLesson } from "./frozenWire.contract";
 import {
   users,
   teacherStudentLinks,
@@ -536,6 +537,19 @@ describe("note-jobs monitoring", () => {
     expect(row.reqId).toBe("req-abc");
     expect(Array.isArray(res.body.facets.status)).toBe(true);
     expect(res.body.facets.status.some((f: { value: string }) => f.value === "ready_for_review")).toBe(true);
+  });
+
+  it("keeps the shape the admin console's typed client decodes", async () => {
+    const list = await request(app())
+      .get("/admin/note-jobs?q=jobteach")
+      .set("Authorization", `Bearer ${adminToken}`);
+    const row = list.body.items.find((r: { id: string }) => r.id === readyJob);
+    assertFrozen(frozenAdminJobRow, row, "GET /admin/note-jobs items[]");
+
+    const detail = await request(app())
+      .get(`/admin/note-jobs/${readyJob}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    assertFrozen(frozenAdminJobDetailLesson, detail.body.lesson, "GET /admin/note-jobs/:id lesson");
   });
 
   it("filters by status", async () => {

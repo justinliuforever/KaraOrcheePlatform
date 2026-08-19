@@ -490,12 +490,24 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
                  custom_piece_id, scan_id,
                  json.dumps(original), json.dumps(content)))
         note_id = cur.fetchone()[0]
+        # Slot 0 mirrors what the note itself received; a note minted with an empty
+        # child table would need a second backfill pass to find later.
+        slot_id = None
+        if piece_id is not None or piece_label is not None or scan_id is not None:
+            cur.execute(
+                """INSERT INTO note_pieces (note_id, sort_index, piece_id, piece_label,
+                                            custom_piece_id, score_scan_id, piece_version)
+                   VALUES (%s, 0, %s, %s, %s, %s, %s) RETURNING id""",
+                (note_id, piece_id, piece_label, custom_piece_id, scan_id,
+                 piece_version if owner_role == "student" else None))
+            slot_id = cur.fetchone()[0]
         for idx, a in enumerate(annotations):
             cur.execute(
-                """INSERT INTO note_annotations (note_id, idx, category, instruction, quote, location)
-                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                """INSERT INTO note_annotations (note_id, idx, category, instruction, quote, location,
+                                                 note_piece_id, grounded_piece_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                 (note_id, idx, a["category"], a["instruction"], a["quote"],
-                 json.dumps(a["location"])))
+                 json.dumps(a["location"]), slot_id, slot_id))
     conn.commit()
     return note_id
 

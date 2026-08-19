@@ -99,3 +99,23 @@ export function assertFrozen<T>(schema: z.ZodType<T>, value: unknown, where: str
   }
   return parsed.data;
 }
+
+// The admin console is a second typed client of these routes and breaks on the same change the app does.
+export const frozenAdminJobRow = z.object({
+  id: z.string().min(1),
+  status: z.string().min(1),
+  lessonSessionId: z.string().min(1),
+  pieceId: z.string().nullable(),
+  pieceLabel: z.string().nullable(),
+  ownerRole: z.string().nullable(),
+  createdAt: z.string().min(1),
+});
+
+export const frozenAdminJobDetailLesson = z.object({
+  id: z.string().min(1),
+  ownerRole: z.string().min(1),
+  pieceId: z.string().nullable(),
+  pieceLabel: z.string().nullable(),
+  studentId: z.string().nullable(),
+  createdAt: z.string().min(1),
+});
