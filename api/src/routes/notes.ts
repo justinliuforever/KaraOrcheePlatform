@@ -126,9 +126,15 @@ async function noteWithAnnotations(deps: Deps, noteId: string) {
   const annotations = await db
     .select()
     .from(noteAnnotations)
-    .where(eq(noteAnnotations.noteId, noteId))
+    // The wire's annotations array is exactly the transcript rows; a plan row here renders as a marked spot.
+    .where(and(eq(noteAnnotations.noteId, noteId), eq(noteAnnotations.source, "transcript")))
     .orderBy(asc(noteAnnotations.idx));
-  return { note: note!, annotations, pieceSuggestion: note ? await suggestionFor(deps, note) : null };
+  return {
+    note: note!,
+    annotations,
+    pieces: note ? (await notePieces(db, note)).map(notePieceWire) : [],
+    pieceSuggestion: note ? await suggestionFor(deps, note) : null,
+  };
 }
 
 // Dropping any of id/noteJobId/lessonSessionId/teacherId/status/content/createdAt bricks every note on installed builds that decode them as non-optional.

@@ -379,6 +379,23 @@ describe("a practice-plan row never leaks into the reader's marked spots", () =>
     expect(row!.annotationCount).toBe(REAL_ANNOTATIONS.length);
   });
 
+  it("stays out of the answer the piece-suggestion route gives back, which carries the piece list too", async () => {
+    const note = await seedNote({ pieceId: "frozen_piece" });
+    await db.orm.insert(noteAnnotations).values({
+      noteId: note.id, idx: 9, category: "practice_strategy",
+      instruction: "Slow reps only", quote: null, source: "plan",
+    });
+
+    const res = await request(makeApp())
+      .post(`/v1/notes/${note.id}/piece-suggestion`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ action: "dismiss", pieceId: "frozen_piece" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.annotations.every((a: { instruction: string }) => a.instruction !== "Slow reps only")).toBe(true);
+    expect(res.body.pieces.map((p: { pieceId: string | null }) => p.pieceId)).toEqual(["frozen_piece"]);
+  });
+
   it("survives an old binary saving a draft, which sends only the transcript rows", async () => {
     const note = await seedNote({ pieceId: "frozen_piece" });
     await db.orm.insert(noteAnnotations).values({
