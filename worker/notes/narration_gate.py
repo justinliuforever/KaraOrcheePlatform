@@ -5,6 +5,11 @@ recomputed. A mismatch means the app will recompute text_hash, disagree, and fal
 the device voice while reporting nothing — the one failure in this pipeline that has no
 error surface. Run it before and after any migration that touches notes, note_annotations
 or their ordering, and require the same answer both times.
+
+A nonzero baseline is normal and is not a defect: a draft edited after its clips were
+narrated disagrees until it is sent, and `plan_missing` re-renders any clip whose
+content_hash moved. That is why `compare` reports only NEW mismatches — the count alone
+would make every edited draft look like a migration failure.
 """
 from __future__ import annotations
 
