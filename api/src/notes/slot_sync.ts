@@ -73,3 +73,25 @@ export async function syncNoteSlot(tx: Writer, note: typeof notes.$inferSelect):
     .set({ notePieceId: minted.id, groundedPieceId: sql`coalesce(${noteAnnotations.groundedPieceId}, ${minted.id})` })
     .where(and(eq(noteAnnotations.noteId, note.id), isNull(noteAnnotations.notePieceId)));
 }
+
+/// The other half of the dual-write. The columns are still the truth every read path and the send gate
+/// consult, so a slot edit that never reached them would name a piece the rest of the server cannot see.
+export async function syncNoteSingular(tx: Writer, noteId: string): Promise<void> {
+  const [first] = await tx
+    .select()
+    .from(notedPieces)
+    .where(eq(notedPieces.noteId, noteId))
+    .orderBy(asc(notedPieces.sortIndex))
+    .limit(1);
+  await tx
+    .update(notes)
+    .set({
+      pieceId: first?.pieceId ?? null,
+      pieceLabel: first?.pieceLabel ?? null,
+      customPieceId: first?.customPieceId ?? null,
+      scoreScanId: first?.scoreScanId ?? null,
+      pieceVersion: first?.pieceVersion ?? null,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(notes.id, noteId));
+}

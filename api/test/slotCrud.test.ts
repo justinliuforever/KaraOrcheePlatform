@@ -220,6 +220,51 @@ describe("a lesson's list of pieces", () => {
     expect(items[0]!.instruction).toBe("Even it out");
   });
 
+  it("names the note itself, so the rest of the server can see the piece the teacher typed", async () => {
+    const { note, slot } = await seedDraft();
+
+    await request(app())
+      .patch(`/v1/notes/${note.id}/pieces/${slot.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ pieceLabel: "Czerny Op. 599 No. 23" });
+
+    const [after] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect(after!.pieceLabel).toBe("Czerny Op. 599 No. 23");
+  });
+
+  it("hands the note over to whichever piece is first once the first is taken out", async () => {
+    const { note, slot } = await seedDraft({ pieceId: "slot_piece" });
+    await request(app())
+      .post(`/v1/notes/${note.id}/pieces`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ pieceId: "other_piece" });
+
+    await request(app())
+      .delete(`/v1/notes/${note.id}/pieces/${slot.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`);
+
+    const [after] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect(after!.pieceId).toBe("other_piece");
+  });
+
+  it("leaves the note naming nothing once its last piece is taken out", async () => {
+    const { note, slot } = await seedDraft();
+    await request(app())
+      .patch(`/v1/notes/${note.id}/pieces/${slot.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ pieceId: "slot_piece" });
+    const [named] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect(named!.pieceId).toBe("slot_piece");
+
+    await request(app())
+      .delete(`/v1/notes/${note.id}/pieces/${slot.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`);
+
+    const [after] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
+    expect(after!.pieceId).toBeNull();
+    expect(after!.pieceLabel).toBeNull();
+  });
+
   it("refuses every edit once the note is sent", async () => {
     const { note, slot } = await seedDraft({ pieceId: "slot_piece" });
     await db.orm.update(notes).set({ status: "sent" }).where(eq(notes.id, note.id));

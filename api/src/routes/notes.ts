@@ -18,7 +18,7 @@ import {
 import { notifyNoteSent } from "../notes/push";
 import { MSG_NOTE_NAMES_PIECE } from "./lessons";
 import { MOVED_HINT, REGROUND_HINT, reground, ungrounded } from "../notes/reground";
-import { syncLessonSlot, syncNoteSlot } from "../notes/slot_sync";
+import { syncLessonSlot, syncNoteSingular, syncNoteSlot } from "../notes/slot_sync";
 import { notePieceWire, notePieces, studentPieceWire } from "../notes/pieces_wire";
 import { applyBinding, MAX_SLOTS, moveSlot, nextSortIndex, slotsOf, type SlotFacts } from "../notes/slot_crud";
 import { isUuid } from "../ids";
@@ -1366,6 +1366,7 @@ export function notesRouter(deps: Deps): Router {
             scoreScanId: scanId,
           })
           .returning();
+        await syncNoteSingular(tx, note.id);
         return row!;
       });
       if (created === "full") {
@@ -1436,6 +1437,7 @@ export function notesRouter(deps: Deps): Router {
             .where(eq(notedPieces.id, slot.id));
         }
         const [after] = await tx.select().from(notedPieces).where(eq(notedPieces.id, slot.id)).limit(1);
+        await syncNoteSingular(tx, note.id);
         return { row: after!, scoreDetached: decided.scoreDetached };
       });
       if (out === "gone") {
@@ -1461,10 +1463,14 @@ export function notesRouter(deps: Deps): Router {
       if (!note) return;
 
       // The items survive in General: deleting a card must never take a teacher's words with it.
-      const gone = await db
-        .delete(notedPieces)
-        .where(and(eq(notedPieces.id, String(req.params.slotId)), eq(notedPieces.noteId, note.id)))
-        .returning({ id: notedPieces.id });
+      const gone = await db.transaction(async (tx) => {
+        const rows = await tx
+          .delete(notedPieces)
+          .where(and(eq(notedPieces.id, String(req.params.slotId)), eq(notedPieces.noteId, note.id)))
+          .returning({ id: notedPieces.id });
+        if (rows.length) await syncNoteSingular(tx, note.id);
+        return rows;
+      });
       if (!gone.length) {
         res.status(404).json({ error: "not_found" });
         return;
