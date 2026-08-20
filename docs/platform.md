@@ -359,6 +359,8 @@ died without updating its job row; the wizard shows an eternal spinner).
 5. Server is the entitlement truth (`entitlements.source` = trial | apple_iap | admin_grant |
    org); the client is a hint, never a receipt.
 6. Money never renders in the iOS app (referral counts only) — App Review 3.1.1/3.2.2.
-7. `npm run db:migrate` runs BEFORE the revision that needs the columns, never as part of
-   container start. A missed 0007 in July made every live admin query 500 while the cached
-   catalog kept serving and hid it.
+7. A migration runs BEFORE the revision that needs the columns serves traffic, and never as part
+   of container start. A missed 0007 in July made every live admin query 500 while the cached
+   catalog kept serving and hid it. Private networking means only a container reaches Postgres, so
+   "before" cannot mean from a laptop: the migration runs *inside* the new revision while it is
+   held at 0 % traffic. `docs/runbooks/schema-deploy.md` is the order, and it is not optional.
