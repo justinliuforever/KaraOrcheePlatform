@@ -379,7 +379,9 @@ export const notes = pgTable("notes", {
 ]);
 
 // Review may edit the instruction, never the quote — quotes are verbatim transcript evidence; delete the row instead.
-export const noteAnnotations = pgTable("note_annotations", {
+/// Table renamed 2026-08-20; the export keeps its name so every call site is untouched. The OLD table
+/// name survives as a view until the worker stops writing it by hand — see 0035 and the runbook.
+export const noteAnnotations = pgTable("practice_items", {
   id: uuid("id").primaryKey().defaultRandom(),
   noteId: uuid("note_id").notNull().references(() => notes.id),
   idx: integer("idx").notNull(),
@@ -401,11 +403,11 @@ export const noteAnnotations = pgTable("note_annotations", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
-  index("ix_note_annotations_note").on(t.noteId),
+  index("ix_practice_items_note").on(t.noteId),
   check("ck_practice_item_source", sql`${t.source} IN ('transcript', 'plan')`),
   // A transcript row without its quote is an unsourced instruction, which this product may never mint.
   check("ck_practice_item_transcript_quoted", sql`${t.source} <> 'transcript' OR ${t.quote} IS NOT NULL`),
-  index("ix_note_annotations_piece").on(t.notePieceId).where(sql`${t.notePieceId} IS NOT NULL`),
+  index("ix_practice_items_piece").on(t.notePieceId).where(sql`${t.notePieceId} IS NOT NULL`),
   // Composite, so a slot reference can only ever name a slot on THIS note. Drizzle cannot express the SET NULL column list, so 0034 rewrites these two by hand — a plain SET NULL nulls note_id, which is NOT NULL, and every slot delete 500s.
   foreignKey({ columns: [t.noteId, t.notePieceId], foreignColumns: [notedPieces.noteId, notedPieces.id] })
     .onDelete("set null"),
