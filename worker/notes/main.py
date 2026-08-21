@@ -496,7 +496,7 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
             scan_id = hold_scan(cur, None if piece_id is not None else (
                 carried_scan[0] if carried_scan else lesson_scan_id))
             cur.execute(
-                """DELETE FROM note_annotations WHERE note_id IN
+                """DELETE FROM practice_items WHERE note_id IN
                    (SELECT id FROM notes WHERE note_job_id = %s AND status = 'draft')""",
                 (job_id,))
             cur.execute("DELETE FROM notes WHERE note_job_id = %s AND status = 'draft'", (job_id,))
@@ -523,7 +523,7 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
             slot_id = cur.fetchone()[0]
         for idx, a in enumerate(annotations):
             cur.execute(
-                """INSERT INTO note_annotations (note_id, idx, category, instruction, quote, location,
+                """INSERT INTO practice_items (note_id, idx, category, instruction, quote, location,
                                                  note_piece_id, grounded_piece_id)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                 (note_id, idx, a["category"], a["instruction"], a["quote"],
@@ -533,7 +533,7 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         # only source='transcript', so none of this is ever spoken.
         for idx, step in enumerate(plan_rows(content), start=len(annotations)):
             cur.execute(
-                """INSERT INTO note_annotations (note_id, idx, category, instruction, quote, location,
+                """INSERT INTO practice_items (note_id, idx, category, instruction, quote, location,
                                                  source, group_label, target,
                                                  note_piece_id, grounded_piece_id)
                    VALUES (%s, %s, 'practice_strategy', %s, NULL, '{}'::jsonb,

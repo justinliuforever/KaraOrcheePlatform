@@ -131,12 +131,12 @@ def test_teacher_path_wipes_draft_then_inserts_teacher_origin():
     assert sqls[0].startswith("SELECT l.status, l.teacher_id") and sqls[0].endswith(LOCK)
     assert conn.executed[0][1] == ("lesson-1",)
     assert sqls[1].startswith("SELECT score_scan_id FROM notes") and "status = 'draft'" in sqls[1]
-    assert sqls[2].startswith("DELETE FROM note_annotations") and "status = 'draft'" in sqls[2]
+    assert sqls[2].startswith("DELETE FROM practice_items") and "status = 'draft'" in sqls[2]
     assert sqls[3] == "DELETE FROM notes WHERE note_job_id = %s AND status = 'draft'"
     assert sqls[4].startswith("INSERT INTO notes") and "'teacher'" in sqls[4]
     assert "'sent'" not in sqls[4] and "sent_at" not in sqls[4]
     assert "INSERT INTO note_pieces" in sqls[5], "the note's own slot is minted with it"
-    assert all("INSERT INTO note_annotations" in s for s in sqls[6:])
+    assert all("INSERT INTO practice_items" in s for s in sqls[6:])
     assert len(sqls) == 6 + len(ANNS)
     assert not any(s.startswith("SELECT published_version") or "origin = 'self'" in s
                    for s in sqls)
@@ -167,9 +167,9 @@ def test_solo_first_run_inserts_one_born_sent_note():
     assert json.loads(w["content_original"]) == ORIGINAL and json.loads(w["content"]) == CONTENT
     slot = [s for s, _ in conn.executed if s.startswith("INSERT INTO note_pieces")]
     assert len(slot) == 1, "the note's own slot is minted with it"
-    ann = [e for e in conn.executed if e[0].startswith("INSERT INTO note_annotations")]
+    ann = [e for e in conn.executed if e[0].startswith("INSERT INTO practice_items")]
     assert len(ann) == len(ANNS)
-    assert all(s.startswith("INSERT INTO note_annotations") for s, _ in ann)
+    assert all(s.startswith("INSERT INTO practice_items") for s, _ in ann)
     assert all(params[0] == "note-2" for _, params in ann)
     assert conn.commits == 1
 
@@ -248,7 +248,7 @@ def test_a_piece_named_mid_run_bounds_the_grounding_it_never_had():
     })
     main.replace_draft(conn, "job-7", "lesson-1", CONTENT, ORIGINAL, anns)
     locs = [json.loads(p[5]) for s, p in conn.executed
-            if s.startswith("INSERT INTO note_annotations")]
+            if s.startswith("INSERT INTO practice_items")]
     assert locs[0]["grounded"] is False
     assert "measureStart" not in locs[0] and "pinnedBy" not in locs[0]
     assert locs[0]["raw"] == "bar 84"           # the words survive as the clue
@@ -707,7 +707,7 @@ def test_plan_rows_land_beside_the_transcript_rows_without_disturbing_them():
     ]}
     main.replace_draft(conn, "job-1", "lesson-1", content, ORIGINAL, ANNS)
 
-    inserts = [(s, p) for s, p in conn.executed if s.startswith("INSERT INTO note_annotations")]
+    inserts = [(s, p) for s, p in conn.executed if s.startswith("INSERT INTO practice_items")]
     transcript = [p for s, p in inserts if "'plan'" not in s]
     plan = [p for s, p in inserts if "'plan'" in s]
     assert len(transcript) == len(ANNS)
@@ -726,7 +726,7 @@ def test_a_plan_entry_with_no_steps_still_keeps_its_words():
     ]}
     main.replace_draft(conn, "job-1", "lesson-1", content, ORIGINAL, ANNS)
 
-    plan = [p for s, p in conn.executed if s.startswith("INSERT INTO note_annotations") and "'plan'" in s]
+    plan = [p for s, p in conn.executed if s.startswith("INSERT INTO practice_items") and "'plan'" in s]
     assert len(plan) == 1
     assert plan[0][2] == "Sight-reading every day"
 
@@ -735,5 +735,5 @@ def test_no_plan_means_no_plan_rows():
     conn = FakeConn({LOCK: teacher_lock(), "INSERT INTO notes": ("note-1",)})
     main.replace_draft(conn, "job-1", "lesson-1", {"lessonSummary": "s", "practicePlan": []}, ORIGINAL, ANNS)
 
-    plan = [s for s, _ in conn.executed if s.startswith("INSERT INTO note_annotations") and "'plan'" in s]
+    plan = [s for s, _ in conn.executed if s.startswith("INSERT INTO practice_items") and "'plan'" in s]
     assert plan == []

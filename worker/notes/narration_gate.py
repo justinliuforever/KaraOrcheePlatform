@@ -3,7 +3,7 @@
 Every stored clip is re-planned through narration.py's own functions and its two hashes
 recomputed. A mismatch means the app will recompute text_hash, disagree, and fall back to
 the device voice while reporting nothing — the one failure in this pipeline that has no
-error surface. Run it before and after any migration that touches notes, note_annotations
+error surface. Run it before and after any migration that touches notes, practice_items
 or their ordering, and require the same answer both times.
 
 A nonzero baseline is normal and is not a defect: a draft edited after its clips were

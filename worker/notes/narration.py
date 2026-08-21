@@ -364,7 +364,7 @@ def load_note(conn, note_id: str):
         if isinstance(content, str):
             content = json.loads(content)
         cur.execute(
-            """SELECT id, instruction, quote, location FROM note_annotations
+            """SELECT id, instruction, quote, location FROM practice_items
                WHERE note_id = %s::uuid AND source = 'transcript' ORDER BY idx""", (note_id,))
         annotations = [{"id": r[0], "instruction": r[1], "quote": r[2],
                         "location": json.loads(r[3]) if isinstance(r[3], str) else r[3]}

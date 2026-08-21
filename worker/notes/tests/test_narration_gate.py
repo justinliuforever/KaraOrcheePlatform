@@ -26,7 +26,7 @@ class FakeCursor:
                           if n == note_id and v == voice]
         elif "FROM notes WHERE id" in text:
             self._rows = [(json.dumps(self.db.content), self.db.origin, self.db.status)]
-        elif "FROM note_annotations" in text:
+        elif "FROM practice_items" in text:
             rows = self.db.annotations
             if "source = 'transcript'" in text:
                 rows = [a for a in rows if a.get("source", "transcript") == "transcript"]

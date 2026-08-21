@@ -109,7 +109,7 @@ class FakeCursor:
             self._rows = [(self.db.config,)] if self.db.config is not None else []
         elif "FROM notes WHERE id" in text:
             self._rows = [self.db.note] if self.db.note else []
-        elif "FROM note_annotations" in text:
+        elif "FROM practice_items" in text:
             self._rows = [(a["id"], a["instruction"], a["quote"], a["location"])
                           for a in self.db.annotations]
         elif "FROM note_narration_clips" in text:
