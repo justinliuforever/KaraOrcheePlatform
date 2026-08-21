@@ -206,6 +206,7 @@ const teacherNote = (id: string, teacherId: string) =>
 /// Thrown inside the edit transaction so a bad slot id rolls the whole edit back rather than committing half of it.
 class UnknownSlot extends Error {}
 
+
 export function notesRouter(deps: Deps): Router {
   const router = Router();
   const guards = [requireAuth(deps.auth), requireUser(deps)];
@@ -314,7 +315,9 @@ export function notesRouter(deps: Deps): Router {
         }
         patch.studentId = studentId;
       }
-      // null = there is no engraving to check bar numbers against, so nothing grounded may survive the change.
+      // null = there is no engraving to check bar numbers against, so nothing grounded may survive.
+      // Safe to leave null when the body names no piece: the only other way to reach the sweep below is
+      // a scan change, and a scan may only land on a note that names no piece — so there is no ruler.
       let newPieceMeasures: number | null = null;
       if ("pieceId" in body) {
         const pieceId = body.pieceId as string | null;
@@ -367,10 +370,13 @@ export function notesRouter(deps: Deps): Router {
             .where(and(eq(notes.id, note.id), eq(notes.status, "draft")))
             .returning();
           if (!u) return null;
-          await syncNoteSlot(tx, u);
+          const mirrored = await syncNoteSlot(tx, u);
 
           // A number spoken while the teacher read photographed pages is a coordinate in THAT edition — landing in range against ours is coincidence, so nothing survives the swap.
-          if (scoreChanged) await reground(tx, note.id, cameFromPhotographs ? null : newPieceMeasures);
+          // Scoped to the slot the singular columns mirror into: this change cannot have touched another.
+          if (scoreChanged && mirrored) {
+            await regroundSlot(tx, note.id, mirrored, cameFromPhotographs ? null : newPieceMeasures);
+          }
 
           if (Array.isArray(body.annotations)) {
             const existing = await tx
@@ -381,7 +387,21 @@ export function notesRouter(deps: Deps): Router {
             const keep = new Set<string>();
             const items = body.annotations as Record<string, unknown>[];
             // Read after the slot sync above, so the row minted from the singular columns is already there.
-            const slots = items.some((a) => "notePieceId" in a) ? await slotsOf(tx, note.id) : [];
+            // Always, not only for a move: the bound check below needs every slot's piece.
+            const slots = await slotsOf(tx, note.id);
+            // How many bars each slot's piece actually has. A client that has not reloaded keeps posting
+            // bars the server already demoted, so the refusal has to live on the write, not in the answer.
+            const boundOf = new Map<string, number | null>();
+            for (const slot of slots) {
+              if (!slot.pieceId) { boundOf.set(slot.id, null); continue; }
+              const [row] = await tx
+                .select({ facts: pieces.facts })
+                .from(pieces)
+                .where(eq(pieces.id, slot.pieceId))
+                .limit(1);
+              const m = (row?.facts as { measures?: unknown } | null)?.measures;
+              boundOf.set(slot.id, typeof m === "number" && Number.isInteger(m) && m > 0 ? m : null);
+            }
             const slotIds = new Set(slots.map((s) => s.id));
             const synthesised = `pending:${note.id}`;
             const resolve = (v: unknown): string | null => {
@@ -411,6 +431,17 @@ export function notesRouter(deps: Deps): Router {
                 else if (piece !== row.groundedPieceId) { loc = ungrounded(loc, MOVED_HINT); grounding = null; }
               } else {
                 grounding = null;
+              }
+              // Never store a bar the piece provably does not have, whoever sent it.
+              if (loc.grounded === true) {
+                const bound = piece ? boundOf.get(piece) ?? null : null;
+                const end = typeof loc.measureEnd === "number"
+                  ? loc.measureEnd
+                  : typeof loc.measureStart === "number" ? loc.measureStart : null;
+                if (bound !== null && end !== null && end > bound) {
+                  loc = ungrounded(loc, REGROUND_HINT);
+                  grounding = null;
+                }
               }
               await tx
                 .update(noteAnnotations)
@@ -709,8 +740,10 @@ export function notesRouter(deps: Deps): Router {
           .set({ pieceId, scoreScanId: null, updatedAt: sql`now()` })
           .where(eq(notes.id, note.id))
           .returning();
-        if (confirmedRow) await syncNoteSlot(tx, confirmedRow);
-        if (measureCount !== null) await reground(tx, note.id, measureCount);
+        const confirmedSlot = confirmedRow ? await syncNoteSlot(tx, confirmedRow) : null;
+        if (measureCount !== null && confirmedSlot) {
+          await regroundSlot(tx, note.id, confirmedSlot, measureCount);
+        }
         // Only fresh.source === "library" (exact name match) may set linkedPieceId — a mention-based match isn't proof enough.
         const customId = note.customPieceId ?? lesson?.customPieceId ?? null;
         if (fresh?.source === "library" && customId) {

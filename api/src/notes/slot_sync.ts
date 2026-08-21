@@ -39,7 +39,9 @@ export async function syncLessonSlot(tx: Writer, lesson: typeof lessonSessions.$
     .onConflictDoNothing();
 }
 
-export async function syncNoteSlot(tx: Writer, note: typeof notes.$inferSelect): Promise<void> {
+/// Returns the slot the singular columns were mirrored INTO, so a caller regrounding after a score
+/// change can scope to it. A note-wide sweep here demotes every other piece's perfectly good bars.
+export async function syncNoteSlot(tx: Writer, note: typeof notes.$inferSelect): Promise<string | null> {
   const values = {
     pieceId: note.pieceId,
     pieceLabel: note.pieceLabel,
@@ -57,21 +59,22 @@ export async function syncNoteSlot(tx: Writer, note: typeof notes.$inferSelect):
     .limit(1);
   if (existing) {
     await tx.update(notedPieces).set({ ...values, updatedAt: sql`now()` }).where(eq(notedPieces.id, existing.id));
-    return;
+    return existing.id;
   }
-  if (!named(note)) return;
+  if (!named(note)) return null;
   const [minted] = await tx
     .insert(notedPieces)
     .values({ noteId: note.id, sortIndex: FIRST_SLOT, ...values })
     .onConflictDoNothing()
     .returning({ id: notedPieces.id });
-  if (!minted) return;
+  if (!minted) return null;
   // The note's existing items belong to the piece it just named — leaving them unstamped strands them in General where no later backfill looks.
   // Correct only while a note holds ONE slot: delete this when the review screen can create a second.
   await tx
     .update(noteAnnotations)
     .set({ notePieceId: minted.id, groundedPieceId: sql`coalesce(${noteAnnotations.groundedPieceId}, ${minted.id})` })
     .where(and(eq(noteAnnotations.noteId, note.id), isNull(noteAnnotations.notePieceId)));
+  return minted.id;
 }
 
 /// The other half of the dual-write. The columns are still the truth every read path and the send gate

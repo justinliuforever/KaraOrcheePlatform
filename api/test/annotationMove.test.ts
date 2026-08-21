@@ -5,7 +5,7 @@ import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT, type JWK } from
 import { createServer } from "../src/server";
 import { createJoseVerifier, type AuthVerifier } from "../src/auth";
 import { createTestDb } from "./testdb";
-import { users, pieces, lessonSessions, noteJobs, notes, notedPieces, noteAnnotations } from "../src/db/schema";
+import { users, pieces, lessonSessions, noteJobs, notes, notedPieces, noteAnnotations, scoreScans } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { ScanStore } from "../src/notes/scans_store";
 
@@ -158,6 +158,79 @@ describe("moving a marked spot to another piece", () => {
     const after = await reload(item.id);
     expect(after.notePieceId).toBe(a.id);
     expect((after.location as Record<string, unknown>).measureStart).toBe(14);
+  });
+
+  it("changing the note's own score leaves every other piece's bars alone", async () => {
+    const { note, a, b, item } = await seed();
+    const [neighbour] = await db.orm.insert(noteAnnotations).values({
+      noteId: note.id, idx: 1, category: "rhythm", instruction: "Elsewhere", quote: "there",
+      notePieceId: b.id, groundedPieceId: b.id, location: GROUNDED,
+    }).returning();
+
+    // The note's singular piece changes, which can only mean the slot it mirrors into.
+    const res = await request(app())
+      .patch(`/v1/notes/${note.id}`).set("Authorization", `Bearer ${teacherToken}`)
+      .send({ pieceId: "move_b" });
+
+    expect(res.status).toBe(200);
+    const [mine] = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.id, item.id));
+    expect((mine!.location as Record<string, unknown>).grounded).toBe(false);
+    const [other] = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.id, neighbour!.id));
+    expect((other!.location as Record<string, unknown>).grounded)
+      .toBe(true);
+    expect(a.id).toBeTruthy();
+  });
+
+  it("attaching photographs does not wipe the bars of a piece it never touched", async () => {
+    const { note, b, item } = await seed();
+    await db.orm.update(notes).set({ pieceId: null, pieceLabel: "Typed only" }).where(eq(notes.id, note.id));
+    const [neighbour] = await db.orm.insert(noteAnnotations).values({
+      noteId: note.id, idx: 1, category: "rhythm", instruction: "Elsewhere", quote: "there",
+      notePieceId: b.id, groundedPieceId: b.id, location: GROUNDED,
+    }).returning();
+    const [scan] = await db.orm.insert(scoreScans)
+      .values({ ownerId: teacherId, title: "Pages", pageCount: 1, status: "ready", bytes: 10 })
+      .returning();
+    await db.orm.update(scoreScans).set({ blobPath: `${teacherId}/${scan!.id}/` })
+      .where(eq(scoreScans.id, scan!.id));
+
+    const res = await request(app())
+      .patch(`/v1/notes/${note.id}`).set("Authorization", `Bearer ${teacherToken}`)
+      .send({ scoreScanId: scan!.id });
+
+    expect(res.status).toBe(200);
+    const [other] = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.id, neighbour!.id));
+    expect((other!.location as Record<string, unknown>).grounded).toBe(true);
+    expect(item.id).toBeTruthy();
+  });
+
+  it("refuses a bar the piece does not have, however many times a stale client posts it", async () => {
+    const { note, a, item } = await seed();
+    await db.orm.update(pieces).set({ facts: { measures: 24 } }).where(eq(pieces.id, "move_a"));
+    const past = { ...GROUNDED, raw: "bar 30", measureStart: 30, measureEnd: 30 };
+
+    const res = await request(app())
+      .patch(`/v1/notes/${note.id}`).set("Authorization", `Bearer ${teacherToken}`)
+      .send(payload(item, { notePieceId: a.id, location: past }));
+
+    expect(res.status).toBe(200);
+    const stored = await reload(item.id);
+    expect((stored.location as Record<string, unknown>).grounded).toBe(false);
+    expect(stored.groundedPieceId).toBeNull();
+  });
+
+  it("keeps a bar the piece does have", async () => {
+    const { note, a, item } = await seed();
+    await db.orm.update(pieces).set({ facts: { measures: 24 } }).where(eq(pieces.id, "move_a"));
+    const inside = { ...GROUNDED, raw: "bar 6", measureStart: 6, measureEnd: 6 };
+
+    await request(app())
+      .patch(`/v1/notes/${note.id}`).set("Authorization", `Bearer ${teacherToken}`)
+      .send(payload(item, { notePieceId: a.id, location: inside }));
+
+    const stored = await reload(item.id);
+    expect((stored.location as Record<string, unknown>).grounded).toBe(true);
+    expect((stored.location as Record<string, unknown>).measureStart).toBe(6);
   });
 
   it("refuses a piece from another note and lands none of the edit", async () => {
