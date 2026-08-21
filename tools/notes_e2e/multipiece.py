@@ -95,8 +95,11 @@ def run(note_id):
     first_spot = spots[0]
     payload = [dict(a, notePieceId=(second if a["id"] == first_spot["id"] else a.get("notePieceId")))
                for a in spots]
-    s, _ = call("PATCH", f"/v1/notes/{note_id}", {"annotations": payload})
+    s, saved = call("PATCH", f"/v1/notes/{note_id}", {"annotations": payload})
     check("a marked spot can be moved to another piece", s == 200, f"status={s}")
+    # The app assigns this response straight into its live list; an answer without it empties the screen.
+    check("a save answers with the piece list", isinstance(saved.get("pieces"), list)
+          and len(saved["pieces"]) == 3, f"pieces={saved.get('pieces') and len(saved['pieces'])}")
     s, d = call("GET", f"/v1/notes/{note_id}")
     got = next(a for a in d["annotations"] if a["id"] == first_spot["id"])
     check("and it comes back under the piece it was moved to", got.get("notePieceId") == second,
@@ -104,6 +107,28 @@ def run(note_id):
     check("its bar numbers did not follow it to another score",
           got["location"].get("grounded") is not True or first_spot["location"].get("grounded") is not True,
           got["location"])
+
+    # Ground two spots against two different pieces, then swap one piece's score under it.
+    s, d = call("GET", f"/v1/notes/{note_id}")
+    here = [a for a in d["annotations"] if a.get("notePieceId") == second]
+    there = [a for a in d["annotations"] if a.get("notePieceId") and a["notePieceId"] != second]
+    if here and there:
+        # Deliberately past the end of any real piece. Whether an IN-RANGE bar should also die on a
+        # swap is a live question — the plan's prose says yes, the shipped rule keeps it — and this
+        # check takes no position on it, so a decision there does not read as a regression here.
+        bars = {"type": "measures", "raw": "bar 900", "grounded": True, "hint": None,
+                "measureStart": 900, "measureEnd": 900, "pinnedBy": "teacher", "studentPin": None}
+        pinned = [dict(a, location=(bars if a["id"] in {here[0]["id"], there[0]["id"]} else a["location"]))
+                  for a in d["annotations"]]
+        call("PATCH", f"/v1/notes/{note_id}", {"annotations": pinned})
+        call("PATCH", f"/v1/notes/{note_id}/pieces/{second}", {"pieceId": CATALOG_PIECE})
+        s, after = call("GET", f"/v1/notes/{note_id}")
+        moved_on = next(a for a in after["annotations"] if a["id"] == here[0]["id"])
+        neighbour = next(a for a in after["annotations"] if a["id"] == there[0]["id"])
+        check("swapping a piece drops bars written against the score it replaced",
+              moved_on["location"].get("grounded") is not True, moved_on["location"])
+        check("and leaves every other piece's bars alone",
+              neighbour["location"].get("grounded") is True, neighbour["location"])
 
     s, _ = call("DELETE", f"/v1/notes/{note_id}/pieces/{second}")
     check("a piece can be taken out", s == 200, f"status={s}")
