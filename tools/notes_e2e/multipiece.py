@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Drives the multi-piece surface over real HTTPS with a real token, on dev.
 
+Leaves narration clips behind that disagree with their notes: it edits annotations after the worker has
+already narrated them, which is the ordinary state of any edited draft and self-heals on send. Expect
+the narration gate's baseline to grow by two notes per run, and compare before/after rather than
+reading the raw count.
+
 Everything below the wire is covered by unit and container tests; this is the one leg they
 cannot reach. Pass a note id, or omit it to run the whole pipeline from a real lesson.
 """
