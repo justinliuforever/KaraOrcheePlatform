@@ -358,6 +358,35 @@ describe("the contract itself", () => {
   });
 });
 
+describe("a save answers with the piece list", () => {
+  it("carries every slot back, because the app replaces its own list with this answer", async () => {
+    const note = await seedNote({ pieceId: "frozen_piece" });
+    const app = makeApp();
+    // A seeded row has no slot until something writes it; the app never sees a note in that state.
+    await request(app).patch(`/v1/notes/${note.id}`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ content: { lessonSummary: "", practicePlan: [] } });
+    const added = await request(app)
+      .post(`/v1/notes/${note.id}/pieces`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ pieceLabel: "A second piece" });
+    expect(added.status).toBe(201);
+
+    const saved = await request(app)
+      .patch(`/v1/notes/${note.id}`)
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ content: { lessonSummary: "edited", practicePlan: [] } });
+
+    expect(saved.status).toBe(200);
+    expect(saved.body.pieces).toHaveLength(2);
+    expect(saved.body.pieces.map((p: { sortIndex: number }) => p.sortIndex))
+      .toEqual([...saved.body.pieces.map((p: { sortIndex: number }) => p.sortIndex)].sort((a, b) => a - b));
+    expect(saved.body.pieces.map((p: { id: string }) => p.id))
+      .toEqual((await request(app).get(`/v1/notes/${note.id}`)
+        .set("Authorization", `Bearer ${teacher.token}`)).body.pieces.map((p: { id: string }) => p.id));
+  });
+});
+
 describe("a practice-plan row never leaks into the reader's marked spots", () => {
   it("stays out of the annotations array, the counts, and the PATCH sweep", async () => {
     const note = await seedNote({ status: "sent", sentAt: new Date(), pieceId: "frozen_piece" });

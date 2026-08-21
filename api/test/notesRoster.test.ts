@@ -770,6 +770,34 @@ describe("roster payload v2", () => {
     expect(row.latestNote.pieceTitle).toBe("Prelude in C");
   });
 
+  it("a practice-plan row is not a practice step, on the roster or the timeline", async () => {
+    const { t, s } = await linked("v2-plan");
+    const sent = await seedNote({
+      teacherId: t.id, studentId: s.id, status: "sent",
+      pieceLabel: "With a plan", sentAt: daysAgo(1),
+    });
+    const spots = await db.orm.select().from(noteAnnotations)
+      .where(eq(noteAnnotations.noteId, sent.note.id));
+    await db.orm.insert(noteAnnotations).values([0, 1, 2].map((i) => ({
+      noteId: sent.note.id, idx: 90 + i, category: "practice_strategy",
+      instruction: `Plan step ${i}`, quote: null, source: "plan",
+    })));
+    // Every marked spot done: the teacher must be able to see this note finished.
+    for (const a of spots) {
+      await db.orm.update(noteAnnotations).set({ doneAt: daysAgo(0) }).where(eq(noteAnnotations.id, a.id));
+    }
+
+    const row = await rowFor(t, s.id);
+    expect(row.latestNote.stepCount).toBe(spots.length);
+    expect(row.latestNote.doneCount).toBe(spots.length);
+    expect(row.practicedTotal).toBe(spots.length);
+
+    const detail = await request(makeApp())
+      .get(`/v1/me/students/${s.id}`)
+      .set("Authorization", `Bearer ${t.token}`);
+    expect(detail.body.notes[0].stepCount).toBe(spots.length);
+  });
+
   it("the step count describes the latest note, not a lifetime", async () => {
     const { t, s } = await linked("v2-steps");
     const old = await seedNote({

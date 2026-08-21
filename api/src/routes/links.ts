@@ -603,7 +603,10 @@ export function linksRouter(deps: Deps): Router {
               done: sql<number>`count(${noteAnnotations.doneAt})::int`,
             })
             .from(notes)
-            .leftJoin(noteAnnotations, eq(noteAnnotations.noteId, notes.id))
+            // The filter rides the JOIN, never the WHERE: in the WHERE it turns this into an inner join
+            // and a sent note with no marked spots would vanish from the roster entirely.
+            .leftJoin(noteAnnotations, and(eq(noteAnnotations.noteId, notes.id),
+                                           eq(noteAnnotations.source, "transcript")))
             .where(and(
               eq(notes.teacherId, me.id),
               eq(notes.status, "sent"),
@@ -643,7 +646,10 @@ export function linksRouter(deps: Deps): Router {
               done: sql<number>`count(${noteAnnotations.doneAt})::int`,
             })
             .from(noteAnnotations)
-            .where(inArray(noteAnnotations.noteId, latestNoteIds))
+            // Practice-plan rows live in this table too and never reach a client, so counting them
+            // makes "all N practiced" unreachable and disagrees with the student's own screen.
+            .where(and(inArray(noteAnnotations.noteId, latestNoteIds),
+                       eq(noteAnnotations.source, "transcript")))
             .groupBy(noteAnnotations.noteId)
         : [];
       const stepsByNote = new Map(stepAgg.map((r) => [r.noteId, r]));
@@ -780,7 +786,8 @@ export function linksRouter(deps: Deps): Router {
               done: sql<number>`count(${noteAnnotations.doneAt})::int`,
             })
             .from(noteAnnotations)
-            .where(inArray(noteAnnotations.noteId, timelineIds))
+            .where(and(inArray(noteAnnotations.noteId, timelineIds),
+                       eq(noteAnnotations.source, "transcript")))
             .groupBy(noteAnnotations.noteId)
         : [];
       const stepsByNote = new Map(steps.map((r) => [r.noteId, r]));

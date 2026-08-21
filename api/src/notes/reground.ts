@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import { noteAnnotations } from "../db/schema";
 import type { Orm } from "../db/client";
 
@@ -16,7 +16,18 @@ export function ungrounded(loc: Record<string, unknown>, hint: string) {
 
 /// A bar number survives only while the score it was written against is still this slot's score; `bound === null` means there is no engraving to check it against, so nothing grounded survives.
 export async function reground(tx: Tx, noteId: string, bound: number | null): Promise<number> {
-  const rows = await tx.select().from(noteAnnotations).where(eq(noteAnnotations.noteId, noteId));
+  return await regroundWhere(tx, eq(noteAnnotations.noteId, noteId), bound);
+}
+
+/// Scoped to one slot: sweeping the whole note against one piece's length would demote every OTHER
+/// piece's perfectly good bars, which is the same silent wrongness in the opposite direction.
+export async function regroundSlot(tx: Tx, noteId: string, slotId: string, bound: number | null): Promise<number> {
+  return await regroundWhere(
+    tx, and(eq(noteAnnotations.noteId, noteId), eq(noteAnnotations.notePieceId, slotId)) as SQL, bound);
+}
+
+async function regroundWhere(tx: Tx, where: SQL, bound: number | null): Promise<number> {
+  const rows = await tx.select().from(noteAnnotations).where(where);
   let n = 0;
   for (const a of rows) {
     const loc = (a.location ?? {}) as Record<string, unknown>;

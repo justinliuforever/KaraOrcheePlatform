@@ -17,7 +17,7 @@ import {
 } from "../notes/narration";
 import { notifyNoteSent } from "../notes/push";
 import { MSG_NOTE_NAMES_PIECE } from "./lessons";
-import { MOVED_HINT, REGROUND_HINT, reground, ungrounded } from "../notes/reground";
+import { MOVED_HINT, REGROUND_HINT, reground, regroundSlot, ungrounded } from "../notes/reground";
 import { syncLessonSlot, syncNoteSingular, syncNoteSlot } from "../notes/slot_sync";
 import { notePieceWire, notePieces, studentPieceWire } from "../notes/pieces_wire";
 import { applyBinding, MAX_SLOTS, moveSlot, nextSortIndex, slotsOf, type SlotFacts } from "../notes/slot_crud";
@@ -468,7 +468,8 @@ export function notesRouter(deps: Deps): Router {
         // The wire's annotations array is exactly the transcript rows; a plan row here renders as a marked spot.
         .where(and(eq(noteAnnotations.noteId, note.id), eq(noteAnnotations.source, "transcript")))
         .orderBy(asc(noteAnnotations.idx));
-      res.json({ note: updated, annotations });
+      // The app assigns this straight into its live list, so a save that omits it empties the screen.
+      res.json({ note: updated, annotations, pieces: (await notePieces(db, updated)).map(notePieceWire) });
     }),
   );
 
@@ -1393,12 +1394,20 @@ export function notesRouter(deps: Deps): Router {
       const slotId = String(req.params.slotId);
       const body = req.body ?? {};
 
+      // null = there is no engraving to check bar numbers against, so nothing grounded may survive.
+      let newSlotMeasures: number | null = null;
       if ("pieceId" in body && typeof body.pieceId === "string") {
-        const [piece] = await db.select({ id: pieces.id }).from(pieces).where(eq(pieces.id, body.pieceId)).limit(1);
+        const [piece] = await db
+          .select({ id: pieces.id, facts: pieces.facts })
+          .from(pieces)
+          .where(eq(pieces.id, body.pieceId))
+          .limit(1);
         if (!piece) {
           res.status(400).json({ error: "unknown_piece" });
           return;
         }
+        const m = (piece.facts as { measures?: unknown } | null)?.measures;
+        newSlotMeasures = typeof m === "number" && Number.isInteger(m) && m > 0 ? m : null;
       }
       let scanId: string | null | "miss" = null;
       if ("scoreScanId" in body) {
@@ -1437,6 +1446,15 @@ export function notesRouter(deps: Deps): Router {
             .where(eq(notedPieces.id, slot.id));
         }
         const [after] = await tx.select().from(notedPieces).where(eq(notedPieces.id, slot.id)).limit(1);
+        // A bar number belongs to the score it was written against; swapping this slot's score leaves it
+        // pointing into music the student is no longer reading, and nothing downstream can tell.
+        const scoreMoved = ("pieceId" in body && after!.pieceId !== slot.pieceId)
+          || ("scoreScanId" in body && after!.scoreScanId !== slot.scoreScanId)
+          || decided.scoreDetached;
+        if (scoreMoved) {
+          const cameFromPhotographs = slot.scoreScanId !== null;
+          await regroundSlot(tx, note.id, slot.id, cameFromPhotographs ? null : newSlotMeasures);
+        }
         await syncNoteSingular(tx, note.id);
         return { row: after!, scoreDetached: decided.scoreDetached };
       });

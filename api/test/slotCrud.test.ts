@@ -265,6 +265,35 @@ describe("a lesson's list of pieces", () => {
     expect(after!.pieceLabel).toBeNull();
   });
 
+  it("drops bar numbers written against the score a card just stopped showing", async () => {
+    const { note, slot } = await seedDraft({ pieceId: "slot_piece" });
+    const [kept] = await db.orm.insert(notedPieces)
+      .values({ noteId: note.id, sortIndex: 1000, pieceLabel: "Another piece" }).returning();
+    const grounded = { type: "measures", raw: "bar 3", grounded: true,
+                       measureStart: 3, measureEnd: 3, pinnedBy: "teacher" };
+    const [mine] = await db.orm.insert(noteAnnotations).values({
+      noteId: note.id, idx: 0, category: "rhythm", instruction: "Here", quote: "there",
+      notePieceId: slot.id, groundedPieceId: slot.id, location: grounded,
+    }).returning();
+    const [neighbour] = await db.orm.insert(noteAnnotations).values({
+      noteId: note.id, idx: 1, category: "rhythm", instruction: "Elsewhere", quote: "there",
+      notePieceId: kept!.id, groundedPieceId: kept!.id, location: grounded,
+    }).returning();
+
+    const res = await request(app())
+      .patch(`/v1/notes/${note.id}/pieces/${slot.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ pieceId: "other_piece" });
+
+    expect(res.status).toBe(200);
+    const [after] = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.id, mine!.id));
+    expect((after!.location as Record<string, unknown>).grounded).toBe(false);
+    const [untouched] = await db.orm.select().from(noteAnnotations)
+      .where(eq(noteAnnotations.id, neighbour!.id));
+    expect((untouched!.location as Record<string, unknown>).grounded)
+      .toBe(true);
+  });
+
   it("refuses every edit once the note is sent", async () => {
     const { note, slot } = await seedDraft({ pieceId: "slot_piece" });
     await db.orm.update(notes).set({ status: "sent" }).where(eq(notes.id, note.id));
