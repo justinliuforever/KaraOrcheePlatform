@@ -253,6 +253,13 @@
       "when": 1787138138719,
       "tag": "0035_practice_items_rename",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1787138198719,
+      "tag": "0036_drop_note_annotations_view",
+      "breakpoints": true
     }
   ]
 }

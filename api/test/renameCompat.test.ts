@@ -4,9 +4,11 @@ import { createTestDb } from "./testdb";
 import { users, notes, noteJobs, lessonSessions } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 
-/// The notes worker writes this table by hand, by its OLD name, and a draining replica keeps consuming
-/// for minutes after a new revision reports healthy. Until that image is gone, the old name must work.
-describe("the old table name still works, because an old worker is still using it", () => {
+/// This file used to prove the OLD name still worked, because the worker wrote it by hand while the
+/// rename was in flight. That window closed when the worker's SQL moved and its predecessor lost its
+/// last replica, so the guard inverts: the old name must now be gone, or something is still reaching
+/// for a table that is not there.
+describe("the old table name is gone, and nothing may reach for it again", () => {
   let db: Db;
   let noteId: string;
 
@@ -26,42 +28,22 @@ describe("the old table name still works, because an old worker is still using i
     noteId = note!.id;
   });
 
-  it("accepts the insert the worker actually writes, naming only the columns it knows", async () => {
+  it("no longer answers to note_annotations, by table or by view", async () => {
+    const found = await db.orm.execute(sql`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = 'note_annotations'`);
+    expect(found.rows).toHaveLength(0);
+  });
+
+  it("still takes the worker's own insert under the name the worker now uses", async () => {
     await db.orm.execute(sql`
-      INSERT INTO note_annotations (note_id, idx, category, instruction, quote)
+      INSERT INTO practice_items (note_id, idx, category, instruction, quote)
       VALUES (${noteId}::uuid, 0, 'rhythm', 'Even it out', 'those bars')`);
 
     const rows = await db.orm.execute(sql`SELECT * FROM practice_items WHERE note_id = ${noteId}::uuid`);
     expect(rows.rows).toHaveLength(1);
     const row = rows.rows[0] as Record<string, unknown>;
-    // Every default the base table carries has to survive the view, or the insert above fails on NOT NULL.
-    expect(row.id).toBeTruthy();
     expect(row.source).toBe("transcript");
     expect(row.location).toEqual({});
-    expect(row.created_at).toBeTruthy();
-  });
-
-  it("reads back through the old name what the new name wrote", async () => {
-    await db.orm.execute(sql`
-      INSERT INTO practice_items (note_id, idx, category, instruction, quote)
-      VALUES (${noteId}::uuid, 1, 'reading', 'Check the key', 'the key')`);
-
-    const rows = await db.orm.execute(sql`
-      SELECT instruction FROM note_annotations WHERE note_id = ${noteId}::uuid`);
-    expect((rows.rows[0] as { instruction: string }).instruction).toBe("Check the key");
-  });
-
-  it("carries a delete and an update through, which the worker's replace_draft does on every retry", async () => {
-    await db.orm.execute(sql`
-      INSERT INTO note_annotations (note_id, idx, category, instruction, quote)
-      VALUES (${noteId}::uuid, 0, 'rhythm', 'First', 'q')`);
-    await db.orm.execute(sql`
-      UPDATE note_annotations SET instruction = 'Second' WHERE note_id = ${noteId}::uuid`);
-    const updated = await db.orm.execute(sql`SELECT instruction FROM practice_items`);
-    expect((updated.rows[0] as { instruction: string }).instruction).toBe("Second");
-
-    await db.orm.execute(sql`DELETE FROM note_annotations WHERE note_id = ${noteId}::uuid`);
-    const left = await db.orm.execute(sql`SELECT count(*)::int AS n FROM practice_items`);
-    expect((left.rows[0] as { n: number }).n).toBe(0);
   });
 });
