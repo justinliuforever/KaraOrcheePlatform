@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
@@ -9,10 +9,9 @@ export async function createTestDb(): Promise<Db> {
   const pglite = new PGlite();
   const orm = drizzle(pglite, { schema });
   const dir = join(__dirname, "..", "drizzle");
-  // The JOURNAL, never the directory: production's migrator reads this file, so a migration that is
-  // only a .sql on disk runs here and silently does not run there. That cost a deploy on 2026-08-20.
+  // Production's migrator reads this file, never the directory: an unjournalled .sql runs here and not there.
   const journal = JSON.parse(readFileSync(join(dir, "meta", "_journal.json"), "utf8")) as {
-    entries: { tag: string }[];
+    entries: { idx: number; tag: string }[];
   };
   const onDisk = new Set(readdirSync(dir).filter((f) => f.endsWith(".sql")).map((f) => f.slice(0, -4)));
   const journalled = new Set(journal.entries.map((e) => e.tag));
@@ -20,6 +19,12 @@ export async function createTestDb(): Promise<Db> {
     if (!journalled.has(f)) {
       throw new Error(`drizzle/${f}.sql has no entry in meta/_journal.json — production would skip it`);
     }
+  }
+  // drizzle-kit diffs schema.ts against the NEWEST snapshot: one missing leaves `generate` proposing changes already shipped.
+  const newest = journal.entries[journal.entries.length - 1]!;
+  const snapshot = `${String(newest.idx).padStart(4, "0")}_snapshot.json`;
+  if (!existsSync(join(dir, "meta", snapshot))) {
+    throw new Error(`drizzle/meta/${snapshot} is missing — db:generate would diff against an older schema`);
   }
   for (const entry of journal.entries) {
     const migration = readFileSync(join(dir, `${entry.tag}.sql`), "utf8");

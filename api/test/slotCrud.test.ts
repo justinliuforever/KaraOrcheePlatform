@@ -92,6 +92,8 @@ beforeEach(async () => {
   await db.orm.insert(pieces).values([
     { id: "slot_piece", title: "Op. 599", composer: "Czerny", rights: "public_domain", status: "published" },
     { id: "other_piece", title: "Arabesque", composer: "Burgmüller", rights: "public_domain", status: "published" },
+    { id: "eight_bar_piece", title: "Eight bars", composer: "Anon", rights: "public_domain",
+      status: "published", facts: { measures: 8 } },
   ]);
   teacherToken = await new SignJWT({ oid: "slot-teacher", name: "T", email: "t@slot.test" })
     .setProtectedHeader({ alg: "RS256", kid: KID })
@@ -292,6 +294,53 @@ describe("a lesson's list of pieces", () => {
       .where(eq(noteAnnotations.id, neighbour!.id));
     expect((untouched!.location as Record<string, unknown>).grounded)
       .toBe(true);
+  });
+
+  it("keeps a bar the piece it moved to still has, and drops one past its end", async () => {
+    const { note, slot } = await seedDraft({ pieceId: "slot_piece" });
+    const bar = (n: number) => ({ type: "measures", raw: `bar ${n}`, grounded: true,
+                                  measureStart: n, measureEnd: n, pinnedBy: "teacher" });
+    const [inside] = await db.orm.insert(noteAnnotations).values({
+      noteId: note.id, idx: 0, category: "rhythm", instruction: "Early", quote: "there",
+      notePieceId: slot.id, groundedPieceId: slot.id, location: bar(4),
+    }).returning();
+    const [past] = await db.orm.insert(noteAnnotations).values({
+      noteId: note.id, idx: 1, category: "rhythm", instruction: "Late", quote: "there",
+      notePieceId: slot.id, groundedPieceId: slot.id, location: bar(12),
+    }).returning();
+
+    const res = await request(app())
+      .patch(`/v1/notes/${note.id}/pieces/${slot.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ pieceId: "eight_bar_piece" });
+
+    expect(res.status).toBe(200);
+    const [kept] = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.id, inside!.id));
+    expect((kept!.location as Record<string, unknown>).grounded).toBe(true);
+    expect((kept!.location as Record<string, unknown>).measureStart).toBe(4);
+    const [dropped] = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.id, past!.id));
+    expect((dropped!.location as Record<string, unknown>).grounded).toBe(false);
+  });
+
+  it("drops a bar written against photographs even when the new piece is long enough for it", async () => {
+    const scan = await seedScan();
+    const { note, slot } = await seedDraft({ scoreScanId: scan.id });
+    const [spot] = await db.orm.insert(noteAnnotations).values({
+      noteId: note.id, idx: 0, category: "rhythm", instruction: "Here", quote: "there",
+      notePieceId: slot.id, groundedPieceId: slot.id,
+      location: { type: "measures", raw: "bar 4", grounded: true,
+                  measureStart: 4, measureEnd: 4, pinnedBy: "teacher" },
+    }).returning();
+
+    const res = await request(app())
+      .patch(`/v1/notes/${note.id}/pieces/${slot.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ pieceId: "eight_bar_piece" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.scoreDetached).toBe(true);
+    const [after] = await db.orm.select().from(noteAnnotations).where(eq(noteAnnotations.id, spot!.id));
+    expect((after!.location as Record<string, unknown>).grounded).toBe(false);
   });
 
   it("refuses every edit once the note is sent", async () => {

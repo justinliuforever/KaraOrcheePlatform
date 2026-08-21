@@ -798,6 +798,20 @@ describe("roster payload v2", () => {
     expect(detail.body.notes[0].stepCount).toBe(spots.length);
   });
 
+  it("a sent note with no marked spots still dates the student's last note", async () => {
+    const { t, s } = await linked("v2-bare");
+    const bare = await seedNote({
+      teacherId: t.id, studentId: s.id, status: "sent",
+      pieceLabel: "Bare", sentAt: daysAgo(2),
+    });
+    await db.orm.delete(noteAnnotations).where(eq(noteAnnotations.noteId, bare.note.id));
+
+    const row = await rowFor(t, s.id);
+    expect(row.lastNoteAt).not.toBeNull();
+    expect(row.practicedTotal).toBe(0);
+    expect(row.practicedDone).toBe(0);
+  });
+
   it("the step count describes the latest note, not a lifetime", async () => {
     const { t, s } = await linked("v2-steps");
     const old = await seedNote({
