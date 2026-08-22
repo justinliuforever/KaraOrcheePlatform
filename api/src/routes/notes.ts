@@ -18,6 +18,7 @@ import {
 import { notifyNoteSent } from "../notes/push";
 import { MSG_NOTE_NAMES_PIECE } from "./lessons";
 import { MOVED_HINT, REGROUND_HINT, reground, regroundSlot, ungrounded } from "../notes/reground";
+import { stampSlotVersions } from "../notes/slot_version";
 import { syncLessonSlot, syncNoteSingular, syncNoteSlot } from "../notes/slot_sync";
 import { notePieceWire, notePieces, studentPieceWire } from "../notes/pieces_wire";
 import { applyBinding, MAX_SLOTS, moveSlot, nextSortIndex, slotsOf, type SlotFacts } from "../notes/slot_crud";
@@ -587,6 +588,7 @@ export function notesRouter(deps: Deps): Router {
           .returning();
         if (row) {
           await syncNoteSlot(tx, row);
+          await stampSlotVersions(tx, note.id);
           await clearPieceMentions(tx, note.noteJobId);
         }
         return row;

@@ -18,6 +18,7 @@ import {
   invites,
   lessonSessions,
   noteJobs,
+  notedPieces,
   notes,
   noteAnnotations,
   noteNarrationClips,
@@ -1400,6 +1401,39 @@ describe("lesson metadata lifecycle", () => {
     const [row] = await db.orm.select().from(notes).where(eq(notes.id, note.id));
     expect(row!.pieceVersion).toBe(5);
     expect(row!.studentId).toBe(solo.id); // a self note's student is the owner, never rewritten
+  });
+
+  it("leaves a second piece's bars alone when the lesson's own piece changes", async () => {
+    const lesson = await mkLesson({ studentId: mdS.id });
+    const bar90 = { type: "absolute", raw: "bar 90", grounded: true,
+                    measureStart: 90, measureEnd: 90, pinnedBy: "auto" };
+    const { note, annotations } = await mkNote(lesson.id, {
+      studentId: mdS.id, status: "draft",
+      annotations: [{ instruction: "Past the end", quote: "bar ninety", location: bar90 }],
+    });
+    const [first] = await db.orm.insert(notedPieces)
+      .values({ noteId: note.id, sortIndex: 0, pieceId: lesson.pieceId }).returning();
+    await db.orm.update(noteAnnotations)
+      .set({ notePieceId: first!.id, groundedPieceId: first!.id })
+      .where(eq(noteAnnotations.id, annotations[0]!.id));
+    const [second] = await db.orm.insert(notedPieces)
+      .values({ noteId: note.id, sortIndex: 1000, pieceLabel: "Another piece" }).returning();
+    const [neighbour] = await db.orm.insert(noteAnnotations).values({
+      noteId: note.id, idx: 9, category: "rhythm", instruction: "Elsewhere", quote: "there",
+      notePieceId: second!.id, groundedPieceId: second!.id, location: bar90,
+    }).returning();
+
+    const res = await patch(lesson.id, { pieceId: "short_piece" });
+    expect(res.status).toBe(200);
+    expect(res.body.regrounded).toBe(1);
+
+    const [mine] = await db.orm.select().from(noteAnnotations)
+      .where(eq(noteAnnotations.id, annotations[0]!.id));
+    expect((mine!.location as Record<string, unknown>).grounded).toBe(false);
+    const [kept] = await db.orm.select().from(noteAnnotations)
+      .where(eq(noteAnnotations.id, neighbour!.id));
+    expect((kept!.location as Record<string, unknown>).grounded).toBe(true);
+    expect((kept!.location as Record<string, unknown>).measureStart).toBe(90);
   });
 
   it("re-grounds every anchor that now points past the end of the piece, whoever placed it", async () => {

@@ -189,7 +189,8 @@ def run_gate(assets_dir: Path, piece: str) -> tuple[bool, list[str], dict]:
     with sync_playwright() as pw:
         browser = pw.webkit.launch()
         page = browser.new_page()
-        for variant in ("phone", "ipad_portrait"):
+        # ipad_portrait renders byte-identical to phone; the 4500pt ipad layout is the second real one.
+        for variant in ("phone", "ipad"):
             results += verify_piece(page, assets_dir, piece, variant)
         browser.close()
     failures = [f"[{variant}] {msg}" for (_, variant, status, msg) in results if status == "FAIL"]

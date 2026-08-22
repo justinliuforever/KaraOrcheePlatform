@@ -7,7 +7,7 @@ import { requireUser, userAudit } from "../notes/user";
 import { upsertCustomPiece } from "./customPieces";
 import { notesAccess } from "../notes/entitlement";
 import { narrationPrefix } from "../notes/narration";
-import { REGROUND_HINT, reground } from "../notes/reground";
+import { REGROUND_HINT, regroundSlot } from "../notes/reground";
 import { syncLessonSlot, syncNoteSlot } from "../notes/slot_sync";
 import { lessonPieceWire, lessonPiecesFor } from "../notes/pieces_wire";
 import { pgErrorCode } from "../db/pgerror";
@@ -812,10 +812,11 @@ export function lessonsRouter(deps: Deps): Router {
           }
           np.updatedAt = sql`now()`;
           const [u] = await tx.update(notes).set(np).where(eq(notes.id, n.id)).returning();
-          await syncNoteSlot(tx, u!);
+          const mirrored = await syncNoteSlot(tx, u!);
           if ("studentId" in np) studentCascadedTo = u!.id;
-          if (shouldReground && "pieceId" in np) {
-            regrounded += await reground(tx, n.id, newPieceMeasures!);
+          // shouldReground implies a non-null pieceId, so the mirror always exists by here.
+          if (shouldReground && mirrored && "pieceId" in np) {
+            regrounded += await regroundSlot(tx, n.id, mirrored, newPieceMeasures!);
           }
           touched.push({
             id: u!.id,

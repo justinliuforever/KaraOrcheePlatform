@@ -14,6 +14,7 @@ import {
   notes,
   noteAnnotations,
   customPieces,
+  notedPieces,
 } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { LessonStore } from "../src/notes/lessons_store";
@@ -990,5 +991,47 @@ describe("the worker's ready-push endpoint is reachable on the assembled app", (
       if (previous === undefined) delete process.env.INTERNAL_API_KEY;
       else process.env.INTERNAL_API_KEY = previous;
     }
+  });
+});
+
+describe("every piece a sent note names carries its own version", () => {
+  async function twoSlotDraft() {
+    await db.orm.update(pieces).set({ publishedVersion: 7 }).where(eq(pieces.id, "clementi_op36_no1_i"));
+    await db.orm.update(pieces).set({ publishedVersion: 4 }).where(eq(pieces.id, "burgmuller_op100_arabesque"));
+    const draft = await seedDraft({
+      teacherId: teacher.id, studentId: student.id, pieceId: "clementi_op36_no1_i",
+    });
+    await db.orm.insert(notedPieces).values({
+      noteId: draft.note.id, sortIndex: 0, pieceId: "clementi_op36_no1_i",
+    });
+    return draft;
+  }
+
+  async function slotsOf(noteId: string) {
+    return await db.orm.select().from(notedPieces)
+      .where(eq(notedPieces.noteId, noteId)).orderBy(notedPieces.sortIndex);
+  }
+
+  it("stamps the second piece with ITS version, not the first one's", async () => {
+    const draft = await twoSlotDraft();
+    await db.orm.insert(notedPieces).values({
+      noteId: draft.note.id, sortIndex: 1000, pieceId: "burgmuller_op100_arabesque",
+    });
+
+    const sent = await post(`/v1/notes/${draft.note.id}/send`, teacher.token).send({});
+    expect(sent.status).toBe(200);
+
+    expect((await slotsOf(draft.note.id)).map((s) => s.pieceVersion)).toEqual([7, 4]);
+  });
+
+  it("leaves a slot showing photographs unversioned", async () => {
+    const draft = await twoSlotDraft();
+    await db.orm.insert(notedPieces).values({
+      noteId: draft.note.id, sortIndex: 1000, pieceLabel: "From my photographs",
+    });
+
+    await post(`/v1/notes/${draft.note.id}/send`, teacher.token).send({});
+
+    expect((await slotsOf(draft.note.id)).map((s) => s.pieceVersion)).toEqual([7, null]);
   });
 });
