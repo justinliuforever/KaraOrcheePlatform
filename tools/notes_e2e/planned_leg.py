@@ -77,11 +77,26 @@ def run(note_id, sid):
           any(p.get("pieceId") == CATALOG_PIECE and isinstance(p.get("pieceVersion"), int)
               for p in sslots),
           [(p.get("pieceId"), p.get("pieceVersion")) for p in sslots])
+    # The model may honestly attribute nothing on this fixture; the KEY must still ride, and a
+    # teacher-written summary must reach the student.
+    check("every slot carries the summary key",
+          all("summary" in p for p in sslots), [list(p.keys())[:6] for p in sslots[:1]])
+
+
+def teacher_summary_roundtrip(note_id, sid):
+    s, d = call(TEACHER, "GET", f"/v1/notes/{note_id}")
+    slot = (d.get("pieces") or [{}])[0]
+    s, r = call(TEACHER, "PATCH", f"/v1/notes/{note_id}/pieces/{slot['id']}",
+                {"summary": "Even sixteenths arrived; keep the wrist loose."})
+    check("the teacher can write a piece's own summary", s == 200
+          and r.get("piece", {}).get("summary") == "Even sixteenths arrived; keep the wrist loose.",
+          f"status={s} {r}")
 
 
 if __name__ == "__main__":
     sid = student_id()
     nid = sys.argv[1] if len(sys.argv) > 1 else planned_note()
     print(f"note {nid} -> student {sid}\n")
+    teacher_summary_roundtrip(nid, sid)
     run(nid, sid)
     print("\n" + ("ALL PASS" if not fails else f"{len(fails)} FAILED: {fails}"))
