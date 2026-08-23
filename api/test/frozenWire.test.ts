@@ -25,6 +25,7 @@ import {
   frozenRetractedStub,
   frozenScanDetail,
   frozenNotePiece,
+  frozenLesson,
 } from "./frozenWire.contract";
 
 const ISSUER = "https://tenant-id.ciamlogin.com/tenant-id/v2.0";
@@ -319,6 +320,25 @@ describe("the frozen wire an installed binary decodes", () => {
     expect(res.status).toBe(200);
     const detail = assertFrozen(frozenScanDetail, res.body, "GET /v1/score-scans/:id");
     expect(detail.usedBy.length).toBeGreaterThan(0);
+  });
+});
+
+describe("the lesson row an installed binary decodes", () => {
+  it("POST /v1/lessons and GET /v1/lessons/:id serve exactly the pinned lesson shape", async () => {
+    const created = await request(makeApp())
+      .post("/v1/lessons")
+      .set("Authorization", `Bearer ${teacher.token}`)
+      .send({ pieceLabel: "Frozen etude", pieceSource: "typed", clientLessonId: "frozen-lesson-1" });
+    expect(created.status).toBe(201);
+    assertFrozen(frozenLesson, created.body.lesson, "created lesson");
+
+    const shown = await request(makeApp())
+      .get(`/v1/lessons/${created.body.lesson.id}`)
+      .set("Authorization", `Bearer ${teacher.token}`);
+    expect(shown.status).toBe(200);
+    assertFrozen(frozenLesson, shown.body.lesson, "lesson detail");
+    expect(shown.body.lesson.pieceLabel).toBe("Frozen etude");
+    expect(shown.body.lesson.pieceSource).toBe("typed");
   });
 });
 

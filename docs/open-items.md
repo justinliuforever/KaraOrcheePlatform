@@ -398,3 +398,11 @@ are its records.
 - **The model does not invent bar numbers.** A lesson with zero spoken bar numbers but 24 spoken numerals (a teacher counting beats) produced 5 annotations and 0 placements; one annotation quoting "One, two, three. On each beat you have one note." was classified as a deixis reference, not a bar.
 - **Authenticated responses carry `no-store` and `Vary: Authorization`**, set in `requireAuth` so every future authenticated route inherits them. Verified against the deployed revision, not only in tests.
 
+## Slot backfill — dev run record (2026-08-23, spine retirement Slice 0)
+
+Dry-run on dev (rev 0000068): **0 lessons and 0 notes lack a slot row** — the zero-slot-named
+population is empty, which is the gate for deleting the `pending:` synthesis. `--write` was
+deliberately NOT run: the remaining count ("15 notes with items pointing at nothing") is post-v0.11
+multi-slot notes whose NULL assignment is a deliberate General — the write path would move those
+items to slot 0, which is exactly the hazard the v0.11 review recorded against re-running this tool.
+The tool dies in Slice 9 with this note as its epitaph.

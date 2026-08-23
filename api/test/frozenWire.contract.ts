@@ -25,6 +25,32 @@ export const frozenPlanItem = z.object({
   notePieceId: z.string().nullable(),
 });
 
+/// The full lesson row as lessonWire serves it. Every key an installed binary decodes; the
+/// singular piece keys must survive the spine retirement as lowest-slot projections.
+export const frozenLesson = z.object({
+  id: z.string().min(1),
+  teacherId: z.string().min(1),
+  studentId: z.string().nullable(),
+  ownerRole: z.string(),
+  clientLessonId: z.string().nullable(),
+  pieceId: z.string().nullable(),
+  pieceLabel: z.string().nullable(),
+  pieceSource: z.string().nullable(),
+  pieceUpdatedAt: z.coerce.date().nullable(),
+  customPieceId: z.string().nullable(),
+  scoreScanId: z.string().nullable(),
+  language: z.string().nullable(),
+  attested: z.boolean(),
+  audioPath: z.string().nullable(),
+  audioBytes: z.number().int().nullable(),
+  durationSec: z.number().int().nullable(),
+  status: z.string(),
+  startedAt: z.coerce.date().nullable(),
+  endedAt: z.coerce.date().nullable(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+});
+
 export const frozenPracticePlanItem = z.object({
   focus: z.string(),
   steps: z.array(z.string()),
