@@ -680,7 +680,9 @@ export function studioRouter(deps: Deps): Router {
         .leftJoin(users, eq(studioJobs.createdBy, users.id))
         .where(status ? eq(studioJobs.status, status) : undefined)
         .orderBy(desc(studioJobs.updatedAt))
-        .limit(Math.min(Number(req.query.limit) || 100, 200));
+        // 1000, not 200: the fleet republish tool needs every piece's newest published job in one
+        // read, and this projection carries no artifacts or sources.
+        .limit(Math.min(Number(req.query.limit) || 100, 1000));
       res.json({ items });
     }),
   );

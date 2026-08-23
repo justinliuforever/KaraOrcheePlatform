@@ -11,7 +11,8 @@
     "build": "tsc",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/db/migrate.ts"
+    "db:migrate": "tsx src/db/migrate.ts",
+    "backfill:slot-versions": "tsx src/tools/backfill_slot_versions.ts"
   },
   "dependencies": {
     "@azure/identity": "^4.13.1",
