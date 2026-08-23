@@ -16,7 +16,7 @@ import {
   narrationPrefix,
 } from "../notes/narration";
 import { notifyNoteSent } from "../notes/push";
-import { MSG_NOTE_NAMES_PIECE } from "./lessons";
+import { MSG_NOTE_NAMES_PIECE, readPieceSource } from "./lessons";
 import { MOVED_HINT, REGROUND_HINT, reground, regroundSlot, ungrounded } from "../notes/reground";
 import { stampSlotVersions } from "../notes/slot_version";
 import { syncLessonSlot, syncNoteSingular, syncNoteSlot } from "../notes/slot_sync";
@@ -1417,6 +1417,10 @@ export function notesRouter(deps: Deps): Router {
         return;
       }
 
+      const label = typeof body.pieceLabel === "string" && body.pieceLabel.trim()
+        ? body.pieceLabel.trim()
+        : null;
+      const source = readPieceSource(body.pieceSource);
       const created = await db.transaction(async (tx) => {
         const existing = await slotsOf(tx, note.id);
         if (existing.length >= MAX_SLOTS) return "full" as const;
@@ -1426,9 +1430,9 @@ export function notesRouter(deps: Deps): Router {
             noteId: note.id,
             sortIndex: await nextSortIndex(tx, note.id),
             pieceId,
-            pieceLabel: typeof body.pieceLabel === "string" && body.pieceLabel.trim()
-              ? body.pieceLabel.trim()
-              : null,
+            pieceLabel: label,
+            pieceSource: source,
+            customPieceId: source === "typed" && label ? await upsertCustomPiece(tx, me.id, label) : null,
             scoreScanId: scanId,
           })
           .returning();
@@ -1496,6 +1500,14 @@ export function notesRouter(deps: Deps): Router {
         if ("pieceLabel" in body) {
           facts.pieceLabel = typeof body.pieceLabel === "string" && body.pieceLabel.trim()
             ? body.pieceLabel.trim()
+            : null;
+        }
+        if ("pieceSource" in body) {
+          const src = readPieceSource(body.pieceSource);
+          facts.pieceSource = src;
+          const effectiveLabel = "pieceLabel" in body ? facts.pieceLabel : slot.pieceLabel;
+          facts.customPieceId = src === "typed" && effectiveLabel
+            ? await upsertCustomPiece(tx, me.id, effectiveLabel)
             : null;
         }
         if ("scoreScanId" in body) facts.scoreScanId = scanId as string | null;

@@ -360,6 +360,30 @@ describe("a lesson's list of pieces", () => {
     expect(res.body.piece.summary).toBeNull();
   });
 
+  it("a typed piece keeps its provenance and mints its custom row on slot routes too", async () => {
+    const { note } = await seedDraft({ pieceId: "slot_piece" });
+    const res = await request(app())
+      .post(`/v1/notes/${note.id}/pieces`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ pieceLabel: "My own etude", pieceSource: "typed" });
+    expect(res.status).toBe(201);
+    const [row] = await db.orm.select().from(notedPieces)
+      .where(eq(notedPieces.id, res.body.piece.id));
+    expect(row!.pieceSource).toBe("typed");
+    expect(row!.customPieceId).not.toBeNull();
+
+    const edited = await request(app())
+      .patch(`/v1/notes/${note.id}/pieces/${res.body.piece.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ pieceLabel: "Renamed etude", pieceSource: "typed" });
+    expect(edited.status).toBe(200);
+    const [after] = await db.orm.select().from(notedPieces)
+      .where(eq(notedPieces.id, res.body.piece.id));
+    expect(after!.pieceSource).toBe("typed");
+    expect(after!.customPieceId).not.toBeNull();
+    expect(after!.customPieceId).not.toBe(row!.customPieceId);
+  });
+
   it("refuses every edit once the note is sent", async () => {
     const { note, slot } = await seedDraft({ pieceId: "slot_piece" });
     await db.orm.update(notes).set({ status: "sent" }).where(eq(notes.id, note.id));
