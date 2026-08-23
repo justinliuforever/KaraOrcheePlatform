@@ -91,11 +91,50 @@ def planned_name(row) -> str | None:
     return (title or label or None)
 
 
+def planned_prompt_names(rows) -> list[str | None]:
+    """One name per slot, DISTINCT: half this catalog shares a bare title (all of Czerny 599, both
+    WTC books), and a duplicated name collapses two slots into one in the model's answer."""
+    out: list[str | None] = []
+    seen: dict[str, int] = {}
+    for row in rows:
+        name = planned_name(row)
+        if name is None:
+            out.append(None)
+            continue
+        n = seen.get(name, 0) + 1
+        seen[name] = n
+        out.append(f"{name} ({n})" if n > 1 else name)
+    # A first occurrence that later repeats needs its own suffix too, or "X" and "X (2)" still collide on the model's side reading the list.
+    if any(v > 1 for v in seen.values()):
+        counts: dict[str, int] = {}
+        out2: list[str | None] = []
+        for row in rows:
+            name = planned_name(row)
+            if name is None:
+                out2.append(None)
+                continue
+            counts[name] = counts.get(name, 0) + 1
+            out2.append(f"{name} ({counts[name]})" if seen[name] > 1 else name)
+        return out2
+    return out
+
+
+def slot_for_attribution(names: list[str | None], answer: str) -> int | None:
+    """Index of the slot whose prompt name the model echoed; exact only."""
+    try:
+        return names.index(answer)
+    except ValueError:
+        return None
+
+
 def extract_plan_pieces(obj, allowed: list[str]) -> list[str | None]:
     """One attribution per practicePlan ENTRY, index-aligned with normalize_note's own plan loop —
     the two MUST skip the same entries (non-dict, blank focus) or every assignment lands one off."""
     out: list[str | None] = []
-    for step in (obj or {}).get("practice_plan") or []:
+    plan = (obj or {}).get("practice_plan")
+    if not isinstance(plan, list):
+        return out
+    for step in plan:
         if not isinstance(step, dict):
             continue
         focus = step.get("focus")
@@ -110,7 +149,10 @@ def normalize_piece_summaries(obj, allowed: list[str]) -> dict[str, str]:
     """Evidence, not inference: a name not copied exactly from the list is dropped, never fuzzily
     matched — the model was told the exact spellings."""
     out: dict[str, str] = {}
-    for entry in (obj or {}).get("piece_summaries") or []:
+    entries = (obj or {}).get("piece_summaries")
+    if not isinstance(entries, list):
+        return out
+    for entry in entries:
         if not isinstance(entry, dict):
             continue
         name, summary = entry.get("piece"), entry.get("summary")
@@ -579,10 +621,13 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         if len(planned) > 1:
             # Several planned pieces: every transcript row starts in General (slot_id None),
             # because nothing in a whole-lesson recording says which sentence belongs where.
+            prompt_names = planned_prompt_names(planned)
             for i, lp in enumerate(planned):
                 (_, lp_piece, lp_label, lp_custom, lp_scan, lp_version, _f, _t) = lp
                 held = hold_scan(cur, None if lp_piece is not None else lp_scan)
-                name = planned_name(lp)
+                # The SAME per-slot unique name the prompt carried — a bare-title lookup files two
+                # same-titled slots' answers onto whichever came first.
+                name = prompt_names[i]
                 cur.execute(
                     """INSERT INTO note_pieces (note_id, sort_index, piece_id, piece_label,
                                                 custom_piece_id, score_scan_id, piece_version, summary)
@@ -622,17 +667,18 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         plan_len = len((content or {}).get("practicePlan") or [])
         if plan_len:
             if len(planned) > 1 and plan_pieces:
-                slot_by_name = {}
-                for i, lp in enumerate(planned):
-                    n = planned_name(lp)
-                    if n and n not in slot_by_name:
-                        cur.execute(
-                            """SELECT id FROM note_pieces WHERE note_id = %s AND sort_index = %s""",
-                            (note_id, i * 1000))
-                        got = cur.fetchone()
-                        if got:
-                            slot_by_name[n] = str(got[0])
-                assigned = [slot_by_name.get(n) if n else None for n in plan_pieces[:plan_len]]
+                prompt_names = planned_prompt_names(planned)
+                slot_ids: list[str | None] = []
+                for i in range(len(planned)):
+                    cur.execute(
+                        """SELECT id FROM note_pieces WHERE note_id = %s AND sort_index = %s""",
+                        (note_id, i * 1000))
+                    got = cur.fetchone()
+                    slot_ids.append(str(got[0]) if got else None)
+                def slot_for(answer):
+                    idx = slot_for_attribution(prompt_names, answer) if answer else None
+                    return slot_ids[idx] if idx is not None else None
+                assigned = [slot_for(n) for n in plan_pieces[:plan_len]]
                 assigned += [None] * (plan_len - len(assigned))
                 if any(assigned):
                     cur.execute("UPDATE notes SET plan_piece_ids = %s WHERE id = %s",
@@ -728,8 +774,13 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
         cur.execute(PLANNED_SQL, (lesson_id,))
         planned_rows = cur.fetchall()
     conn.commit()
-    piece_names = [n for n in (planned_name(r) for r in planned_rows) if n]
-    piece_desc = f'"{piece_title}" by {piece_composer}' if piece_title else piece_label
+    prompt_names = planned_prompt_names(planned_rows)
+    piece_names = [n for n in prompt_names if n]
+    if len(piece_names) > 1:
+        # The lesson is not "on" planned[0]; telling the model it is fabricates attribution.
+        piece_desc = ", ".join(f'"{n}"' for n in piece_names)
+    else:
+        piece_desc = f'"{piece_title}" by {piece_composer}' if piece_title else piece_label
     system = build_system(measure_count, piece_names=piece_names)
     user = build_user(build_turns(utterances) or text, piece_desc)
 

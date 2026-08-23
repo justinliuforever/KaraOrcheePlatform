@@ -98,14 +98,14 @@ def piece_summaries_rule(names: list[str]) -> str:
 
 
 def with_piece_summaries(spec: str, names: list[str]) -> str:
-    """Injected only for a multi-piece lesson — the single-piece prompt stays byte-identical."""
-    tail = _SCHEMA_TAIL.replace(
-        '"target": string}',
-        '"target": string, "piece": string|null}')
-    return spec.replace(
-        _SCHEMA_TAIL,
-        tail.replace("}]\n}", "}],\n" + PIECE_SUMMARIES_SCHEMA + "\n}"),
-    ).replace(_RULE_TAIL, piece_summaries_rule(names) + "\n" + _RULE_TAIL)
+    """Injected only for a multi-piece lesson — the single-piece prompt stays byte-identical.
+    Anchors on the plan line and the schema's closing brace, NOT on _SCHEMA_TAIL: the mentions
+    injection rewrites that tail, and an injection keyed to it silently no-ops when both are on."""
+    out = spec.replace('"target": string}', '"target": string, "piece": string|null}')
+    i = out.index('"practice_plan"')
+    j = out.index("\n}", i)
+    out = out[:j] + ",\n" + PIECE_SUMMARIES_SCHEMA + out[j:]
+    return out.replace(_RULE_TAIL, piece_summaries_rule(names) + "\n" + _RULE_TAIL)
 
 
 def build_system(measure_count: int | None, *, piece_mentions: bool | None = None,

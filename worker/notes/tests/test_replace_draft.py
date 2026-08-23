@@ -245,6 +245,35 @@ def test_a_multi_lesson_files_the_plan_where_the_model_attributed_it():
         "entry 0 filed under the second slot the model named; entry 1 stays General"
 
 
+def test_same_titled_slots_get_distinct_prompt_names_and_their_own_answers():
+    rows = [
+        ("lp-1", "cz-23", None, None, None, 1, None, "Practical Method"),
+        ("lp-2", "cz-24", None, None, None, 1, None, "Practical Method"),
+    ]
+    names = main.planned_prompt_names(rows)
+    assert names == ["Practical Method (1)", "Practical Method (2)"], \
+        "every slot of Czerny 599 shares one bare title; undistinguished names collapse them"
+    assert main.slot_for_attribution(names, "Practical Method (2)") == 1
+    assert main.slot_for_attribution(names, "Practical Method") is None
+
+    planned = dict(CONTENT, practicePlan=[{"focus": "Trill", "steps": [], "target": ""}])
+    conn = FakeConn({LOCK: teacher_lock(), PLANNED_SEL: [rows],
+                     "INSERT INTO notes": ("note-1",),
+                     "SELECT id FROM note_pieces WHERE note_id": [("slot-a",), ("slot-b",)]})
+    main.replace_draft(conn, "job-1", "lesson-1", planned, ORIGINAL, ANNS,
+                       piece_summaries={"Practical Method (2)": "The second one."},
+                       plan_pieces=["Practical Method (2)"])
+    slots = [pr for sql, pr in conn.executed if sql.startswith("INSERT INTO note_pieces")]
+    assert [pr[-1] for pr in slots] == [None, "The second one."]
+    updates = [pr for sql, pr in conn.executed if sql.startswith("UPDATE notes SET plan_piece_ids")]
+    assert json.loads(updates[0][0]) == ["slot-b"]
+
+
+def test_scalar_model_output_never_crashes_the_note():
+    assert main.normalize_piece_summaries({"piece_summaries": 123}, ["A"]) == {}
+    assert main.extract_plan_pieces({"practice_plan": "oops"}, ["A"]) == []
+
+
 def test_summary_names_must_match_exactly():
     got = main.normalize_piece_summaries(
         {"piece_summaries": [
