@@ -147,15 +147,19 @@ def test_teacher_path_wipes_draft_then_inserts_teacher_origin():
 
 
 def test_plan_sidecar_starts_every_entry_on_the_lessons_piece():
+    import uuid
     planned = dict(CONTENT, practicePlan=[
         {"focus": "Hands separately", "steps": ["RH alone", "LH alone"], "target": "even"},
         {"focus": "Pedal on its own", "steps": [], "target": ""},
     ])
-    conn = FakeConn({LOCK: teacher_lock(), "INSERT INTO notes": ("note-1",)})
+    # A real driver hands back uuid.UUID, not str; the sidecar dump crashed on exactly that in prod.
+    slot = uuid.UUID("00000000-0000-4000-8000-000000000001")
+    conn = FakeConn({LOCK: teacher_lock(), "INSERT INTO notes": ("note-1",),
+                     "INSERT INTO note_pieces": (slot,)})
     main.replace_draft(conn, "job-1", "lesson-1", planned, ORIGINAL, ANNS)
     updates = [(s, p) for s, p in conn.executed if s.startswith("UPDATE notes SET plan_piece_ids")]
     assert len(updates) == 1
-    assert json.loads(updates[0][1][0]) == ["slot-1", "slot-1"],         "one assignment per practicePlan ENTRY, not per flattened step row"
+    assert json.loads(updates[0][1][0]) == [str(slot), str(slot)],         "one assignment per practicePlan ENTRY, not per flattened step row"
     assert updates[0][1][1] == "note-1"
 
 

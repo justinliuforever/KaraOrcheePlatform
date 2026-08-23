@@ -544,7 +544,7 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         plan_len = len((content or {}).get("practicePlan") or [])
         if slot_id is not None and plan_len:
             cur.execute("UPDATE notes SET plan_piece_ids = %s WHERE id = %s",
-                        (json.dumps([slot_id] * plan_len), note_id))
+                        (json.dumps([str(slot_id)] * plan_len), note_id))
     conn.commit()
     return note_id
 

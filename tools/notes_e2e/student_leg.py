@@ -100,6 +100,21 @@ def run(note_id, sid):
     s, _ = call(TEACHER, "PATCH", f"/v1/notes/{note_id}", {"annotations": payload})
     check("a spot can be moved onto the engraved piece", s == 200, f"status={s}")
 
+    s, d = call(TEACHER, "GET", f"/v1/notes/{note_id}")
+    content = d["note"]["content"] or {}
+    if not (content.get("practicePlan") or []):
+        content["practicePlan"] = [
+            {"focus": "Hands separately", "steps": ["RH alone"], "target": "even"},
+            {"focus": "Pedal on its own", "steps": [], "target": ""},
+        ]
+        s, _ = call(TEACHER, "PATCH", f"/v1/notes/{note_id}", {"content": content})
+        check("a plan can be written where the model produced none", s == 200, f"status={s}")
+    s, moved = call(TEACHER, "PATCH", f"/v1/notes/{note_id}",
+                    {"planItems": [{"idx": 0, "notePieceId": engraved}]})
+    check("a plan entry can be filed under a piece",
+          s == 200 and (moved.get("planItems") or [{}])[0].get("notePieceId") == engraved,
+          f"status={s} planItems={moved.get('planItems')}")
+
     s, sent = call(TEACHER, "POST", f"/v1/notes/{note_id}/send", {"studentId": sid})
     check("the note sends to a real student", s == 200, f"status={s} {sent}")
 
@@ -132,10 +147,13 @@ def run(note_id, sid):
     s, r = call(STUDENT, "POST", f"/v1/me/notes/{note_id}/read")
     check("the student can mark it read", s in (200, 204), f"status={s} {r}")
 
-    # Known gap, reported rather than asserted: requirement 5 wants a piece per practice step, and the
-    # wire still carries one flat plan for the whole note.
-    plan = (sd.get("content") or {}).get("practicePlan") or []
-    print(f"NOTE  practice plan reaches the student as {len(plan)} flat item(s) with no piece — R5 is still open")
+    splan = (sd.get("note") or {}).get("content", {}).get("practicePlan") or []
+    spi = sd.get("planItems")
+    check("the plan reaches the student one assignment per entry",
+          isinstance(spi, list) and len(spi) == len(splan) and len(splan) >= 2,
+          f"plan={len(splan)} planItems={spi}")
+    check("and the filed entry arrives under its piece",
+          bool(spi) and spi[0].get("notePieceId") == engraved, spi and spi[0])
 
 
 if __name__ == "__main__":
