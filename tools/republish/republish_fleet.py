@@ -13,7 +13,7 @@ Usage:
   python3 republish_fleet.py --run --only <id,...>  # pilot on named pieces
   python3 republish_fleet.py --run                  # the fleet, serially, state in fleet_state.json
 """
-import argparse, json, subprocess, sys, time
+import argparse, json, subprocess, sys, tempfile, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collection_splitter"))
@@ -71,14 +71,16 @@ def storage_key():
 
 def fetch(entry):
     # The detail serves paths, never urls — staged sources are pulled straight from the container.
-    out = subprocess.run(
-        ["az", "storage", "blob", "download", "--account-name", "stkaraoappdev",
-         "--account-key", storage_key(), "--container-name", "piece-sources",
-         "--name", entry["path"], "--file", "/dev/stdout", "--no-progress", "--only-show-errors"],
-        capture_output=True, check=True)
-    if not out.stdout:
+    with tempfile.NamedTemporaryFile(suffix=Path(entry["path"]).suffix) as tmp:
+        subprocess.run(
+            ["az", "storage", "blob", "download", "--account-name", "stkaraoappdev",
+             "--account-key", storage_key(), "--container-name", "piece-sources",
+             "--name", entry["path"], "--file", tmp.name, "--overwrite", "--only-show-errors"],
+            capture_output=True, check=True)
+        data = Path(tmp.name).read_bytes()
+    if not data:
         raise RuntimeError(f"empty download for {entry['path']}")
-    return out.stdout
+    return data
 
 
 def save(state):
