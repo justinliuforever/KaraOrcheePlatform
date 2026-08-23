@@ -128,7 +128,9 @@ export default function StudioPage() {
 
   const query = useQuery<{ items: StudioJob[] }, Error>({
     queryKey: ["studio-jobs"],
-    queryFn: () => api("/admin/studio/jobs"),
+    // 1000, not the server's default 100: a fleet republish appends ~150 published rows in a day,
+    // and the newest-first window then hides every open draft from the board.
+    queryFn: () => api("/admin/studio/jobs?limit=1000"),
     refetchInterval: (qr) =>
       qr.state.data?.items.some(
         (j) =>

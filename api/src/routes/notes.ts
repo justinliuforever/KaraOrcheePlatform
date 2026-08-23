@@ -21,7 +21,7 @@ import { MOVED_HINT, REGROUND_HINT, reground, regroundSlot, ungrounded } from ".
 import { stampSlotVersions } from "../notes/slot_version";
 import { syncLessonSlot, syncNoteSingular, syncNoteSlot } from "../notes/slot_sync";
 import { notePieceWire, notePieces, studentPieceWire, slotKind } from "../notes/pieces_wire";
-import { UnknownPlanSlot, normalizePlanPieceIds, planItemsWire } from "../notes/plan_sidecar";
+import { UnknownPlanSlot, normalizePlanPieceIds, planItemsWire, planShapeChanged } from "../notes/plan_sidecar";
 import { applyBinding, MAX_SLOTS, moveSlot, nextSortIndex, slotsOf, type SlotFacts } from "../notes/slot_crud";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
@@ -266,8 +266,9 @@ export function notesRouter(deps: Deps): Router {
         .orderBy(asc(noteAnnotations.idx));
       // Must stay computed at READ time, never cached — a catalog that grows or a dismissal has to apply immediately.
       const slotRows = await notePieces(db, note);
+      const { planPieceIds: _sidecar, ...noteOut } = note;
       res.json({
-        note,
+        note: noteOut,
         annotations,
         // Additive: the singular projection above is untouched and remains what an installed binary reads.
         pieces: slotRows.map(notePieceWire),
@@ -478,7 +479,18 @@ export function notesRouter(deps: Deps): Router {
             const liveSlots = new Set((await slotsOf(tx, note.id)).map((slot) => slot.id));
             const [row] = await tx
               .update(notes)
-              .set({ planPieceIds: normalizePlanPieceIds(body.planItems, u.content, liveSlots) })
+              .set({ planPieceIds: normalizePlanPieceIds(body.planItems, u.content, u.planPieceIds, liveSlots) })
+              .where(eq(notes.id, note.id))
+              .returning();
+            return row!;
+          }
+          // An old binary reshaped the plan without the sidecar: stale positions would file one
+          // piece's steps under another's heading, so the assignments reset to General.
+          if (patch.content !== undefined && planShapeChanged(note.content, u.content)
+              && u.planPieceIds !== null) {
+            const [row] = await tx
+              .update(notes)
+              .set({ planPieceIds: null })
               .where(eq(notes.id, note.id))
               .returning();
             return row!;
@@ -514,7 +526,8 @@ export function notesRouter(deps: Deps): Router {
         .orderBy(asc(noteAnnotations.idx));
       // The app assigns this straight into its live list, so a save that omits it empties the screen.
       const slotRows = await notePieces(db, updated);
-      res.json({ note: updated, annotations, pieces: slotRows.map(notePieceWire),
+      const { planPieceIds: _sidecar, ...updatedOut } = updated;
+      res.json({ note: updatedOut, annotations, pieces: slotRows.map(notePieceWire),
                  planItems: planItemsWire(updated, new Set(slotRows.map((r) => r.id))) });
     }),
   );
@@ -561,32 +574,27 @@ export function notesRouter(deps: Deps): Router {
         res.status(400).json({ error: "piece_required", message: "Name the piece before sending." });
         return;
       }
-      // An installed binary can mint a blank slot, so only the server can stop one being sent.
-      const slots = await db
-        .select()
-        .from(notedPieces)
-        .where(eq(notedPieces.noteId, note.id))
-        .orderBy(asc(notedPieces.sortIndex));
-      const blank = slots.findIndex((slot) => slotKind(slot) === "none");
-      if (slots.length > 1 && blank >= 0) {
-        res.status(400).json({
-          error: "piece_untitled",
-          message: `Unable to send — Piece ${blank + 1} is missing a title.`,
-        });
-        return;
-      }
-      // Anchors pin to the live published version — republish renumbers measures.
-      let pieceVersion: number | null = null;
-      if (note.pieceId) {
-        const [piece] = await db
-          .select({ publishedVersion: pieces.publishedVersion })
-          .from(pieces)
-          .where(eq(pieces.id, note.pieceId))
-          .limit(1);
-        pieceVersion = piece?.publishedVersion ?? null;
-      }
       // customPieceId follows the lesson only when labels match — a note label that DIFFERS from the lesson's was retyped by a human and must mint fresh provenance.
       const updated = await db.transaction(async (tx) => {
+        // Gate and versions read UNDER the note lock: a blank slot minted between a pre-tx check and
+        // the flip used to send anyway, and every slot writer now waits on this same row.
+        const locked = await lockDraftNote(tx, note.id, me.id);
+        if (locked === "gone" || locked === "sent") return "status_changed" as const;
+        const slots = await slotsOf(tx, note.id);
+        const blank = slots.findIndex((slot) => slotKind(slot) === "none");
+        if (slots.length > 1 && blank >= 0) {
+          return { untitled: blank + 1 } as const;
+        }
+        // Anchors pin to the live published version — republish renumbers measures.
+        let pieceVersion: number | null = null;
+        if (note.pieceId) {
+          const [piece] = await tx
+            .select({ publishedVersion: pieces.publishedVersion })
+            .from(pieces)
+            .where(eq(pieces.id, note.pieceId))
+            .limit(1);
+          pieceVersion = piece?.publishedVersion ?? null;
+        }
         let customPieceId = note.customPieceId;
         if (!note.pieceId && note.pieceLabel) {
           const [lesson] = note.lessonSessionId
@@ -621,8 +629,15 @@ export function notesRouter(deps: Deps): Router {
         }
         return row;
       });
-      if (!updated) {
+      if (updated === "status_changed" || !updated) {
         res.status(409).json({ error: "status_changed" });
+        return;
+      }
+      if (typeof updated === "object" && "untitled" in updated) {
+        res.status(400).json({
+          error: "piece_untitled",
+          message: `Unable to send — Piece ${updated.untitled} is missing a title.`,
+        });
         return;
       }
       // Message shape (one message, every voice, dedicated lane) is pinned in narration_parity.json — the worker refuses to guess at anything looser.
@@ -1371,6 +1386,17 @@ export function notesRouter(deps: Deps): Router {
 
   // ── Piece slots ───────────────────────────────────────────────────────────────
 
+  /// Inside the transaction, with the row lock — the pre-tx check is UX, this is the guard.
+  /// Every slot writer takes it, so a send and a slot edit serialize instead of interleaving.
+  type Tx = Parameters<Parameters<Orm["transaction"]>[0]>[0];
+  async function lockDraftNote(tx: Tx, noteId: string, meId: string) {
+    const [note] = await tx.select().from(notes)
+      .where(teacherNote(noteId, meId)).for("update").limit(1);
+    if (!note) return "gone" as const;
+    if (note.status !== "draft") return "sent" as const;
+    return note;
+  }
+
   async function editableTeacherNote(db: Orm, noteId: string, meId: string, res: Response) {
     if (!isUuid(noteId)) {
       res.status(404).json({ error: "not_found" });
@@ -1422,6 +1448,8 @@ export function notesRouter(deps: Deps): Router {
         : null;
       const source = readPieceSource(body.pieceSource);
       const created = await db.transaction(async (tx) => {
+        const locked = await lockDraftNote(tx, note.id, me.id);
+        if (locked === "gone" || locked === "sent") return locked;
         const existing = await slotsOf(tx, note.id);
         if (existing.length >= MAX_SLOTS) return "full" as const;
         const [row] = await tx
@@ -1439,6 +1467,14 @@ export function notesRouter(deps: Deps): Router {
         await syncNoteSingular(tx, note.id);
         return row!;
       });
+      if (created === "gone") {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (created === "sent") {
+        res.status(409).json({ error: "not_editable", message: "Sent notes can't be edited — retract, fix, and resend." });
+        return;
+      }
       if (created === "full") {
         res.status(409).json({
           error: "too_many_pieces",
@@ -1488,6 +1524,8 @@ export function notesRouter(deps: Deps): Router {
       }
 
       const out = await db.transaction(async (tx) => {
+        const locked = await lockDraftNote(tx, note.id, me.id);
+        if (locked === "gone" || locked === "sent") return "refused_status" as const;
         const [slot] = await tx
           .select()
           .from(notedPieces)
@@ -1542,6 +1580,10 @@ export function notesRouter(deps: Deps): Router {
         await syncNoteSingular(tx, note.id);
         return { row: after!, scoreDetached: decided.scoreDetached };
       });
+      if (out === "refused_status") {
+        res.status(409).json({ error: "not_editable", message: "Sent notes can't be edited — retract, fix, and resend." });
+        return;
+      }
       if (out === "gone") {
         res.status(404).json({ error: "not_found" });
         return;
@@ -1566,6 +1608,8 @@ export function notesRouter(deps: Deps): Router {
 
       // The items survive in General: deleting a card must never take a teacher's words with it.
       const gone = await db.transaction(async (tx) => {
+        const locked = await lockDraftNote(tx, note.id, me.id);
+        if (locked === "gone" || locked === "sent") return [] as { id: string }[];
         const rows = await tx
           .delete(notedPieces)
           .where(and(eq(notedPieces.id, String(req.params.slotId)), eq(notedPieces.noteId, note.id)))

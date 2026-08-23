@@ -384,6 +384,25 @@ describe("a lesson's list of pieces", () => {
     expect(after!.customPieceId).not.toBe(row!.customPieceId);
   });
 
+  it("reordering onto an occupied index survives collapsed gaps", async () => {
+    const { note, slot } = await seedDraft({ pieceId: "slot_piece" });
+    const [b] = await db.orm.insert(notedPieces)
+      .values({ noteId: note.id, sortIndex: 1000, pieceLabel: "B" }).returning();
+    await db.orm.insert(notedPieces)
+      .values({ noteId: note.id, sortIndex: 2000, pieceLabel: "C" });
+    // The collapsed-gap shape: a occupies 0, b occupies 1000 — shifting a by exactly one step
+    // lands on b mid-statement, which is the 23505 the far-range shift exists to avoid.
+    const res = await request(app())
+      .patch(`/v1/notes/${note.id}/pieces/${b!.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ sortIndex: 0 });
+    expect(res.status).toBe(200);
+    const rows = await db.orm.select().from(notedPieces)
+      .where(eq(notedPieces.noteId, note.id)).orderBy(notedPieces.sortIndex);
+    expect(rows.map((r) => [r.sortIndex, r.pieceLabel ?? "A"])).toEqual(
+      [[0, "B"], [1000, "A"], [3000, "C"]]);
+  });
+
   it("refuses every edit once the note is sent", async () => {
     const { note, slot } = await seedDraft({ pieceId: "slot_piece" });
     await db.orm.update(notes).set({ status: "sent" }).where(eq(notes.id, note.id));

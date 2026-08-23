@@ -1140,16 +1140,37 @@ describe("the plan's piece assignments ride beside the text, never inside it", (
     ]);
   });
 
-  it("follows the plan's length when an old binary shrinks it without the sidecar", async () => {
+  it("a reshaped plan without the sidecar resets every assignment to General", async () => {
     const { draft, second } = await plannedDraft();
     await patch(`/v1/notes/${draft.note.id}`, teacher.token)
       .send({ planItems: [{ idx: 0, notePieceId: second.id }, { idx: 1, notePieceId: second.id }] });
+    // An old binary deletes an entry: positions moved underneath the assignments, and keeping them
+    // would file one piece's steps under another's heading.
     const res = await patch(`/v1/notes/${draft.note.id}`, teacher.token)
       .send({ content: { lessonSummary: "Good work.", practicePlan: [
         { focus: "Hands separately", steps: ["RH alone"], target: "even" },
       ] } });
     expect(res.status).toBe(200);
-    expect(res.body.planItems).toEqual([{ idx: 0, notePieceId: second.id }]);
+    expect(res.body.planItems).toEqual([{ idx: 0, notePieceId: null }]);
+  });
+
+  it("a same-shape edit leaves the assignments alone, and a partial planItems array merges", async () => {
+    const { draft, second } = await plannedDraft();
+    await patch(`/v1/notes/${draft.note.id}`, teacher.token)
+      .send({ planItems: [{ idx: 0, notePieceId: second.id }, { idx: 1, notePieceId: second.id }] });
+    // Same length, text edited by an old binary: positions hold.
+    let res = await patch(`/v1/notes/${draft.note.id}`, teacher.token)
+      .send({ content: { lessonSummary: "Good work.", practicePlan: [
+        { focus: "Hands separately, slower", steps: ["RH alone"], target: "even" },
+        { focus: "Pedal on its own", steps: [], target: "" },
+      ] } });
+    expect(res.body.planItems.map((p: { notePieceId: string | null }) => p.notePieceId))
+      .toEqual([second.id, second.id]);
+    // A partial array touches only what it names — absence is not a clearing.
+    res = await patch(`/v1/notes/${draft.note.id}`, teacher.token)
+      .send({ planItems: [{ idx: 0, notePieceId: null }] });
+    expect(res.body.planItems.map((p: { notePieceId: string | null }) => p.notePieceId))
+      .toEqual([null, second.id]);
   });
 });
 

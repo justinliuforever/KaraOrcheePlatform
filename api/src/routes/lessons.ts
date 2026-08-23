@@ -416,7 +416,7 @@ export function lessonsRouter(deps: Deps): Router {
             await db.update(lessonSessions).set({ audioPath, updatedAt: sql`now()` }).where(eq(lessonSessions.id, adopted.id));
           }
           res.status(200).json({
-            lesson: { ...adopted, audioPath },
+            lesson: { ...lessonWire(adopted), audioPath },
             uploadUrl: deps.lessons.uploadUrl(audioPath),
           });
           return;
@@ -500,7 +500,7 @@ export function lessonsRouter(deps: Deps): Router {
           await db.update(lessonSessions).set({ audioPath, updatedAt: sql`now()` }).where(eq(lessonSessions.id, winner.id));
         }
         res.status(200).json({
-          lesson: { ...winner, audioPath },
+          lesson: { ...lessonWire(winner), audioPath },
           uploadUrl: deps.lessons.uploadUrl(audioPath),
         });
         return;

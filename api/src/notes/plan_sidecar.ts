@@ -25,23 +25,42 @@ export function planItemsWire(
 }
 
 /// Write side refuses an unknown slot outright — a typo silently becoming General would file the
-/// teacher's assignment somewhere they never chose.
+/// teacher's assignment somewhere they never chose. MERGE semantics: an entry's absence leaves the
+/// stored assignment alone; only an explicit null clears — a partial array must not silently unfile
+/// everything it fails to mention.
 export function normalizePlanPieceIds(
   body: unknown,
   content: unknown,
+  stored: unknown,
   liveSlotIds: ReadonlySet<string>,
 ): (string | null)[] {
   const items = Array.isArray(body) ? body : [];
+  const prior = Array.isArray(stored) ? (stored as unknown[]) : [];
   const dense: (string | null)[] = new Array(planLength(content)).fill(null);
+  for (let i = 0; i < dense.length; i++) {
+    const kept = prior[i];
+    dense[i] = typeof kept === "string" && liveSlotIds.has(kept) ? kept : null;
+  }
   for (const item of items) {
     if (typeof item !== "object" || item === null) continue;
     const { idx, notePieceId } = item as { idx?: unknown; notePieceId?: unknown };
-    if (notePieceId === null || notePieceId === undefined) continue;
+    const inRange = typeof idx === "number" && Number.isInteger(idx) && idx >= 0 && idx < dense.length;
+    if (notePieceId === null) {
+      if (inRange) dense[idx as number] = null;
+      continue;
+    }
+    if (notePieceId === undefined) continue;
     // Validate before placing: an unknown slot must refuse even when its idx has no home,
     // or a typo silently becomes General exactly when the plan shrank underneath it.
     if (typeof notePieceId !== "string" || !liveSlotIds.has(notePieceId)) throw new UnknownPlanSlot();
-    if (typeof idx !== "number" || !Number.isInteger(idx) || idx < 0 || idx >= dense.length) continue;
-    dense[idx] = notePieceId;
+    if (inRange) dense[idx as number] = notePieceId;
   }
   return dense;
+}
+
+/// An old binary edits the plan without ever seeing the sidecar. Same length = positions hold;
+/// a changed length means entries moved underneath the assignments, and stale ones would file
+/// piece B's steps under piece A's heading on the student's screen.
+export function planShapeChanged(oldContent: unknown, newContent: unknown): boolean {
+  return planLength(oldContent) !== planLength(newContent);
 }

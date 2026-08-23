@@ -58,6 +58,11 @@ export function applyBinding(facts: SlotFacts, current: { pieceId: string | null
 }
 
 /// Renumbered only when two slots would otherwise collide — a move normally rewrites one row.
+/// The shift goes through a FAR range in two statements: the unique index is not deferrable, and a
+/// one-statement +STEP checks per row, so a slot landing on a neighbour's current index 23505s
+/// mid-statement once the midpoint gaps have collapsed.
+const FAR = 10_000_000;
+
 export async function moveSlot(tx: Tx, noteId: string, slotId: string, toIndex: number): Promise<void> {
   const clash = await tx
     .select({ id: notedPieces.id })
@@ -67,8 +72,12 @@ export async function moveSlot(tx: Tx, noteId: string, slotId: string, toIndex: 
   if (clash.length) {
     await tx
       .update(notedPieces)
-      .set({ sortIndex: sql`${notedPieces.sortIndex} + ${SLOT_STEP}`, updatedAt: sql`now()` })
+      .set({ sortIndex: sql`${notedPieces.sortIndex} + ${FAR}`, updatedAt: sql`now()` })
       .where(and(eq(notedPieces.noteId, noteId), gt(notedPieces.sortIndex, toIndex - 1)));
+    await tx
+      .update(notedPieces)
+      .set({ sortIndex: sql`${notedPieces.sortIndex} - ${FAR - SLOT_STEP}`, updatedAt: sql`now()` })
+      .where(and(eq(notedPieces.noteId, noteId), gt(notedPieces.sortIndex, FAR - 1)));
   }
   await tx
     .update(notedPieces)
