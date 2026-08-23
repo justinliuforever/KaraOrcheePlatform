@@ -10,7 +10,7 @@ Per piece x device-variant, from the FROZEN canonical MEI, emits:
 Verovio is an OFFLINE BUILD TOOL ONLY (never shipped/linked — sidesteps LGPLv3).
 """
 from __future__ import annotations
-import json, re, hashlib, bisect
+import json, os, re, hashlib, bisect
 
 _REND = re.compile(r'-rend\d+$')
 import xml.etree.ElementTree as ET
@@ -23,7 +23,13 @@ from pipeline.engraving_norm import symbol_rest_glyphs
 ET.register_namespace('', 'http://www.w3.org/2000/svg')
 ET.register_namespace('xlink', 'http://www.w3.org/1999/xlink')
 
-COMMON = {"scale": 40, "pageHeight": 60000, "breaks": "auto", "xmlIdChecksum": True,
+# "encoded-sb": honor the engraver's own line breaks, with every <pb> rewritten to <sb> first —
+# a page break IMPLIES a system break, and verovio paginates on <pb> even at pageHeight 60000,
+# which re-arms the page-1-only <defs> stitch. Opt-in per deploy until the fleet decision.
+BREAKS_MODE = os.environ.get("NOTES_STAFF_BREAKS", "auto")
+
+COMMON = {"scale": 40, "pageHeight": 60000,
+          "breaks": "encoded" if BREAKS_MODE == "encoded-sb" else "auto", "xmlIdChecksum": True,
           "header": "none", "footer": "none", "pageMarginLeft": 100, "pageMarginTop": 120, "pageMarginBottom": 140,
           # house style: slurs/ties thinner than verovio defaults (0.6/0.5) — source editions
           "slurMidpointThickness": 0.45, "tieMidpointThickness": 0.4}
@@ -52,7 +58,7 @@ def layout_options_hash() -> str:
     id and suffixes every glyph def with it, so two byte-identical pages differ in
     length run to run. Normalise that id out before comparing."""
     blob = json.dumps({"common": COMMON, "variants": VARIANTS, "page_gap": PAGE_GAP,
-                       "pedal_form": PEDAL_FORM}, sort_keys=True)
+                       "pedal_form": PEDAL_FORM, "breaks_mode": BREAKS_MODE}, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 
@@ -255,8 +261,18 @@ def pedal_sign(mei: str) -> str:
     return _PEDAL_LINE.sub(rf'\1form="{PEDAL_FORM}"', mei)
 
 
+_PB = re.compile(r'<pb\b([^>]*?)/>')
+
+
+def sb_for_pb(mei: str) -> str:
+    """Every page break becomes a line break, so the single-strip render never paginates."""
+    return _PB.sub(r'<sb\1/>', mei)
+
+
 def build_variant(mei: str, vopts: dict):
     """Render all pages, STITCH them into one continuous SVG, and extract global geometry."""
+    if BREAKS_MODE == "encoded-sb":
+        mei = sb_for_pb(mei)
     tk = make_toolkit()
     tk.setOptions({**COMMON, **vopts})
     tk.loadData(mei)
