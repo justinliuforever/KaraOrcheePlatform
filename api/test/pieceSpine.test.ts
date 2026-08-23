@@ -15,6 +15,7 @@ import {
   noteAnnotations,
   customPieces,
   notedPieces,
+  scoreScans,
 } from "../src/db/schema";
 import type { Db } from "../src/db/client";
 import type { LessonStore } from "../src/notes/lessons_store";
@@ -1007,6 +1008,14 @@ describe("every piece a sent note names carries its own version", () => {
     return draft;
   }
 
+  async function seedScan(ownerId: string) {
+    const [scan] = await db.orm.insert(scoreScans)
+      .values({ ownerId, title: "Photos", pageCount: 2, status: "ready", bytes: 10 }).returning();
+    await db.orm.update(scoreScans).set({ blobPath: `${ownerId}/${scan!.id}/` })
+      .where(eq(scoreScans.id, scan!.id));
+    return scan!;
+  }
+
   async function slotsOf(noteId: string) {
     return await db.orm.select().from(notedPieces)
       .where(eq(notedPieces.noteId, noteId)).orderBy(notedPieces.sortIndex);
@@ -1022,6 +1031,26 @@ describe("every piece a sent note names carries its own version", () => {
     expect(sent.status).toBe(200);
 
     expect((await slotsOf(draft.note.id)).map((s) => s.pieceVersion)).toEqual([7, 4]);
+  });
+
+  it("refuses to send while a piece has nothing on it, and says which one", async () => {
+    const draft = await twoSlotDraft();
+    await db.orm.insert(notedPieces).values({ noteId: draft.note.id, sortIndex: 1000 });
+
+    const res = await post(`/v1/notes/${draft.note.id}/send`, teacher.token).send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("piece_untitled");
+    expect(res.body.message).toBe("Unable to send — Piece 2 is missing a title.");
+  });
+
+  it("lets photographs alone stand as a piece", async () => {
+    const draft = await twoSlotDraft();
+    const scan = await seedScan(teacher.id);
+    await db.orm.insert(notedPieces)
+      .values({ noteId: draft.note.id, sortIndex: 1000, scoreScanId: scan.id });
+
+    const res = await post(`/v1/notes/${draft.note.id}/send`, teacher.token).send({});
+    expect(res.status).toBe(200);
   });
 
   it("leaves a slot showing photographs unversioned", async () => {

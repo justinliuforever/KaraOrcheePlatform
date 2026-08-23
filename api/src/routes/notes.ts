@@ -20,7 +20,7 @@ import { MSG_NOTE_NAMES_PIECE } from "./lessons";
 import { MOVED_HINT, REGROUND_HINT, reground, regroundSlot, ungrounded } from "../notes/reground";
 import { stampSlotVersions } from "../notes/slot_version";
 import { syncLessonSlot, syncNoteSingular, syncNoteSlot } from "../notes/slot_sync";
-import { notePieceWire, notePieces, studentPieceWire } from "../notes/pieces_wire";
+import { notePieceWire, notePieces, studentPieceWire, slotKind } from "../notes/pieces_wire";
 import { applyBinding, MAX_SLOTS, moveSlot, nextSortIndex, slotsOf, type SlotFacts } from "../notes/slot_crud";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
@@ -545,6 +545,20 @@ export function notesRouter(deps: Deps): Router {
       }
       if (!note.pieceId && !note.pieceLabel) {
         res.status(400).json({ error: "piece_required", message: "Name the piece before sending." });
+        return;
+      }
+      // An installed binary can mint a blank slot, so only the server can stop one being sent.
+      const slots = await db
+        .select()
+        .from(notedPieces)
+        .where(eq(notedPieces.noteId, note.id))
+        .orderBy(asc(notedPieces.sortIndex));
+      const blank = slots.findIndex((slot) => slotKind(slot) === "none");
+      if (slots.length > 1 && blank >= 0) {
+        res.status(400).json({
+          error: "piece_untitled",
+          message: `Unable to send — Piece ${blank + 1} is missing a title.`,
+        });
         return;
       }
       // Anchors pin to the live published version — republish renumbers measures.
