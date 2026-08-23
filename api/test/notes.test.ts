@@ -3307,7 +3307,7 @@ describe("wire key sets the shipped app decodes", () => {
     });
     const res = await request(makeApp())
       .get(`/v1/me/notes/${seeded.note.id}`).set("Authorization", `Bearer ${student.token}`);
-    expect(keys(res.body)).toEqual(["annotations", "note", "pieces", "teacher"]);
+    expect(keys(res.body)).toEqual(["annotations", "note", "pieces", "planItems", "teacher"]);
     expect(keys(res.body.note)).toEqual([
       "content", "contentOriginal", "createdAt", "editedAt", "hasScorePhotos", "id", "lessonSessionId",
       "noteJobId", "origin", "pieceId", "pieceLabel", "pieceVersion", "readAt", "retractedAt",

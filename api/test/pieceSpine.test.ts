@@ -1064,3 +1064,90 @@ describe("every piece a sent note names carries its own version", () => {
     expect((await slotsOf(draft.note.id)).map((s) => s.pieceVersion)).toEqual([7, null]);
   });
 });
+
+describe("the plan's piece assignments ride beside the text, never inside it", () => {
+  async function plannedDraft() {
+    const draft = await seedDraft({
+      teacherId: teacher.id, studentId: student.id, pieceId: "clementi_op36_no1_i",
+    });
+    await db.orm.update(notes).set({
+      content: { lessonSummary: "Good work.", practicePlan: [
+        { focus: "Hands separately", steps: ["RH alone"], target: "even" },
+        { focus: "Pedal on its own", steps: [], target: "" },
+      ] },
+    }).where(eq(notes.id, draft.note.id));
+    await db.orm.insert(notedPieces)
+      .values({ noteId: draft.note.id, sortIndex: 0, pieceId: "clementi_op36_no1_i" });
+    const [second] = await db.orm.insert(notedPieces)
+      .values({ noteId: draft.note.id, sortIndex: 1000, pieceId: "burgmuller_op100_arabesque" })
+      .returning();
+    return { draft, second: second! };
+  }
+
+  it("persists a move and answers with it on every read", async () => {
+    const { draft, second } = await plannedDraft();
+    const res = await patch(`/v1/notes/${draft.note.id}`, teacher.token)
+      .send({ planItems: [{ idx: 1, notePieceId: second.id }] });
+    expect(res.status).toBe(200);
+    expect(res.body.planItems).toEqual([
+      { idx: 0, notePieceId: null },
+      { idx: 1, notePieceId: second.id },
+    ]);
+
+    const shown = await get(`/v1/notes/${draft.note.id}`, teacher.token);
+    expect(shown.body.planItems).toEqual(res.body.planItems);
+    expect(shown.body.note.content.practicePlan[1]).toEqual(
+      { focus: "Pedal on its own", steps: [], target: "" });
+  });
+
+  it("refuses an unknown slot and rolls the whole edit back", async () => {
+    const { draft } = await plannedDraft();
+    const res = await patch(`/v1/notes/${draft.note.id}`, teacher.token)
+      .send({ content: { lessonSummary: "Edited alongside", practicePlan: [] },
+              planItems: [{ idx: 0, notePieceId: "00000000-0000-4000-8000-000000000000" }] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("unknown_note_piece");
+    const [row] = await db.orm.select().from(notes).where(eq(notes.id, draft.note.id));
+    expect((row!.content as { lessonSummary: string }).lessonSummary).toBe("Good work.");
+  });
+
+  it("reaches the student", async () => {
+    const { draft, second } = await plannedDraft();
+    await patch(`/v1/notes/${draft.note.id}`, teacher.token)
+      .send({ planItems: [{ idx: 0, notePieceId: second.id }] });
+    await post(`/v1/notes/${draft.note.id}/send`, teacher.token).send({});
+
+    const res = await get(`/v1/me/notes/${draft.note.id}`, student.token);
+    expect(res.status).toBe(200);
+    expect(res.body.planItems).toEqual([
+      { idx: 0, notePieceId: second.id },
+      { idx: 1, notePieceId: null },
+    ]);
+  });
+
+  it("reads a deleted slot's assignment as General without anyone writing it", async () => {
+    const { draft, second } = await plannedDraft();
+    await patch(`/v1/notes/${draft.note.id}`, teacher.token)
+      .send({ planItems: [{ idx: 0, notePieceId: second.id }] });
+    await request(makeApp()).delete(`/v1/notes/${draft.note.id}/pieces/${second.id}`)
+      .set("Authorization", `Bearer ${teacher.token}`);
+
+    const shown = await get(`/v1/notes/${draft.note.id}`, teacher.token);
+    expect(shown.body.planItems).toEqual([
+      { idx: 0, notePieceId: null },
+      { idx: 1, notePieceId: null },
+    ]);
+  });
+
+  it("follows the plan's length when an old binary shrinks it without the sidecar", async () => {
+    const { draft, second } = await plannedDraft();
+    await patch(`/v1/notes/${draft.note.id}`, teacher.token)
+      .send({ planItems: [{ idx: 0, notePieceId: second.id }, { idx: 1, notePieceId: second.id }] });
+    const res = await patch(`/v1/notes/${draft.note.id}`, teacher.token)
+      .send({ content: { lessonSummary: "Good work.", practicePlan: [
+        { focus: "Hands separately", steps: ["RH alone"], target: "even" },
+      ] } });
+    expect(res.status).toBe(200);
+    expect(res.body.planItems).toEqual([{ idx: 0, notePieceId: second.id }]);
+  });
+});

@@ -1412,8 +1412,8 @@ describe("the student note payload — the allow list the shipped app decodes", 
     const res = await getDetail(note.id, student.token);
 
     expect(res.status).toBe(200);
-    // "pieces" is the plural shape, added beside the singular one an installed binary reads.
-    expect(keys(res.body)).toEqual(["annotations", "note", "pieces", "teacher"]);
+    // "pieces" is the plural shape and "planItems" the plan's piece sidecar, added beside the singular shapes an installed binary reads.
+    expect(keys(res.body)).toEqual(["annotations", "note", "pieces", "planItems", "teacher"]);
     expect(keys(res.body.note)).toEqual([...STUDENT_NOTE_WIRE_KEYS].sort());
   });
 

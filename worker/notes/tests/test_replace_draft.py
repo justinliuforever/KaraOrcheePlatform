@@ -146,6 +146,26 @@ def test_teacher_path_wipes_draft_then_inserts_teacher_origin():
     assert conn.commits == 1
 
 
+def test_plan_sidecar_starts_every_entry_on_the_lessons_piece():
+    planned = dict(CONTENT, practicePlan=[
+        {"focus": "Hands separately", "steps": ["RH alone", "LH alone"], "target": "even"},
+        {"focus": "Pedal on its own", "steps": [], "target": ""},
+    ])
+    conn = FakeConn({LOCK: teacher_lock(), "INSERT INTO notes": ("note-1",)})
+    main.replace_draft(conn, "job-1", "lesson-1", planned, ORIGINAL, ANNS)
+    updates = [(s, p) for s, p in conn.executed if s.startswith("UPDATE notes SET plan_piece_ids")]
+    assert len(updates) == 1
+    assert json.loads(updates[0][1][0]) == ["slot-1", "slot-1"],         "one assignment per practicePlan ENTRY, not per flattened step row"
+    assert updates[0][1][1] == "note-1"
+
+
+def test_plan_sidecar_stays_unwritten_when_the_lesson_names_nothing():
+    planned = dict(CONTENT, practicePlan=[{"focus": "Slow work", "steps": ["half speed"], "target": ""}])
+    conn = FakeConn({LOCK: teacher_lock(piece_id=None, piece_label=None), "INSERT INTO notes": ("note-1",)})
+    main.replace_draft(conn, "job-1", "lesson-1", planned, ORIGINAL, ANNS)
+    assert not any(s.startswith("UPDATE notes SET plan_piece_ids") for s, _ in conn.executed)
+
+
 def test_solo_first_run_inserts_one_born_sent_note():
     conn = FakeConn({
         LOCK: solo_lock(),

@@ -21,6 +21,7 @@ import { MOVED_HINT, REGROUND_HINT, reground, regroundSlot, ungrounded } from ".
 import { stampSlotVersions } from "../notes/slot_version";
 import { syncLessonSlot, syncNoteSingular, syncNoteSlot } from "../notes/slot_sync";
 import { notePieceWire, notePieces, studentPieceWire, slotKind } from "../notes/pieces_wire";
+import { UnknownPlanSlot, normalizePlanPieceIds, planItemsWire } from "../notes/plan_sidecar";
 import { applyBinding, MAX_SLOTS, moveSlot, nextSortIndex, slotsOf, type SlotFacts } from "../notes/slot_crud";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
@@ -264,11 +265,13 @@ export function notesRouter(deps: Deps): Router {
         .where(and(eq(noteAnnotations.noteId, note.id), eq(noteAnnotations.source, "transcript")))
         .orderBy(asc(noteAnnotations.idx));
       // Must stay computed at READ time, never cached — a catalog that grows or a dismissal has to apply immediately.
+      const slotRows = await notePieces(db, note);
       res.json({
         note,
         annotations,
         // Additive: the singular projection above is untouched and remains what an installed binary reads.
-        pieces: (await notePieces(db, note)).map(notePieceWire),
+        pieces: slotRows.map(notePieceWire),
+        planItems: planItemsWire(note, new Set(slotRows.map((r) => r.id))),
         pieceSuggestion: await suggestionFor(deps, note),
       });
     }),
@@ -471,10 +474,19 @@ export function notesRouter(deps: Deps): Router {
             if (drop.length) await tx.delete(noteAnnotations).where(inArray(noteAnnotations.id, drop));
             dropped = drop;
           }
+          if (Array.isArray(body.planItems)) {
+            const liveSlots = new Set((await slotsOf(tx, note.id)).map((slot) => slot.id));
+            const [row] = await tx
+              .update(notes)
+              .set({ planPieceIds: normalizePlanPieceIds(body.planItems, u.content, liveSlots) })
+              .where(eq(notes.id, note.id))
+              .returning();
+            return row!;
+          }
           return u;
         });
       } catch (err) {
-        if (!(err instanceof UnknownSlot)) throw err;
+        if (!(err instanceof UnknownSlot) && !(err instanceof UnknownPlanSlot)) throw err;
         res.status(400).json({ error: "unknown_note_piece" });
         return;
       }
@@ -501,7 +513,9 @@ export function notesRouter(deps: Deps): Router {
         .where(and(eq(noteAnnotations.noteId, note.id), eq(noteAnnotations.source, "transcript")))
         .orderBy(asc(noteAnnotations.idx));
       // The app assigns this straight into its live list, so a save that omits it empties the screen.
-      res.json({ note: updated, annotations, pieces: (await notePieces(db, updated)).map(notePieceWire) });
+      const slotRows = await notePieces(db, updated);
+      res.json({ note: updated, annotations, pieces: slotRows.map(notePieceWire),
+                 planItems: planItemsWire(updated, new Set(slotRows.map((r) => r.id))) });
     }),
   );
 
@@ -1032,6 +1046,7 @@ export function notesRouter(deps: Deps): Router {
       const [teacher] = note.origin === "self"
         ? [null]
         : await db.select().from(users).where(eq(users.id, note.teacherId)).limit(1);
+      const studentSlotRows = await notePieces(db, note);
       res.json({
         // Coalesce noteJobId/lessonSessionId to "" — already-shipped clients decode these as non-optional strings; null bricks the note.
         note: {
@@ -1041,7 +1056,8 @@ export function notesRouter(deps: Deps): Router {
           ...(await scoreFieldsFor(deps, note)),
         },
         annotations,
-        pieces: (await notePieces(db, note)).map(studentPieceWire),
+        pieces: studentSlotRows.map(studentPieceWire),
+        planItems: planItemsWire(note, new Set(studentSlotRows.map((r) => r.id))),
         teacher: { id: note.teacherId, displayName: teacher?.displayName ?? null },
       });
     }),

@@ -359,6 +359,9 @@ export const notes = pgTable("notes", {
   status: text("status").notNull().default("draft"),  // draft | sent | retracted
   contentOriginal: jsonb("content_original").notNull(),  // frozen LLM output, provenance
   content: jsonb("content").notNull(),  // teacher-edited: lesson_summary, practice_plan
+  // Index-aligned with content.practicePlan; beside content, never inside it — an installed binary
+  // rewrites that blob wholesale and would silently strip anything riding within.
+  planPieceIds: jsonb("plan_piece_ids"),  // (string | null)[], slot ids; null = General
   editedAt: timestamp("edited_at", { withTimezone: true }),
   sentAt: timestamp("sent_at", { withTimezone: true }),
   retractedAt: timestamp("retracted_at", { withTimezone: true }),

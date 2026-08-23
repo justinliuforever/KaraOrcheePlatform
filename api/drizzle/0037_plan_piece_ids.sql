@@ -1,0 +1,1 @@
+ALTER TABLE "notes" ADD COLUMN "plan_piece_ids" jsonb;

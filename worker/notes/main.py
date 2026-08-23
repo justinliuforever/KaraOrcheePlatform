@@ -540,6 +540,11 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
                            'plan', %s, %s, %s, %s)""",
                 (note_id, idx, step["instruction"], step["group_label"], step["target"],
                  slot_id, slot_id))
+        # Index-aligned with content.practicePlan: every entry starts on the lesson's own piece.
+        plan_len = len((content or {}).get("practicePlan") or [])
+        if slot_id is not None and plan_len:
+            cur.execute("UPDATE notes SET plan_piece_ids = %s WHERE id = %s",
+                        (json.dumps([slot_id] * plan_len), note_id))
     conn.commit()
     return note_id
 

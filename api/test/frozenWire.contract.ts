@@ -19,6 +19,12 @@ export const frozenAnnotation = z.object({
   notePieceId: z.string().nullable(),
 });
 
+// The plan's piece sidecar: index-aligned with content.practicePlan, additive beside it.
+export const frozenPlanItem = z.object({
+  idx: z.number().int(),
+  notePieceId: z.string().nullable(),
+});
+
 export const frozenPracticePlanItem = z.object({
   focus: z.string(),
   steps: z.array(z.string()),
