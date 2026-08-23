@@ -213,6 +213,38 @@ def test_piece_summaries_land_on_their_own_slots_and_nowhere_else():
         "the catalog-titled slot gets its summary; the label-only slot got none and stays null"
 
 
+def test_plan_attribution_skips_exactly_what_normalize_skips():
+    obj = {"practice_plan": [
+        "not-a-dict",
+        {"focus": "  ", "steps": [], "piece": "Sonatina"},
+        {"focus": "Hands apart", "steps": ["slow"], "piece": "Sonatina"},
+        {"focus": "Pedal", "steps": [], "piece": "Unknown name"},
+        {"focus": "Voicing", "steps": []},
+    ]}
+    assert main.extract_plan_pieces(obj, ["Sonatina"]) == ["Sonatina", None, None], \
+        "index-aligned with normalize_note's plan: same entries skipped, unknown names to General"
+
+
+def test_a_multi_lesson_files_the_plan_where_the_model_attributed_it():
+    planned_rows = [
+        ("lp-1", "piece-1", None, None, None, 3, {"measures": 32}, "Sonatina"),
+        ("lp-2", None, "My etude", None, None, None, None, None),
+    ]
+    planned = dict(CONTENT, practicePlan=[
+        {"focus": "Hands apart", "steps": ["slow"], "target": ""},
+        {"focus": "Pedal", "steps": [], "target": ""},
+    ])
+    conn = FakeConn({LOCK: teacher_lock(), PLANNED_SEL: [planned_rows],
+                     "INSERT INTO notes": ("note-1",),
+                     "SELECT id FROM note_pieces WHERE note_id": [("slot-a",), ("slot-b",)]})
+    main.replace_draft(conn, "job-1", "lesson-1", planned, ORIGINAL, ANNS,
+                       plan_pieces=["My etude", None])
+    updates = [p for sql, p in conn.executed if sql.startswith("UPDATE notes SET plan_piece_ids")]
+    assert len(updates) == 1
+    assert json.loads(updates[0][0]) == ["slot-b", None], \
+        "entry 0 filed under the second slot the model named; entry 1 stays General"
+
+
 def test_summary_names_must_match_exactly():
     got = main.normalize_piece_summaries(
         {"piece_summaries": [

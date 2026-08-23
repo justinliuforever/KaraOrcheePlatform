@@ -91,6 +91,21 @@ def planned_name(row) -> str | None:
     return (title or label or None)
 
 
+def extract_plan_pieces(obj, allowed: list[str]) -> list[str | None]:
+    """One attribution per practicePlan ENTRY, index-aligned with normalize_note's own plan loop —
+    the two MUST skip the same entries (non-dict, blank focus) or every assignment lands one off."""
+    out: list[str | None] = []
+    for step in (obj or {}).get("practice_plan") or []:
+        if not isinstance(step, dict):
+            continue
+        focus = step.get("focus")
+        if not (isinstance(focus, str) and focus.strip()):
+            continue
+        name = step.get("piece")
+        out.append(name if isinstance(name, str) and name in allowed else None)
+    return out
+
+
 def normalize_piece_summaries(obj, allowed: list[str]) -> dict[str, str]:
     """Evidence, not inference: a name not copied exactly from the list is dropped, never fuzzily
     matched — the model was told the exact spellings."""
@@ -448,7 +463,8 @@ def plan_rows(content) -> list[dict]:
 
 
 def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: dict,
-                  annotations: list[dict], piece_summaries: dict[str, str] | None = None) -> str | None:
+                  annotations: list[dict], piece_summaries: dict[str, str] | None = None,
+                  plan_pieces: list[str | None] | None = None) -> str | None:
     """Idempotent output. Teacher lessons: a redelivered job wipes its own draft and
     rebuilds. Solo lessons: the note is born 'sent' to the owner, so the wipe can't
     apply — an insert-guard makes redelivery/requeue a no-op instead (a rebuild
@@ -601,11 +617,29 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
                            'plan', %s, %s, %s, %s)""",
                 (note_id, idx, step["instruction"], step["group_label"], step["target"],
                  slot_id, slot_id))
-        # Index-aligned with content.practicePlan: every entry starts on the lesson's own piece.
+        # Index-aligned with content.practicePlan: single-piece, every entry starts on the lesson's
+        # own piece; multi-piece, the model's per-entry attribution maps name -> slot, null = General.
         plan_len = len((content or {}).get("practicePlan") or [])
-        if slot_id is not None and plan_len:
-            cur.execute("UPDATE notes SET plan_piece_ids = %s WHERE id = %s",
-                        (json.dumps([str(slot_id)] * plan_len), note_id))
+        if plan_len:
+            if len(planned) > 1 and plan_pieces:
+                slot_by_name = {}
+                for i, lp in enumerate(planned):
+                    n = planned_name(lp)
+                    if n and n not in slot_by_name:
+                        cur.execute(
+                            """SELECT id FROM note_pieces WHERE note_id = %s AND sort_index = %s""",
+                            (note_id, i * 1000))
+                        got = cur.fetchone()
+                        if got:
+                            slot_by_name[n] = str(got[0])
+                assigned = [slot_by_name.get(n) if n else None for n in plan_pieces[:plan_len]]
+                assigned += [None] * (plan_len - len(assigned))
+                if any(assigned):
+                    cur.execute("UPDATE notes SET plan_piece_ids = %s WHERE id = %s",
+                                (json.dumps(assigned), note_id))
+            elif slot_id is not None:
+                cur.execute("UPDATE notes SET plan_piece_ids = %s WHERE id = %s",
+                            (json.dumps([str(slot_id)] * plan_len), note_id))
     conn.commit()
     return note_id
 
@@ -754,7 +788,8 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
                piece_mentions=json.dumps(
                    normalize_piece_mentions(obj, text) if piece_mentions_enabled() else []))
     note_id = replace_draft(conn, job_id, lesson_id, content, obj, annotations,
-                            piece_summaries=normalize_piece_summaries(obj, piece_names))
+                            piece_summaries=normalize_piece_summaries(obj, piece_names),
+                            plan_pieces=extract_plan_pieces(obj, piece_names))
     if note_id is None:
         # A canceled lesson must never produce a ready_for_review job: it would be
         # a "ready" row with no note — invisible to the app (canceled lessons are

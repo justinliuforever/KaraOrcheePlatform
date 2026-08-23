@@ -99,9 +99,12 @@ def piece_summaries_rule(names: list[str]) -> str:
 
 def with_piece_summaries(spec: str, names: list[str]) -> str:
     """Injected only for a multi-piece lesson — the single-piece prompt stays byte-identical."""
+    tail = _SCHEMA_TAIL.replace(
+        '"target": string}',
+        '"target": string, "piece": string|null}')
     return spec.replace(
         _SCHEMA_TAIL,
-        _SCHEMA_TAIL.replace("}]\n}", "}],\n" + PIECE_SUMMARIES_SCHEMA + "\n}"),
+        tail.replace("}]\n}", "}],\n" + PIECE_SUMMARIES_SCHEMA + "\n}"),
     ).replace(_RULE_TAIL, piece_summaries_rule(names) + "\n" + _RULE_TAIL)
 
 
