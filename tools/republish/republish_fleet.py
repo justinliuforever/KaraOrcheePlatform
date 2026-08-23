@@ -34,10 +34,25 @@ def session():
 def latest_published_jobs(s):
     r = s.get(f"{API}/admin/studio/jobs", params={"status": "published", "limit": 1000}, timeout=120)
     r.raise_for_status()
-    by_piece = {}
-    for j in r.json()["items"]:  # newest first
-        by_piece.setdefault(j["pieceId"], j["id"])
-    return by_piece
+    best = {}
+    for j in r.json()["items"]:
+        # By publishedVersion, not list order: updatedAt moves on any touch to an old row, and a
+        # touched old job would republish stale sources.
+        v = j.get("publishedVersion") or 0
+        if j["pieceId"] not in best or v > best[j["pieceId"]][0]:
+            best[j["pieceId"]] = (v, j["id"])
+    return {pid: jid for pid, (v, jid) in best.items()}
+
+
+def open_drafts(s):
+    out = {}
+    for status in ("draft", "queued", "running", "ready_for_review"):
+        r = s.get(f"{API}/admin/studio/jobs", params={"status": status, "limit": 1000}, timeout=120)
+        if r.status_code != 200:
+            continue
+        for j in r.json()["items"]:
+            out.setdefault(j["pieceId"], (j["id"], status))
+    return out
 
 
 def plan(s):
@@ -53,7 +68,9 @@ def plan(s):
 def sources_of(s, job_id):
     d = s.get(f"{API}/admin/studio/jobs/{job_id}", timeout=120).json()
     srcs = {x["kind"]: x for x in (d.get("sources") or [])}
-    return srcs.get("musicxml"), srcs.get("midi"), d
+    # Audio TOO: a musicxml+midi-only redraft passes every gate and silently strips the published
+    # bundle's reference recording and audio map — tier-2 audio destroyed with all lights green.
+    return srcs.get("musicxml"), srcs.get("midi"), srcs.get("audio"), d
 
 
 _KEY = None
@@ -84,24 +101,44 @@ def fetch(entry):
 
 
 def save(state):
-    STATE.write_text(json.dumps(state, indent=1))
+    tmp = STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=1))
+    tmp.replace(STATE)
+
+
+def reconcile(s, rec):
+    """The server's word beats the state file: a crash between an action and its save leaves the
+    file behind reality, and replaying the action then wedges on 409 or double-submits."""
+    job = rec.get("newJobId")
+    if not job:
+        return
+    d = s.get(f"{API}/admin/studio/jobs/{job}", timeout=60).json()
+    status = d.get("status")
+    if status == "published":
+        rec["published"] = True
+        rec["version"] = d.get("publishedVersion")
+    elif status in ("queued", "running", "ready_for_review"):
+        rec["submitted"] = True
 
 
 def republish_one(s, piece_id, job_id, state):
     rec = state.setdefault(piece_id, {})
+    reconcile(s, rec)
     if rec.get("published"):
+        save(state)
         return "done"
     if "newJobId" not in rec:
-        xml_e, mid_e, _ = sources_of(s, job_id)
+        xml_e, mid_e, aud_e, _ = sources_of(s, job_id)
         if not xml_e or not mid_e:
             rec["error"] = "sources_missing"
             save(state)
             return "sources_missing"
-        xml, mid = fetch(xml_e), fetch(mid_e)
+        files = {"musicxml": (xml_e.get("originalName") or "score.musicxml", fetch(xml_e), "application/xml"),
+                 "midi": (mid_e.get("originalName") or "score.mid", fetch(mid_e), "audio/midi")}
+        if aud_e:
+            files["audio"] = (aud_e.get("originalName") or "reference.m4a", fetch(aud_e), "audio/mp4")
         r = s.post(f"{API}/admin/studio/drafts", params={"piece": piece_id},
-                   files={"musicxml": (xml_e.get("originalName") or "score.musicxml", xml, "application/xml"),
-                          "midi": (mid_e.get("originalName") or "score.mid", mid, "audio/midi")},
-                   data={"instrument": "piano"}, timeout=300)
+                   files=files, data={"instrument": "piano"}, timeout=600)
         if r.status_code == 409:
             rec["error"] = f"open_draft:{r.json().get('jobId', '')[:8]}"
             save(state)
@@ -143,6 +180,12 @@ def republish_one(s, piece_id, job_id, state):
         save(state)
         return "pipeline_failed"
     r = s.post(f"{API}/admin/studio/jobs/{new_job}/publish", timeout=120)
+    if r.status_code == 409:
+        # stale_registry means a human edited the Library row mid-window — terminal for this tool;
+        # retrying the same publish forever can never succeed.
+        rec["error"] = f"publish_409_manual:{r.text[:120]}"
+        save(state)
+        return "publish_409_manual"
     if r.status_code != 200:
         rec["error"] = f"publish:{r.status_code}:{r.text[:120]}"
         save(state)
@@ -165,16 +208,26 @@ def main():
     if args.only:
         keep = set(args.only.split(","))
         todo = [(p, j) for p, j in todo if p in keep]
-    print(f"{len(todo)} piece(s) to rebuild; {len(missing)} with no findable published job")
+    blockers = open_drafts(s)
+    blocked = [(p, blockers[p]) for p, _ in todo if p in blockers]
+    print(f"{len(todo)} piece(s) to rebuild; {len(missing)} with no findable published job; "
+          f"{len(blocked)} blocked by an open draft")
     for pid in missing[:10]:
         print(f"  NO JOB: {pid}")
+    for pid, (jid, st) in blocked[:20]:
+        print(f"  OPEN DRAFT: {pid} ({st} {jid[:8]}) — close or publish it first")
     if not args.run:
         return
     state = json.loads(STATE.read_text()) if STATE.exists() else {}
     counts = {}
     for i, (pid, job) in enumerate(todo, 1):
         s.headers["Authorization"] = "Bearer " + token()
-        outcome = republish_one(s, pid, job, state)
+        try:
+            outcome = republish_one(s, pid, job, state)
+        except Exception as err:  # one transient failure must not kill an hours-long run
+            state.setdefault(pid, {})["error"] = f"exception:{type(err).__name__}:{str(err)[:150]}"
+            save(state)
+            outcome = "exception"
         counts[outcome] = counts.get(outcome, 0) + 1
         print(f"[{i}/{len(todo)}] {pid}: {outcome}", flush=True)
     print("\nsummary:", json.dumps(counts))
