@@ -78,6 +78,21 @@ def fetch_job(conn, job_id: str):
         return cur.fetchone()
 
 
+def lesson_measure_bound(conn, lesson_id: str, piece_facts) -> int | None:
+    """One bound across every planned piece. The MINIMUM, fail-closed: a bar past the shortest
+    piece earns needs_grounding rather than auto-trust, because a grounded General row resolves
+    against whichever piece is on the student's screen."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT p.facts FROM lesson_pieces lp JOIN pieces p ON p.id = lp.piece_id
+               WHERE lp.lesson_session_id = %s""",
+            (lesson_id,))
+        counts = [piece_measures(row[0]) for row in cur.fetchall()]
+    counts.append(piece_measures(piece_facts))
+    known = [c for c in counts if c is not None]
+    return min(known) if known else None
+
+
 def update_job(conn, job_id: str, **cols) -> None:
     sets = ", ".join(f"{k} = %s" for k in cols) + ", updated_at = now()"
     with conn.cursor() as cur:
@@ -443,10 +458,19 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         if status == "canceled":
             conn.commit()
             return None
+        cur.execute(
+            """SELECT lp.id, lp.piece_id, lp.piece_label, lp.custom_piece_id, lp.score_scan_id,
+                      p.published_version, p.facts
+               FROM lesson_pieces lp LEFT JOIN pieces p ON p.id = lp.piece_id
+               WHERE lp.lesson_session_id = %s ORDER BY lp.sort_index""",
+            (lesson_id,))
+        planned = cur.fetchall()
         # A piece named during the run bounds grounding that was computed with no
-        # bound at all; re-picking the same piece later is a no-op on both the
-        # inherit test and the reground pass, so this is the only place it lands.
-        annotations = rebound_annotations(annotations, piece_measures(piece_facts))
+        # bound at all. The MINIMUM across every planned piece, fail-closed: a grounded
+        # General row resolves against whichever piece is on the student's screen.
+        bounds = [piece_measures(r[6]) for r in planned] + [piece_measures(piece_facts)]
+        known_bounds = [b for b in bounds if b is not None]
+        annotations = rebound_annotations(annotations, min(known_bounds) if known_bounds else None)
         if owner_role == "student":
             cur.execute(
                 """SELECT id FROM notes WHERE note_job_id = %s
@@ -513,7 +537,19 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         # Slot 0 mirrors what the note itself received; a note minted with an empty
         # child table would need a second backfill pass to find later.
         slot_id = None
-        if piece_id is not None or piece_label is not None or scan_id is not None:
+        if len(planned) > 1:
+            # Several planned pieces: every transcript row starts in General (slot_id None),
+            # because nothing in a whole-lesson recording says which sentence belongs where.
+            for i, lp in enumerate(planned):
+                (_, lp_piece, lp_label, lp_custom, lp_scan, lp_version, _f) = lp
+                held = hold_scan(cur, None if lp_piece is not None else lp_scan)
+                cur.execute(
+                    """INSERT INTO note_pieces (note_id, sort_index, piece_id, piece_label,
+                                                custom_piece_id, score_scan_id, piece_version)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (note_id, i * 1000, lp_piece, lp_label, lp_custom, held,
+                     lp_version if owner_role == "student" else None))
+        elif piece_id is not None or piece_label is not None or scan_id is not None:
             cur.execute(
                 """INSERT INTO note_pieces (note_id, sort_index, piece_id, piece_label,
                                             custom_piece_id, score_scan_id, piece_version)
@@ -628,7 +664,7 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
         gf.metrics = {**metrics, **gate_counts(gf.evidence)}
         raise
 
-    measure_count = piece_measures(piece_facts)
+    measure_count = lesson_measure_bound(conn, lesson_id, piece_facts)
     piece_desc = f'"{piece_title}" by {piece_composer}' if piece_title else piece_label
     system = build_system(measure_count)
     user = build_user(build_turns(utterances) or text, piece_desc)

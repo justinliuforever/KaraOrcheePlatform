@@ -47,6 +47,12 @@ class FakeCursor:
     def fetchone(self):
         return self._conn._pending
 
+    def fetchall(self):
+        v = self._conn._pending
+        if v is None:
+            return []
+        return v if isinstance(v, list) else [v]
+
 
 class FakeConn:
     """Records every (sql, params); fetchone returns the scripted row for the
@@ -130,14 +136,15 @@ def test_teacher_path_wipes_draft_then_inserts_teacher_origin():
     sqls = [s for s, _ in conn.executed]
     assert sqls[0].startswith("SELECT l.status, l.teacher_id") and sqls[0].endswith(LOCK)
     assert conn.executed[0][1] == ("lesson-1",)
-    assert sqls[1].startswith("SELECT score_scan_id FROM notes") and "status = 'draft'" in sqls[1]
-    assert sqls[2].startswith("DELETE FROM practice_items") and "status = 'draft'" in sqls[2]
-    assert sqls[3] == "DELETE FROM notes WHERE note_job_id = %s AND status = 'draft'"
-    assert sqls[4].startswith("INSERT INTO notes") and "'teacher'" in sqls[4]
-    assert "'sent'" not in sqls[4] and "sent_at" not in sqls[4]
-    assert "INSERT INTO note_pieces" in sqls[5], "the note's own slot is minted with it"
-    assert all("INSERT INTO practice_items" in s for s in sqls[6:])
-    assert len(sqls) == 6 + len(ANNS)
+    assert sqls[1].startswith("SELECT lp.id, lp.piece_id"), "the planned list is read under the same lock"
+    assert sqls[2].startswith("SELECT score_scan_id FROM notes") and "status = 'draft'" in sqls[2]
+    assert sqls[3].startswith("DELETE FROM practice_items") and "status = 'draft'" in sqls[3]
+    assert sqls[4] == "DELETE FROM notes WHERE note_job_id = %s AND status = 'draft'"
+    assert sqls[5].startswith("INSERT INTO notes") and "'teacher'" in sqls[5]
+    assert "'sent'" not in sqls[5] and "sent_at" not in sqls[5]
+    assert "INSERT INTO note_pieces" in sqls[6], "the note's own slot is minted with it"
+    assert all("INSERT INTO practice_items" in s for s in sqls[7:])
+    assert len(sqls) == 7 + len(ANNS)
     assert not any(s.startswith("SELECT published_version") or "origin = 'self'" in s
                    for s in sqls)
     w = note_insert(conn)
@@ -170,6 +177,45 @@ def test_plan_sidecar_stays_unwritten_when_the_lesson_names_nothing():
     assert not any(s.startswith("UPDATE notes SET plan_piece_ids") for s, _ in conn.executed)
 
 
+PLANNED_SEL = "SELECT lp.id, lp.piece_id"
+
+
+def test_a_planned_lesson_mints_every_slot_and_parks_the_rows_in_general():
+    planned_rows = [
+        ("lp-1", "piece-1", None, None, None, 3, {"measures": 32}),
+        ("lp-2", None, "My etude", None, None, None, None),
+    ]
+    planned = dict(CONTENT, practicePlan=[{"focus": "Slow work", "steps": ["half speed"], "target": ""}])
+    # A scripted [ [rows...] ] pops once and hands fetchall the whole list.
+    conn = FakeConn({LOCK: teacher_lock(), PLANNED_SEL: [planned_rows],
+                     "INSERT INTO notes": ("note-1",)})
+    main.replace_draft(conn, "job-1", "lesson-1", planned, ORIGINAL, ANNS)
+    slots = [(s, p) for s, p in conn.executed if s.startswith("INSERT INTO note_pieces")]
+    assert [(p[1], p[2], p[3]) for _, p in slots] == [(0, "piece-1", None), (1000, None, "My etude")]
+    items = [p for s, p in conn.executed if s.startswith("INSERT INTO practice_items")]
+    assert items and all(p[-2] is None and p[-1] is None for p in items), \
+        "every row starts in General: nothing in a whole-lesson recording says which sentence belongs where"
+    assert not any(s.startswith("UPDATE notes SET plan_piece_ids") for s, _ in conn.executed)
+
+
+def test_the_grounding_bound_is_the_shortest_planned_piece():
+    planned_rows = [
+        ("lp-1", "piece-1", None, None, None, 3, {"measures": 8}),
+        ("lp-2", "piece-2", None, None, None, 1, {"measures": 32}),
+    ]
+    anns = [{"category": "technique", "instruction": "Bar twelve.", "quote": "bar twelve",
+             "location": {"raw": "bar 12", "grounded": True, "measureStart": 12, "measureEnd": 12,
+                          "pinnedBy": "auto"}}]
+    conn = FakeConn({LOCK: teacher_lock(facts={"measures": 32}), PLANNED_SEL: [planned_rows],
+                     "INSERT INTO notes": ("note-1",)})
+    main.replace_draft(conn, "job-1", "lesson-1", CONTENT, ORIGINAL, anns)
+    items = [p for s, p in conn.executed if s.startswith("INSERT INTO practice_items")]
+    assert len(items) == 1
+    loc = json.loads(items[0][5])
+    assert loc["grounded"] is False, \
+        "bar 12 exceeds the 8-bar piece, and a grounded General row lights whichever score is on screen"
+
+
 def test_solo_first_run_inserts_one_born_sent_note():
     conn = FakeConn({
         LOCK: solo_lock(),
@@ -181,9 +227,10 @@ def test_solo_first_run_inserts_one_born_sent_note():
     sqls = [s for s, _ in conn.executed]
     assert not any(s.startswith("DELETE") for s in sqls)  # solo never wipes
     assert sqls[0].endswith(LOCK)
-    assert "origin = 'self' AND status = 'sent'" in sqls[1]  # insert-guard next
-    assert sqls[2].startswith("INSERT INTO notes")
-    assert "'self', 'sent', now()" in sqls[2]  # origin/status literal, sent_at set
+    assert sqls[1].startswith("SELECT lp.id, lp.piece_id")  # the planned list, under the same lock
+    assert "origin = 'self' AND status = 'sent'" in sqls[2]  # insert-guard next
+    assert sqls[3].startswith("INSERT INTO notes")
+    assert "'self', 'sent', now()" in sqls[3]  # origin/status literal, sent_at set
     w = note_insert(conn)
     assert w["note_job_id"] == "job-2" and w["lesson_session_id"] == "lesson-1"
     assert w["teacher_id"] == "owner-9" and w["student_id"] == "owner-9"  # owner is both
@@ -224,8 +271,8 @@ def test_solo_insert_guard_converges_without_second_insert():
     })
     nid = main.replace_draft(conn, "job-2", "lesson-1", CONTENT, ORIGINAL, ANNS)
     assert nid == "existing-note"
-    assert len(conn.executed) == 2
-    sql, params = conn.executed[1]
+    assert len(conn.executed) == 3
+    sql, params = conn.executed[2]
     assert sql.startswith("SELECT id FROM notes")
     assert "origin = 'self'" in sql and "status = 'sent'" in sql
     assert params == ("job-2",)

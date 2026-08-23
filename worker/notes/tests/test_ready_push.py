@@ -46,6 +46,9 @@ class FakeCursor:
     def fetchone(self):
         return None
 
+    def fetchall(self):
+        return []
+
 
 class FakeConn:
     def __init__(self, rowcounts=None):
