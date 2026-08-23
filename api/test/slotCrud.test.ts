@@ -343,6 +343,23 @@ describe("a lesson's list of pieces", () => {
     expect((after!.location as Record<string, unknown>).grounded).toBe(false);
   });
 
+  it("a piece's own summary can be written, cleared, and reaches the wire", async () => {
+    const { note, slot } = await seedDraft({ pieceId: "slot_piece" });
+    let res = await request(app())
+      .patch(`/v1/notes/${note.id}/pieces/${slot.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ summary: "  Even sixteenths arrived.  " });
+    expect(res.status).toBe(200);
+    expect(res.body.piece.summary).toBe("Even sixteenths arrived.");
+
+    res = await request(app())
+      .patch(`/v1/notes/${note.id}/pieces/${slot.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ summary: "   " });
+    expect(res.status).toBe(200);
+    expect(res.body.piece.summary).toBeNull();
+  });
+
   it("refuses every edit once the note is sent", async () => {
     const { note, slot } = await seedDraft({ pieceId: "slot_piece" });
     await db.orm.update(notes).set({ status: "sent" }).where(eq(notes.id, note.id));

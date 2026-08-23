@@ -1500,6 +1500,13 @@ export function notesRouter(deps: Deps): Router {
         }
         if ("scoreScanId" in body) facts.scoreScanId = scanId as string | null;
         const decided = applyBinding(facts, slot);
+        // Beside the binding, not inside it: the summary names no score, so it neither sheds nor
+        // refuses anything.
+        if ("summary" in body) {
+          decided.values.summary = typeof body.summary === "string" && body.summary.trim()
+            ? body.summary.trim()
+            : null;
+        }
         if (decided.refused) return "refused" as const;
         if (typeof body.sortIndex === "number" && Number.isInteger(body.sortIndex)) {
           await moveSlot(tx, note.id, slot.id, body.sortIndex);

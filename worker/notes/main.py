@@ -78,6 +78,34 @@ def fetch_job(conn, job_id: str):
         return cur.fetchone()
 
 
+PLANNED_SQL = """SELECT lp.id, lp.piece_id, lp.piece_label, lp.custom_piece_id, lp.score_scan_id,
+                        p.published_version, p.facts, p.title
+                 FROM lesson_pieces lp LEFT JOIN pieces p ON p.id = lp.piece_id
+                 WHERE lp.lesson_session_id = %s ORDER BY lp.sort_index"""
+
+
+def planned_name(row) -> str | None:
+    """The catalog title where one exists, else the teacher's own label — the SAME derivation feeds
+    the prompt and maps the answer back, or a summary lands on the wrong slot."""
+    title, label = row[7], row[2]
+    return (title or label or None)
+
+
+def normalize_piece_summaries(obj, allowed: list[str]) -> dict[str, str]:
+    """Evidence, not inference: a name not copied exactly from the list is dropped, never fuzzily
+    matched — the model was told the exact spellings."""
+    out: dict[str, str] = {}
+    for entry in (obj or {}).get("piece_summaries") or []:
+        if not isinstance(entry, dict):
+            continue
+        name, summary = entry.get("piece"), entry.get("summary")
+        if not isinstance(name, str) or not isinstance(summary, str):
+            continue
+        if name in allowed and summary.strip() and name not in out:
+            out[name] = summary.strip()
+    return out
+
+
 def lesson_measure_bound(conn, lesson_id: str, piece_facts) -> int | None:
     """One bound across every planned piece. The MINIMUM, fail-closed: a bar past the shortest
     piece earns needs_grounding rather than auto-trust, because a grounded General row resolves
@@ -420,7 +448,7 @@ def plan_rows(content) -> list[dict]:
 
 
 def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: dict,
-                  annotations: list[dict]) -> str | None:
+                  annotations: list[dict], piece_summaries: dict[str, str] | None = None) -> str | None:
     """Idempotent output. Teacher lessons: a redelivered job wipes its own draft and
     rebuilds. Solo lessons: the note is born 'sent' to the owner, so the wipe can't
     apply — an insert-guard makes redelivery/requeue a no-op instead (a rebuild
@@ -458,12 +486,7 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         if status == "canceled":
             conn.commit()
             return None
-        cur.execute(
-            """SELECT lp.id, lp.piece_id, lp.piece_label, lp.custom_piece_id, lp.score_scan_id,
-                      p.published_version, p.facts
-               FROM lesson_pieces lp LEFT JOIN pieces p ON p.id = lp.piece_id
-               WHERE lp.lesson_session_id = %s ORDER BY lp.sort_index""",
-            (lesson_id,))
+        cur.execute(PLANNED_SQL, (lesson_id,))
         planned = cur.fetchall()
         # A piece named during the run bounds grounding that was computed with no
         # bound at all. The MINIMUM across every planned piece, fail-closed: a grounded
@@ -541,14 +564,16 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
             # Several planned pieces: every transcript row starts in General (slot_id None),
             # because nothing in a whole-lesson recording says which sentence belongs where.
             for i, lp in enumerate(planned):
-                (_, lp_piece, lp_label, lp_custom, lp_scan, lp_version, _f) = lp
+                (_, lp_piece, lp_label, lp_custom, lp_scan, lp_version, _f, _t) = lp
                 held = hold_scan(cur, None if lp_piece is not None else lp_scan)
+                name = planned_name(lp)
                 cur.execute(
                     """INSERT INTO note_pieces (note_id, sort_index, piece_id, piece_label,
-                                                custom_piece_id, score_scan_id, piece_version)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                                                custom_piece_id, score_scan_id, piece_version, summary)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                     (note_id, i * 1000, lp_piece, lp_label, lp_custom, held,
-                     lp_version if owner_role == "student" else None))
+                     lp_version if owner_role == "student" else None,
+                     (piece_summaries or {}).get(name) if name else None))
         elif piece_id is not None or piece_label is not None or scan_id is not None:
             cur.execute(
                 """INSERT INTO note_pieces (note_id, sort_index, piece_id, piece_label,
@@ -665,8 +690,13 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
         raise
 
     measure_count = lesson_measure_bound(conn, lesson_id, piece_facts)
+    with conn.cursor() as cur:
+        cur.execute(PLANNED_SQL, (lesson_id,))
+        planned_rows = cur.fetchall()
+    conn.commit()
+    piece_names = [n for n in (planned_name(r) for r in planned_rows) if n]
     piece_desc = f'"{piece_title}" by {piece_composer}' if piece_title else piece_label
-    system = build_system(measure_count)
+    system = build_system(measure_count, piece_names=piece_names)
     user = build_user(build_turns(utterances) or text, piece_desc)
 
     t1 = time.time()
@@ -723,7 +753,8 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
     update_job(conn, job_id, stage="gates",
                piece_mentions=json.dumps(
                    normalize_piece_mentions(obj, text) if piece_mentions_enabled() else []))
-    note_id = replace_draft(conn, job_id, lesson_id, content, obj, annotations)
+    note_id = replace_draft(conn, job_id, lesson_id, content, obj, annotations,
+                            piece_summaries=normalize_piece_summaries(obj, piece_names))
     if note_id is None:
         # A canceled lesson must never produce a ready_for_review job: it would be
         # a "ready" row with no note — invisible to the app (canceled lessons are

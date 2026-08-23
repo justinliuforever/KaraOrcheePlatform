@@ -82,14 +82,41 @@ def with_piece_mentions(spec: str) -> str:
 # W6 Step 1 gates this field on a zero-regression eval the corpus has not cleared, so
 # the shipped prompt is the one the corpus was measured against. Flipping the env var
 # is the whole change once it clears.
-def build_system(measure_count: int | None, *, piece_mentions: bool | None = None) -> str:
+PIECE_SUMMARIES_SCHEMA = (
+    '  "piece_summaries": [{"piece": string, "summary": string}]      // one entry per listed piece '
+    "the teacher clearly discussed; copy the piece name EXACTLY from the list; 1-2 sentences each"
+)
+
+
+def piece_summaries_rule(names: list[str]) -> str:
+    listed = "; ".join(f'"{n}"' for n in names)
+    return (
+        f"- This lesson covered several pieces: {listed}. Attribute a summary only where the "
+        "transcript clearly ties the words to that piece; leave a piece OUT rather than guess. "
+        "lesson_summary stays the whole lesson's."
+    )
+
+
+def with_piece_summaries(spec: str, names: list[str]) -> str:
+    """Injected only for a multi-piece lesson — the single-piece prompt stays byte-identical."""
+    return spec.replace(
+        _SCHEMA_TAIL,
+        _SCHEMA_TAIL.replace("}]\n}", "}],\n" + PIECE_SUMMARIES_SCHEMA + "\n}"),
+    ).replace(_RULE_TAIL, piece_summaries_rule(names) + "\n" + _RULE_TAIL)
+
+
+def build_system(measure_count: int | None, *, piece_mentions: bool | None = None,
+                 piece_names: list[str] | None = None) -> str:
     base = (
         SPEC.replace("{measure_count}", str(measure_count))
         if measure_count and measure_count > 0
         else SPEC_NO_COUNT
     )
     enabled = piece_mentions_enabled() if piece_mentions is None else piece_mentions
-    return with_piece_mentions(base) if enabled else base
+    out = with_piece_mentions(base) if enabled else base
+    if piece_names and len(piece_names) > 1:
+        out = with_piece_summaries(out, piece_names)
+    return out
 
 
 def build_user(transcript_turns: str, piece_desc: str | None) -> str:

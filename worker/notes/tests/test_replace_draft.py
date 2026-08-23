@@ -182,8 +182,8 @@ PLANNED_SEL = "SELECT lp.id, lp.piece_id"
 
 def test_a_planned_lesson_mints_every_slot_and_parks_the_rows_in_general():
     planned_rows = [
-        ("lp-1", "piece-1", None, None, None, 3, {"measures": 32}),
-        ("lp-2", None, "My etude", None, None, None, None),
+        ("lp-1", "piece-1", None, None, None, 3, {"measures": 32}, "Sonatina"),
+        ("lp-2", None, "My etude", None, None, None, None, None),
     ]
     planned = dict(CONTENT, practicePlan=[{"focus": "Slow work", "steps": ["half speed"], "target": ""}])
     # A scripted [ [rows...] ] pops once and hands fetchall the whole list.
@@ -198,10 +198,38 @@ def test_a_planned_lesson_mints_every_slot_and_parks_the_rows_in_general():
     assert not any(s.startswith("UPDATE notes SET plan_piece_ids") for s, _ in conn.executed)
 
 
+def test_piece_summaries_land_on_their_own_slots_and_nowhere_else():
+    planned_rows = [
+        ("lp-1", "piece-1", None, None, None, 3, {"measures": 32}, "Sonatina"),
+        ("lp-2", None, "My etude", None, None, None, None, None),
+    ]
+    conn = FakeConn({LOCK: teacher_lock(), PLANNED_SEL: [planned_rows],
+                     "INSERT INTO notes": ("note-1",)})
+    main.replace_draft(conn, "job-1", "lesson-1", CONTENT, ORIGINAL, ANNS,
+                       piece_summaries={"Sonatina": "Even sixteenths arrived.",
+                                        "Nonexistent": "must not land"})
+    slots = [p for sql, p in conn.executed if sql.startswith("INSERT INTO note_pieces")]
+    assert [p[-1] for p in slots] == ["Even sixteenths arrived.", None], \
+        "the catalog-titled slot gets its summary; the label-only slot got none and stays null"
+
+
+def test_summary_names_must_match_exactly():
+    got = main.normalize_piece_summaries(
+        {"piece_summaries": [
+            {"piece": "Sonatina", "summary": " Solid tone. "},
+            {"piece": "sonatina", "summary": "case-mangled, dropped"},
+            {"piece": "Sonatina", "summary": "duplicate, dropped"},
+            {"piece": "Etude", "summary": "   "},
+            "not-a-dict",
+        ]},
+        ["Sonatina", "Etude"])
+    assert got == {"Sonatina": "Solid tone."}
+
+
 def test_the_grounding_bound_is_the_shortest_planned_piece():
     planned_rows = [
-        ("lp-1", "piece-1", None, None, None, 3, {"measures": 8}),
-        ("lp-2", "piece-2", None, None, None, 1, {"measures": 32}),
+        ("lp-1", "piece-1", None, None, None, 3, {"measures": 8}, "Short piece"),
+        ("lp-2", "piece-2", None, None, None, 1, {"measures": 32}, "Long piece"),
     ]
     anns = [{"category": "technique", "instruction": "Bar twelve.", "quote": "bar twelve",
              "location": {"raw": "bar 12", "grounded": True, "measureStart": 12, "measureEnd": 12,

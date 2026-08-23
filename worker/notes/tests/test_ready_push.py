@@ -170,7 +170,8 @@ def stub_pipeline(monkeypatch, status="queued", flipped_rowcount=1, real_push=Fa
           "location": {"grounded": True}}],
         [], []))
     monkeypatch.setattr(main, "replace_draft",
-                        lambda conn, job_id, lesson_id, content, original, anns: "note-1")
+                        lambda conn, job_id, lesson_id, content, original, anns,
+                               piece_summaries=None: "note-1")
     monkeypatch.setattr(main, "narration_stage",
                         lambda conn, blob, note_id, req_id: seen["narrated"].append(note_id))
     if not real_push:
