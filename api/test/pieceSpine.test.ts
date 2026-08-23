@@ -10,6 +10,7 @@ import {
   pieces,
   teacherStudentLinks,
   lessonSessions,
+  lessonPieces,
   noteJobs,
   notes,
   noteAnnotations,
@@ -200,6 +201,14 @@ beforeAll(async () => {
     .insert(teacherStudentLinks)
     .values({ teacherId: teacher.id, studentId: student.id, status: "active", consentAt: new Date() });
 });
+
+async function seedScan(ownerId: string) {
+  const [scan] = await db.orm.insert(scoreScans)
+    .values({ ownerId, title: "Photos", pageCount: 2, status: "ready", bytes: 10 }).returning();
+  await db.orm.update(scoreScans).set({ blobPath: `${ownerId}/${scan!.id}/` })
+    .where(eq(scoreScans.id, scan!.id));
+  return scan!;
+}
 
 beforeEach(async () => {
   await db.orm.delete(noteAnnotations);
@@ -1008,14 +1017,6 @@ describe("every piece a sent note names carries its own version", () => {
     return draft;
   }
 
-  async function seedScan(ownerId: string) {
-    const [scan] = await db.orm.insert(scoreScans)
-      .values({ ownerId, title: "Photos", pageCount: 2, status: "ready", bytes: 10 }).returning();
-    await db.orm.update(scoreScans).set({ blobPath: `${ownerId}/${scan!.id}/` })
-      .where(eq(scoreScans.id, scan!.id));
-    return scan!;
-  }
-
   async function slotsOf(noteId: string) {
     return await db.orm.select().from(notedPieces)
       .where(eq(notedPieces.noteId, noteId)).orderBy(notedPieces.sortIndex);
@@ -1149,5 +1150,77 @@ describe("the plan's piece assignments ride beside the text, never inside it", (
       ] } });
     expect(res.status).toBe(200);
     expect(res.body.planItems).toEqual([{ idx: 0, notePieceId: second.id }]);
+  });
+});
+
+describe("a lesson planned with several pieces before recording", () => {
+  async function slots(lessonId: string) {
+    return await db.orm.select().from(lessonPieces)
+      .where(eq(lessonPieces.lessonSessionId, lessonId)).orderBy(lessonPieces.sortIndex);
+  }
+
+  it("plants one slot per entry and makes the first the lesson's own columns", async () => {
+    const res = await createLesson(teacher.token, {
+      pieces: [
+        { pieceId: "clementi_op36_no1_i" },
+        { pieceLabel: "My own etude", pieceSource: "typed" },
+      ],
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.lesson.pieceId).toBe("clementi_op36_no1_i");
+    const rows = await slots(res.body.lesson.id);
+    expect(rows.map((r) => [r.sortIndex, r.pieceId, r.pieceLabel])).toEqual([
+      [0, "clementi_op36_no1_i", null],
+      [1000, null, "My own etude"],
+    ]);
+    expect(rows[1]!.customPieceId).not.toBeNull();
+  });
+
+  it("drops an unknown catalog id instead of refusing the recording", async () => {
+    const res = await createLesson(teacher.token, {
+      pieces: [{ pieceId: "ghost_piece" }, { pieceLabel: "Real" }],
+    });
+    expect(res.status).toBe(201);
+    const rows = await slots(res.body.lesson.id);
+    expect(rows.map((r) => r.pieceLabel)).toEqual(["Real"]);
+    expect(res.body.lesson.pieceLabel).toBe("Real");
+  });
+
+  it("an entry naming a piece sheds its photographs", async () => {
+    const scan = await seedScan(teacher.id);
+    const res = await createLesson(teacher.token, {
+      pieces: [{ pieceId: "clementi_op36_no1_i", scoreScanId: scan.id }],
+    });
+    expect(res.status).toBe(201);
+    const rows = await slots(res.body.lesson.id);
+    expect(rows[0]!.pieceId).toBe("clementi_op36_no1_i");
+    expect(rows[0]!.scoreScanId).toBeNull();
+  });
+
+  it("a replayed create adopts facts but never re-plants the list", async () => {
+    const cid = "replay-planned-1";
+    const first = await createLesson(teacher.token, {
+      clientLessonId: cid,
+      pieces: [{ pieceId: "clementi_op36_no1_i" }, { pieceLabel: "Second" }],
+    });
+    expect(first.status).toBe(201);
+    const replay = await createLesson(teacher.token, {
+      clientLessonId: cid,
+      pieces: [{ pieceLabel: "A different list" }],
+    });
+    expect(replay.status).toBe(200);
+    const rows = await slots(first.body.lesson.id);
+    expect(rows.map((r) => [r.pieceId, r.pieceLabel])).toEqual([
+      ["clementi_op36_no1_i", null],
+      [null, "Second"],
+    ]);
+  });
+
+  it("stops at the same cap the review screen has", async () => {
+    const res = await createLesson(teacher.token, {
+      pieces: Array.from({ length: 8 }, (_, i) => ({ pieceLabel: `P${i}` })),
+    });
+    expect(res.status).toBe(201);
+    expect((await slots(res.body.lesson.id)).length).toBe(6);
   });
 });

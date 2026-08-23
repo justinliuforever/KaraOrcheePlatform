@@ -10,10 +10,12 @@ import { narrationPrefix } from "../notes/narration";
 import { REGROUND_HINT, regroundSlot } from "../notes/reground";
 import { syncLessonSlot, syncNoteSlot } from "../notes/slot_sync";
 import { lessonPieceWire, lessonPiecesFor } from "../notes/pieces_wire";
+import { MAX_SLOTS, SLOT_STEP } from "../notes/slot_crud";
 import { pgErrorCode } from "../db/pgerror";
 import { isUuid } from "../ids";
 import type { Orm } from "../db/client";
 import {
+  lessonPieces,
   lessonSessions,
   noteAnnotations,
   noteJobs,
@@ -266,15 +268,54 @@ export function lessonsRouter(deps: Deps): Router {
       const body = req.body ?? {};
       // Snapshot at record time — never re-derived later, even if the account gains a role afterward.
       let ownerRole = me.isTeacher ? "teacher" : "student";
-      const pieceId = typeof body.pieceId === "string" ? body.pieceId : null;
-      const pieceLabel = typeof body.pieceLabel === "string" && body.pieceLabel.trim()
+      let pieceId = typeof body.pieceId === "string" ? body.pieceId : null;
+      let pieceLabel = typeof body.pieceLabel === "string" && body.pieceLabel.trim()
         ? body.pieceLabel.trim()
         : null;
       const studentId = typeof body.studentId === "string" ? body.studentId : null;
       const clientLessonId = typeof body.clientLessonId === "string" && body.clientLessonId.trim()
         ? body.clientLessonId
         : null;
-      const pieceSource = readPieceSource(body.pieceSource);
+      let pieceSource = readPieceSource(body.pieceSource);
+
+      // Per-entry soft-drop, never a hard refusal: one stale id in the list must not cost the
+      // recording, which is the irreplaceable half. An entry naming a piece keeps the piece and
+      // drops its scan, the same exclusivity every other writer enforces.
+      let planned: { pieceId: string | null; pieceLabel: string | null;
+                     pieceSource: string | null; scoreScanId: string | null }[] = [];
+      if (Array.isArray(body.pieces)) {
+        for (const raw of (body.pieces as unknown[]).slice(0, MAX_SLOTS)) {
+          if (typeof raw !== "object" || raw === null) continue;
+          const item = raw as Record<string, unknown>;
+          let entryPieceId = typeof item.pieceId === "string" ? item.pieceId : null;
+          const entryLabel = typeof item.pieceLabel === "string" && item.pieceLabel.trim()
+            ? item.pieceLabel.trim() : null;
+          const entrySource = readPieceSource(item.pieceSource);
+          let entryScanId: string | null = null;
+          if (entryPieceId) {
+            const [known] = await db.select({ id: pieces.id }).from(pieces)
+              .where(eq(pieces.id, entryPieceId)).limit(1);
+            if (!known) entryPieceId = null;
+          }
+          if (!entryPieceId && item.scoreScanId !== undefined) {
+            const entryScan = await ownedScan(db, me.id, item.scoreScanId);
+            entryScanId = entryScan.kind === "miss" ? null : entryScan.id;
+          }
+          if (entryPieceId === null && entryLabel === null && entryScanId === null) continue;
+          planned.push({ pieceId: entryPieceId, pieceLabel: entryLabel,
+                         pieceSource: entrySource, scoreScanId: entryScanId });
+        }
+      }
+
+      // The singular columns stay what every reader and installed binary consults, so the first
+      // planned piece BECOMES them rather than riding alongside.
+      const singularFromBody = { pieceId, pieceLabel, pieceSource };
+      if (planned.length) {
+        pieceId = planned[0]!.pieceId;
+        pieceLabel = planned[0]!.pieceLabel;
+        pieceSource = planned[0]!.pieceSource as ReturnType<typeof readPieceSource>;
+        body.scoreScanId = planned[0]!.scoreScanId;
+      }
 
       // Absent falls back to the teacher-wins default — must stay for pre-B1.5 clients that never send this field.
       const requested = body.ownerRole;
@@ -333,13 +374,41 @@ export function lessonsRouter(deps: Deps): Router {
           ))
           .limit(1);
         if (dup) {
-          const adopted = await adoptMissingFacts(db, me.id, dup, {
+          // Only onto a lesson with NO slots: a replay that re-planted rows would duplicate or
+          // reorder a list the teacher may since have edited in review.
+          let plantedOnReplay = false;
+          if (planned.length) {
+            plantedOnReplay = await db.transaction(async (tx) => {
+              const [existing] = await tx.select({ id: lessonPieces.id }).from(lessonPieces)
+                .where(eq(lessonPieces.lessonSessionId, dup.id)).limit(1);
+              if (existing) return false;
+              for (let i = 0; i < planned.length; i++) {
+                const entry = planned[i]!;
+                await tx.insert(lessonPieces).values({
+                  lessonSessionId: dup.id,
+                  sortIndex: i * SLOT_STEP,
+                  pieceId: entry.pieceId,
+                  pieceLabel: entry.pieceLabel,
+                  pieceSource: entry.pieceSource,
+                  customPieceId: entry.pieceSource === "typed" && entry.pieceLabel
+                    ? await upsertCustomPiece(tx, me.id, entry.pieceLabel)
+                    : null,
+                  scoreScanId: entry.scoreScanId,
+                });
+              }
+              return true;
+            });
+          }
+          // A replay whose list did NOT land keeps its list's facts to itself: half-adopting
+          // planned[0] onto a lesson that already has slots rewrites the first of a list the
+          // teacher may since have edited.
+          const adopted = await adoptMissingFacts(db, me.id, dup, plantedOnReplay || !planned.length ? {
             studentId,
             pieceId,
             pieceLabel,
             pieceSource,
             scoreScanId,
-          });
+          } : { studentId, ...singularFromBody, scoreScanId: null });
           // audioPath must never be null in the response — the client's fielded decoder treats uploadUrl as non-optional.
           let audioPath = adopted.audioPath;
           if (!audioPath) {
@@ -394,6 +463,22 @@ export function lessonsRouter(deps: Deps): Router {
               attested: body.attested === true,
             })
             .returning();
+          // Before the sync: it mirrors the singular columns into the LOWEST slot, and with these
+          // rows already present that lowest slot is planned[0], so the mirror converges to a no-op.
+          for (let i = 0; i < planned.length; i++) {
+            const entry = planned[i]!;
+            await tx.insert(lessonPieces).values({
+              lessonSessionId: inserted!.id,
+              sortIndex: i * SLOT_STEP,
+              pieceId: entry.pieceId,
+              pieceLabel: entry.pieceLabel,
+              pieceSource: entry.pieceSource,
+              customPieceId: entry.pieceSource === "typed" && entry.pieceLabel
+                ? await upsertCustomPiece(tx, me.id, entry.pieceLabel)
+                : null,
+              scoreScanId: entry.scoreScanId,
+            });
+          }
           await syncLessonSlot(tx, inserted!);
           return inserted;
         });
