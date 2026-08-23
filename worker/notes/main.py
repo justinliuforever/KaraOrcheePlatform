@@ -506,7 +506,8 @@ def plan_rows(content) -> list[dict]:
 
 def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: dict,
                   annotations: list[dict], piece_summaries: dict[str, str] | None = None,
-                  plan_pieces: list[str | None] | None = None) -> str | None:
+                  plan_pieces: list[str | None] | None = None,
+                  prompt_time_names: list[str | None] | None = None) -> str | None:
     """Idempotent output. Teacher lessons: a redelivered job wipes its own draft and
     rebuilds. Solo lessons: the note is born 'sent' to the owner, so the wipe can't
     apply — an insert-guard makes redelivery/requeue a no-op instead (a rebuild
@@ -621,7 +622,12 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         if len(planned) > 1:
             # Several planned pieces: every transcript row starts in General (slot_id None),
             # because nothing in a whole-lesson recording says which sentence belongs where.
-            prompt_names = planned_prompt_names(planned)
+            # The names the PROMPT carried, when the list still matches: a title renamed during the
+            # ASR window would re-derive differently here and silently drop every filed answer.
+            fresh = planned_prompt_names(planned)
+            prompt_names = (prompt_time_names
+                            if prompt_time_names and len(prompt_time_names) == len(fresh)
+                            else fresh)
             for i, lp in enumerate(planned):
                 (_, lp_piece, lp_label, lp_custom, lp_scan, lp_version, _f, _t) = lp
                 held = hold_scan(cur, None if lp_piece is not None else lp_scan)
@@ -667,7 +673,10 @@ def replace_draft(conn, job_id: str, lesson_id: str, content: dict, original: di
         plan_len = len((content or {}).get("practicePlan") or [])
         if plan_len:
             if len(planned) > 1 and plan_pieces:
-                prompt_names = planned_prompt_names(planned)
+                fresh2 = planned_prompt_names(planned)
+                prompt_names = (prompt_time_names
+                                if prompt_time_names and len(prompt_time_names) == len(fresh2)
+                                else fresh2)
                 slot_ids: list[str | None] = []
                 for i in range(len(planned)):
                     cur.execute(
@@ -840,7 +849,8 @@ def process(conn, blob: BlobServiceClient, storage_cs: str, job_id: str,
                    normalize_piece_mentions(obj, text) if piece_mentions_enabled() else []))
     note_id = replace_draft(conn, job_id, lesson_id, content, obj, annotations,
                             piece_summaries=normalize_piece_summaries(obj, piece_names),
-                            plan_pieces=extract_plan_pieces(obj, piece_names))
+                            plan_pieces=extract_plan_pieces(obj, piece_names),
+                            prompt_time_names=prompt_names)
     if note_id is None:
         # A canceled lesson must never produce a ready_for_review job: it would be
         # a "ready" row with no note — invisible to the app (canceled lessons are

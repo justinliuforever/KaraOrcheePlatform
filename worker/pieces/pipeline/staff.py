@@ -262,6 +262,17 @@ def pedal_sign(mei: str) -> str:
 
 
 _PB = re.compile(r'<pb\b([^>]*?)/>')
+_SB = re.compile(r'<sb\b[^>]*?/>')
+_FIRST_MEASURE = re.compile(r'<measure\b')
+
+
+def expected_encoded_systems(mei: str) -> int:
+    """What the engraver's breaks demand: every <sb> AFTER the first measure opens a new system.
+    A leading <sb> (Dolet stamps new-page on bar 1) opens nothing."""
+    first = _FIRST_MEASURE.search(mei)
+    if not first:
+        return 1
+    return len(_SB.findall(mei, first.start())) + 1
 
 
 def sb_for_pb(mei: str) -> str:
@@ -376,6 +387,14 @@ def build_variant(mei: str, vopts: dict):
     page = {"viewbox_w": VBW, "viewbox_h": int(total_h), "svg_px_w": svg_px_w, "svg_px_h": svg_px_h,
             "px_per_vbunit": round(px_per_vb, 6), "content_h": round(total_h, 1), "margin": [0, 0],
             "src_pages": npages}
+    # Partial encoded breaks are the trap: verovio crams every uncovered measure into one system
+    # (colliding noteheads), warns only on a stderr nobody harvests, and every gate stays green.
+    if BREAKS_MODE == "encoded-sb":
+        want = expected_encoded_systems(mei)
+        if len(systems) != want:
+            raise RuntimeError(
+                f"encoded breaks demand {want} systems, rendered {len(systems)} — "
+                "the source's breaks do not cover the piece")
     return stitched, tm, page, geo_measures, systems, note_xy, note_sys
 
 

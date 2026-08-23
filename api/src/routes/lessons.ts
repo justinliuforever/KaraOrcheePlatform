@@ -378,26 +378,31 @@ export function lessonsRouter(deps: Deps): Router {
           // reorder a list the teacher may since have edited in review.
           let plantedOnReplay = false;
           if (planned.length) {
-            plantedOnReplay = await db.transaction(async (tx) => {
-              const [existing] = await tx.select({ id: lessonPieces.id }).from(lessonPieces)
-                .where(eq(lessonPieces.lessonSessionId, dup.id)).limit(1);
-              if (existing) return false;
-              for (let i = 0; i < planned.length; i++) {
-                const entry = planned[i]!;
-                await tx.insert(lessonPieces).values({
-                  lessonSessionId: dup.id,
-                  sortIndex: i * SLOT_STEP,
-                  pieceId: entry.pieceId,
-                  pieceLabel: entry.pieceLabel,
-                  pieceSource: entry.pieceSource,
-                  customPieceId: entry.pieceSource === "typed" && entry.pieceLabel
-                    ? await upsertCustomPiece(tx, me.id, entry.pieceLabel)
-                    : null,
-                  scoreScanId: entry.scoreScanId,
-                });
-              }
-              return true;
-            });
+            try {
+              plantedOnReplay = await db.transaction(async (tx) => {
+                const [existing] = await tx.select({ id: lessonPieces.id }).from(lessonPieces)
+                  .where(eq(lessonPieces.lessonSessionId, dup.id)).limit(1);
+                if (existing) return false;
+                for (let i = 0; i < planned.length; i++) {
+                  const entry = planned[i]!;
+                  await tx.insert(lessonPieces).values({
+                    lessonSessionId: dup.id,
+                    sortIndex: i * SLOT_STEP,
+                    pieceId: entry.pieceId,
+                    pieceLabel: entry.pieceLabel,
+                    pieceSource: entry.pieceSource,
+                    customPieceId: entry.pieceSource === "typed" && entry.pieceLabel
+                      ? await upsertCustomPiece(tx, me.id, entry.pieceLabel)
+                      : null,
+                    scoreScanId: entry.scoreScanId,
+                  });
+                }
+                return true;
+              });
+            } catch (err) {
+              // Two replays raced past the unlocked existence check; the winner's rows ARE the plant.
+              if (pgErrorCode(err) !== "23505") throw err;
+            }
           }
           // A replay whose list did NOT land keeps its list's facts to itself: half-adopting
           // planned[0] onto a lesson that already has slots rewrites the first of a list the

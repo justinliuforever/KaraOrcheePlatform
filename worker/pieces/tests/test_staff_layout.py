@@ -20,3 +20,10 @@ def test_the_breaks_mode_is_part_of_the_layout_fingerprint(monkeypatch):
     finally:
         monkeypatch.delenv("NOTES_STAFF_BREAKS")
         importlib.reload(staff)
+
+
+def test_expected_systems_counts_only_breaks_after_the_first_measure():
+    from pipeline.staff import expected_encoded_systems
+    assert expected_encoded_systems('<sb/><measure n="1"/><sb/><measure n="2"/>') == 2
+    assert expected_encoded_systems('<measure n="1"/><sb/><measure/><sb n="x"/><measure/>') == 3
+    assert expected_encoded_systems('<score>no measures</score>') == 1
